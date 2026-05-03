@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-APP_TITLE = "CodeDesk"
+APP_TITLE = "CodeRouter"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 CONFIG_PATH = Path(__file__).with_name("local_config.json")
 
@@ -258,7 +258,7 @@ class CodeAgentApp(tk.Tk):
         diff_pane.add(diff_panel, weight=2)
         main.add(right, weight=6)
 
-        self.log("CodeDesk started. API key is hidden and loaded from local config or environment.")
+        self.log("CodeRouter started. API key is hidden and loaded from local config or environment.")
 
     def _soft_panel(self, parent, bg, border):
         frame = tk.Frame(parent, bg=bg, padx=16, pady=16, highlightthickness=1, highlightbackground=border)
@@ -665,7 +665,7 @@ def call_openrouter(api_key, model, instructions, files, session_messages):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://local.codedesk",
+            "HTTP-Referer": "https://local.coderouter",
             "X-Title": APP_TITLE,
         },
         method="POST",

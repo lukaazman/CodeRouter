@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
 local_config.json
+local_config.*.json
+!local_config.example.json
+*.key
+*.pem
 .venv/
 venv/
