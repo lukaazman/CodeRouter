@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 APP_TITLE = "CodeRouter"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 CONFIG_PATH = Path(__file__).with_name("local_config.json")
+EXTERNAL_CONTEXT_PREFIX = "__external_context__"
 
 MODEL_FALLBACKS = [
     "qwen/qwen3-coder:free",
@@ -69,6 +70,16 @@ DEFAULT_IGNORE_EXTENSIONS = {
     ".db",
 }
 
+DEFAULT_IGNORE_FILE_NAMES = {
+    ".env",
+    "local_config.json",
+}
+
+DEFAULT_IGNORE_SECRET_EXTENSIONS = {
+    ".key",
+    ".pem",
+}
+
 
 @dataclass
 class SourceFile:
@@ -88,8 +99,10 @@ class CodeAgentApp(tk.Tk):
         self.config_data = load_local_config()
         self.api_key = os.environ.get("OPENROUTER_API_KEY") or self.config_data.get("openrouter_api_key", "")
         self.selected_folder = tk.StringVar(value=self.config_data.get("last_folder", ""))
+        self.extra_context_paths = list(self.config_data.get("extra_context_files", []))
         self.status = tk.StringVar(value="Ready")
         self.file_count = tk.StringVar(value="0 files")
+        self.extra_context_count = tk.StringVar(value=self._extra_context_label())
         self.char_count = tk.StringVar(value="0 chars")
         self.pending_count = tk.StringVar(value="0 pending")
         self.model_status = tk.StringVar(value="Auto free fallback")
@@ -161,11 +174,14 @@ class CodeAgentApp(tk.Tk):
 
         ttk.Label(sidebar, text="Project", style="SideTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(4, 0))
         self._button(sidebar, "Open project folder", self.choose_folder, "Ghost.TButton", "Choose the folder the agent can edit").grid(row=1, column=0, sticky="ew", pady=(9, 7))
-        ttk.Label(sidebar, textvariable=self.selected_folder, style="Side.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew", pady=(0, 16))
+        ttk.Label(sidebar, textvariable=self.selected_folder, style="Side.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew", pady=(0, 9))
+        self._button(sidebar, "Add context files", self.add_context_files, "Ghost.TButton", "Add extra files from another folder as read-only model context").grid(row=3, column=0, sticky="ew", pady=(0, 7))
+        self._button(sidebar, "Clear context files", self.clear_context_files, "Ghost.TButton", "Remove extra read-only context files").grid(row=4, column=0, sticky="ew", pady=(0, 7))
+        ttk.Label(sidebar, textvariable=self.extra_context_count, style="Side.TLabel", wraplength=235).grid(row=5, column=0, sticky="ew", pady=(0, 16))
 
-        ttk.Label(sidebar, text="Main actions", style="SideTitle.TLabel").grid(row=3, column=0, sticky="w")
+        ttk.Label(sidebar, text="Main actions", style="SideTitle.TLabel").grid(row=6, column=0, sticky="w")
         actions = self._card(sidebar, "#fbfbfd", "#cfd7e6")
-        actions.grid(row=4, column=0, sticky="ew", pady=(9, 16))
+        actions.grid(row=7, column=0, sticky="ew", pady=(9, 16))
         actions.columnconfigure(0, weight=1)
         self._button(actions, "Run / continue chat", self.run_agent, "Accent.TButton", "Send the prompt and continue this session").grid(row=0, column=0, sticky="ew", pady=(0, 7))
         self.apply_button = self._button(actions, "Accept changes", self.apply_pending, "Accent.TButton", "Apply pending edits to disk")
@@ -176,25 +192,17 @@ class CodeAgentApp(tk.Tk):
         self.reject_button.grid(row=2, column=0, sticky="ew", pady=(0, 7))
         self._button(actions, "Start new chat", self.reset_session, "Ghost.TButton", "Clear conversation memory").grid(row=3, column=0, sticky="ew")
 
-        ttk.Label(sidebar, text="Agent", style="SideTitle.TLabel").grid(row=5, column=0, sticky="w")
-        agent_card = self._card(sidebar, "#fbfbfd", "#bfeecd")
-        agent_card.grid(row=6, column=0, sticky="ew", pady=(9, 16))
-        agent_card.columnconfigure(0, weight=1)
-        ttk.Label(agent_card, textvariable=self.model_status, background="#fbfbfd", foreground="#146b31", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(agent_card, text="free fallback chain", background="#fbfbfd", foreground="#70737b").grid(row=1, column=0, sticky="w", pady=(3, 0))
-        ttk.Checkbutton(agent_card, text="Auto apply accepted edits", variable=self.auto_apply).grid(row=2, column=0, sticky="w", pady=(10, 0))
-
-        ttk.Label(sidebar, text="Snapshot", style="SideTitle.TLabel").grid(row=7, column=0, sticky="w")
+        ttk.Label(sidebar, text="Snapshot", style="SideTitle.TLabel").grid(row=8, column=0, sticky="w")
         stats = self._card(sidebar, "#fbfbfd", "#cfd7e6")
-        stats.grid(row=8, column=0, sticky="ew", pady=(9, 16))
+        stats.grid(row=9, column=0, sticky="ew", pady=(9, 16))
         stats.columnconfigure(0, weight=1)
         ttk.Label(stats, textvariable=self.file_count, style="Stat.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(stats, textvariable=self.char_count, background="#fbfbfd", foreground="#71747c").grid(row=1, column=0, sticky="w", pady=(3, 0))
         ttk.Label(stats, textvariable=self.pending_count, background="#fbfbfd", foreground="#146b31").grid(row=2, column=0, sticky="w", pady=(9, 0))
 
-        ttk.Label(sidebar, text="Quick buttons", style="SideTitle.TLabel").grid(row=9, column=0, sticky="w")
+        ttk.Label(sidebar, text="Quick buttons", style="SideTitle.TLabel").grid(row=10, column=0, sticky="w")
         quick = self._card(sidebar, "#fbfbfd", "#d9deea")
-        quick.grid(row=10, column=0, sticky="ew", pady=(9, 0))
+        quick.grid(row=11, column=0, sticky="ew", pady=(9, 0))
         for col in range(5):
             quick.columnconfigure(col, weight=1, uniform="quick", minsize=46)
         self._icon_button(quick, "↻", self.scan_folder, "Rescan project files").grid(row=0, column=0, padx=(0, 4))
@@ -309,6 +317,44 @@ class CodeAgentApp(tk.Tk):
             save_local_config(self.config_data)
             self.scan_folder()
 
+    def add_context_files(self):
+        paths = filedialog.askopenfilenames(title="Add read-only context files")
+        if not paths:
+            return
+        existing = set(self.extra_context_paths)
+        added = 0
+        skipped = 0
+        for path_text in paths:
+            path = Path(path_text)
+            if is_context_file_allowed(path) and str(path) not in existing:
+                self.extra_context_paths.append(str(path))
+                existing.add(str(path))
+                added += 1
+            else:
+                skipped += 1
+        self.config_data["extra_context_files"] = self.extra_context_paths
+        save_local_config(self.config_data)
+        self.extra_context_count.set(self._extra_context_label())
+        self.scan_folder(silent=True)
+        self.log(f"> added {added} context files" + (f", skipped {skipped}" if skipped else ""))
+
+    def clear_context_files(self):
+        if not self.extra_context_paths:
+            return
+        count = len(self.extra_context_paths)
+        self.extra_context_paths = []
+        self.config_data["extra_context_files"] = []
+        save_local_config(self.config_data)
+        self.extra_context_count.set(self._extra_context_label())
+        self.scan_folder(silent=True)
+        self.log(f"> cleared {count} context files")
+
+    def _extra_context_label(self):
+        count = len(self.extra_context_paths)
+        if count == 1:
+            return "1 extra context file"
+        return f"{count} extra context files"
+
     def log(self, text):
         self.activity.insert(tk.END, text + "\n")
         self.activity.see(tk.END)
@@ -347,6 +393,7 @@ class CodeAgentApp(tk.Tk):
         try:
             max_files, max_file_kb = choose_context_limits(folder)
             files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+            files.extend(collect_extra_context_files(self.extra_context_paths, max_file_kb=max_file_kb))
         except Exception as exc:
             if not silent:
                 messagebox.showerror(APP_TITLE, str(exc))
@@ -389,6 +436,7 @@ class CodeAgentApp(tk.Tk):
         try:
             max_files, max_file_kb = choose_context_limits(folder)
             files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+            files.extend(collect_extra_context_files(self.extra_context_paths, max_file_kb=max_file_kb))
             self.work_queue.put(("log", f"> context: {len(files)} files, max {max_file_kb} KB/file"))
             self.work_queue.put(("summary", "Snapshot collected. Trying free coding models in fallback order."))
             result, model_used = call_openrouter_with_fallback(
@@ -599,7 +647,7 @@ def collect_files(root, max_files, max_file_kb):
         relative_parts = path.relative_to(root).parts
         if any(part in DEFAULT_IGNORE_DIRS for part in relative_parts[:-1]):
             continue
-        if path.name == "local_config.json":
+        if not is_context_file_allowed(path):
             continue
         if path.suffix.lower() in DEFAULT_IGNORE_EXTENSIONS:
             continue
@@ -616,6 +664,57 @@ def collect_files(root, max_files, max_file_kb):
             continue
         files.append(SourceFile(path=path, relative_path=path.relative_to(root).as_posix(), content=content))
     return files
+
+
+def collect_extra_context_files(paths, max_file_kb):
+    files = []
+    max_bytes = max_file_kb * 1024
+    used_names = set()
+    for path_text in paths:
+        path = Path(path_text)
+        if not is_context_file_allowed(path):
+            continue
+        try:
+            resolved = path.resolve()
+            if not resolved.is_file() or resolved.stat().st_size > max_bytes:
+                continue
+            content = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                content = resolved.read_text(encoding="cp1250")
+            except UnicodeDecodeError:
+                continue
+        except OSError:
+            continue
+        context_name = unique_context_name(resolved, used_names)
+        files.append(SourceFile(path=resolved, relative_path=f"{EXTERNAL_CONTEXT_PREFIX}/{context_name}", content=content))
+    return files
+
+
+def unique_context_name(path, used_names):
+    base_name = path.name
+    if base_name not in used_names:
+        used_names.add(base_name)
+        return base_name
+    stem = path.stem
+    suffix = path.suffix
+    index = 2
+    while True:
+        candidate = f"{stem}-{index}{suffix}"
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate
+        index += 1
+
+
+def is_context_file_allowed(path):
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if name in DEFAULT_IGNORE_FILE_NAMES:
+        return False
+    if suffix in DEFAULT_IGNORE_EXTENSIONS or suffix in DEFAULT_IGNORE_SECRET_EXTENSIONS:
+        return False
+    return True
 
 
 def call_openrouter_with_fallback(api_key, instructions, files, session_messages, log_queue):
@@ -640,7 +739,8 @@ def call_openrouter(api_key, model, instructions, files, session_messages):
         "{\"summary\":\"short user-facing summary of what will change\","
         "\"files\":[{\"path\":\"relative/path.ext\",\"content\":\"complete new file content\"}]}. "
         "Include only files that must be created or replaced. Do not include markdown fences. "
-        "Never use absolute paths. Preserve unrelated code and formatting. "
+        f"Never use absolute paths. Files under {EXTERNAL_CONTEXT_PREFIX}/ are read-only context; never return edits for them. "
+        "Preserve unrelated code and formatting. "
         "If the request is conversational and needs no file edits, return an empty files array."
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
@@ -697,6 +797,8 @@ def parse_model_response(response_text):
         path = item.get("path", "").strip().replace("\\", "/")
         content = item.get("content")
         if not path or content is None:
+            continue
+        if path == EXTERNAL_CONTEXT_PREFIX or path.startswith(f"{EXTERNAL_CONTEXT_PREFIX}/"):
             continue
         if path.startswith("/") or ".." in Path(path).parts:
             raise ValueError(f"Unsafe path returned by model: {path}")

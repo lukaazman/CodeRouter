@@ -1,4 +1,5 @@
 {
   "openrouter_api_key": "put-your-key-here",
-  "last_folder": ""
+  "last_folder": "",
+  "extra_context_files": []
 }

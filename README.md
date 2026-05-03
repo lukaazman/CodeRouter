@@ -21,8 +21,9 @@ API key se sam nalozi iz `local_config.json` ali iz okoljske spremenljivke `OPEN
 - avtomatski model fallback brez roccne izbire modela
 - vrstni red: Qwen Coder free, DeepSeek free, GLM free, Kimi free, OpenRouter free router
 - back-and-forth chat seja z `Run / Continue`
+- `Add context files` za dodatne read-only datoteke iz druge mape, ki se posljejo modelu kot kontekst
 - `Auto apply` je privzeto vklopljen
-- `Accept Changes` in `Reject Changes`, ko auto apply izklopis
+- `Accept Changes` in `Reject Changes` sta na voljo za pending spremembe
 - `New Chat` za cisto sejo
 - context scope se izbere sam glede na velikost projekta
 - bolj minimalističen Windows-friendly layout brez macOS okenskih pik
@@ -32,8 +33,8 @@ API key se sam nalozi iz `local_config.json` ali iz okoljske spremenljivke `OPEN
 - manjsi terminalni `Activity` panel
 - desni diff pogled: zgoraj seznam urejenih datotek, spodaj diff izbrane datoteke
 - zeleni `+` dodatki in rdeci `-` izbrisi
-- opcijski `Auto apply`
-- ignoriranje `.git`, `node_modules`, build map, virtualenv map, `local_config.json` in binarnih datotek
+- avtomatski free fallback brez rocne izbire v UI
+- ignoriranje `.git`, `node_modules`, build map, virtualenv map, `local_config.json`, `.env`, key/pem datotek in binarnih datotek
 
 ## Varnostna opomba
 
