@@ -23,6 +23,10 @@ from urllib.request import Request, urlopen
 
 
 APP_TITLE = "CodeRouter"
+WINDOW_ICON_SOURCE = Path(__file__).resolve().parent / "assets" / "code-router.svg"
+WINDOW_ICON_SIZE = 32
+WINDOW_ICON_BACKGROUND = "#080808"
+WINDOW_ICON_FOREGROUND = "#f3f3f3"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
@@ -3234,6 +3238,7 @@ class CodeAgentApp(tk.Tk):
         self.geometry("1440x900")
         self.minsize(1180, 720)
         self.configure(bg=PALETTE["canvas"])
+        self._setup_window_icon()
 
         self.config_data = load_local_config()
         self.api_key = os.environ.get("OPENROUTER_API_KEY") or self.config_data.get("openrouter_api_key", "")
@@ -3261,6 +3266,9 @@ class CodeAgentApp(tk.Tk):
         self.char_count = tk.StringVar(value="0 chars")
         self.pending_count = tk.StringVar(value="0 pending")
         self.model_status = tk.StringVar(value="Free model fallback")
+        self.workflow_phase = tk.StringVar(value=TASK_STATE_LABELS[TASK_STATE_IDLE])
+        self.workflow_model_signal = tk.StringVar(value="Free model fallback")
+        self.workflow_next_action = tk.StringVar(value="Choose a project folder")
         self.model_health = ModelHealthTracker()
         self.model_health_tracker = self.model_health
         configured_apply_mode = self.config_data.get("apply_mode", APPLY_MODE_REVIEW)
@@ -3401,6 +3409,84 @@ class CodeAgentApp(tk.Tk):
         style.configure("Icon.TButton", background=PALETTE["surface_raised"], foreground=PALETTE["text"], font=FONTS["body_bold"], padding=(4, 5), borderwidth=0, focuscolor=PALETTE["focus"])
         style.map("Icon.TButton", background=[("disabled", PALETTE["surface_alt"]), ("pressed", PALETTE["border_strong"]), ("active", PALETTE["border_strong"])], foreground=[("disabled", PALETTE["text_subtle"])])
 
+    def _build_window_icon_image(self):
+        """Build a tiny dependency-free raster from the bundled SVG geometry."""
+        size = WINDOW_ICON_SIZE
+        image = tk.PhotoImage(master=self, width=size, height=size)
+        image.put(WINDOW_ICON_BACKGROUND, to=(0, 0, size - 1, size - 1))
+        scale = size / 256.0
+        stroke_width = 7.0
+        white_pixels = set()
+
+        def distance_to_segment(px, py, start, end):
+            x1, y1 = start
+            x2, y2 = end
+            dx = x2 - x1
+            dy = y2 - y1
+            length_squared = (dx * dx) + (dy * dy)
+            if not length_squared:
+                return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+            position = ((px - x1) * dx + (py - y1) * dy) / length_squared
+            position = max(0.0, min(1.0, position))
+            closest_x = x1 + position * dx
+            closest_y = y1 + position * dy
+            return ((px - closest_x) ** 2 + (py - closest_y) ** 2) ** 0.5
+
+        segments = (
+            ((54, 128), (102, 128)),
+            ((154, 128), (202, 128)),
+            ((128, 54), (128, 93)),
+            ((128, 163), (128, 202)),
+            ((116, 128), (128, 116)),
+            ((128, 116), (140, 128)),
+            ((140, 128), (128, 140)),
+            ((128, 140), (116, 128)),
+            ((82, 74), (94, 86)),
+            ((174, 74), (162, 86)),
+            ((82, 182), (94, 170)),
+            ((174, 182), (162, 170)),
+        )
+        for pixel_y in range(size):
+            for pixel_x in range(size):
+                point_x = (pixel_x + 0.5) / scale
+                point_y = (pixel_y + 0.5) / scale
+                if any(
+                    distance_to_segment(point_x, point_y, start, end) <= stroke_width / 2
+                    for start, end in segments
+                ):
+                    white_pixels.add((pixel_x, pixel_y))
+                    continue
+                if any(
+                    (point_x - center_x) ** 2 + (point_y - center_y) ** 2 <= radius**2
+                    for center_x, center_y, radius in (
+                        (45, 128, 13),
+                        (211, 128, 13),
+                    )
+                ):
+                    white_pixels.add((pixel_x, pixel_y))
+                    continue
+                center_distance = ((point_x - 128) ** 2 + (point_y - 128) ** 2) ** 0.5
+                if 22 - stroke_width / 2 <= center_distance <= 22 + stroke_width / 2:
+                    white_pixels.add((pixel_x, pixel_y))
+
+        for pixel_x, pixel_y in sorted(white_pixels, key=lambda item: (item[1], item[0])):
+            image.put(WINDOW_ICON_FOREGROUND, to=(pixel_x, pixel_y))
+        return image
+
+    def _setup_window_icon(self):
+        """Apply the bundled mark without making SVG support a runtime dependency."""
+        self._window_icon_source = WINDOW_ICON_SOURCE
+        self._window_icon_image = None
+        self._window_icon_applied = False
+        try:
+            image = self._build_window_icon_image()
+            self.iconphoto(True, image)
+            self._window_icon_image = image
+            self._window_icon_applied = True
+        except Exception:
+            # Window icons are optional in headless/Tk variants; never block startup.
+            self._window_icon_image = None
+
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -3442,6 +3528,67 @@ class CodeAgentApp(tk.Tk):
             wraplength=720,
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
         self.local_command_entry.bind("<Return>", self._on_local_command_submit)
+
+        self.workflow_rail = tk.Frame(
+            toolbar,
+            bg=PALETTE["surface_alt"],
+            padx=SPACING["control"],
+            pady=5,
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        self.workflow_rail.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(SPACING["section"], 0))
+        self.workflow_rail.columnconfigure(4, weight=1)
+        self.workflow_rail.columnconfigure(7, weight=2)
+        tk.Label(
+            self.workflow_rail,
+            text="PHASE",
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["section"],
+        ).grid(row=0, column=0, sticky="w")
+        self.workflow_phase_value = tk.Label(
+            self.workflow_rail,
+            textvariable=self.workflow_phase,
+            bg=PALETTE["surface_alt"],
+            fg=TASK_STATE_COLORS[TASK_STATE_IDLE],
+            font=FONTS["body_bold"],
+        )
+        self.workflow_phase_value.grid(row=0, column=1, sticky="w", padx=(6, 18))
+        ttk.Separator(self.workflow_rail, orient=tk.VERTICAL).grid(row=0, column=2, sticky="ns", padx=(0, 18))
+        tk.Label(
+            self.workflow_rail,
+            text="MODEL / QUEUE",
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["section"],
+        ).grid(row=0, column=3, sticky="w")
+        self.workflow_model_value = tk.Label(
+            self.workflow_rail,
+            textvariable=self.workflow_model_signal,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text"],
+            font=FONTS["mono_small"],
+            anchor="w",
+        )
+        self.workflow_model_value.grid(row=0, column=4, sticky="ew", padx=(6, 18))
+        ttk.Separator(self.workflow_rail, orient=tk.VERTICAL).grid(row=0, column=5, sticky="ns", padx=(0, 18))
+        tk.Label(
+            self.workflow_rail,
+            text="NEXT",
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["section"],
+        ).grid(row=0, column=6, sticky="w")
+        self.workflow_next_action_value = tk.Label(
+            self.workflow_rail,
+            textvariable=self.workflow_next_action,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["accent"],
+            font=FONTS["body"],
+            anchor="w",
+        )
+        self.workflow_next_action_value.grid(row=0, column=7, sticky="ew", padx=(6, 0))
 
         shell = tk.Frame(self, bg=PALETTE["canvas"], padx=SPACING["page"], pady=SPACING["page"])
         shell.grid(row=1, column=0, sticky="nsew")
@@ -4022,6 +4169,67 @@ class CodeAgentApp(tk.Tk):
             if self._disclosure_is_active(section) and not self._disclosure_expanded.get(section, False):
                 self._set_disclosure(section, True)
 
+    def _workflow_button_enabled(self, name):
+        button = getattr(self, name, None)
+        if button is None:
+            return False
+        try:
+            return bool(button.instate(("!disabled",)))
+        except (AttributeError, tk.TclError):
+            return str(button.cget("state")) != tk.DISABLED
+
+    def _workflow_model_text(self):
+        status = " ".join(str(self.model_status.get() or "").split())
+        records = self.model_health.records
+        if not status:
+            if records:
+                status = records[-1].status_text()
+            else:
+                status = f"Free fallback queue · {len(MODEL_FALLBACKS)} candidates"
+        elif records:
+            latest = records[-1]
+            health_signal = f"{latest.status} {latest.latency_ms}ms"
+            if health_signal.casefold() not in status.casefold():
+                status = f"{status} · {health_signal}"
+        safe = self._redact_sensitive(status)
+        return " ".join(safe.split())[:180]
+
+    def _workflow_next_action_text(self):
+        if self.lifecycle.closed:
+            return "Closed"
+        if self._workflow_button_enabled("approve_plan_button"):
+            return "Approve, revise, or cancel plan"
+        if self._workflow_button_enabled("allow_inspect_button"):
+            return "Allow or deny inspect request"
+        if self._workflow_button_enabled("allow_verification_button"):
+            return "Allow or deny verification request"
+        if self._workflow_button_enabled("apply_button"):
+            return "Review, apply, or reject changes"
+        if self._workflow_button_enabled("run_next_step_button"):
+            return "Run prepared next step"
+        if self._workflow_button_enabled("approve_next_step_button"):
+            return "Approve overseer next step"
+        if self._workflow_button_enabled("send_overseer_button"):
+            return "Send evidence to overseer"
+        if self._workflow_button_enabled("verification_run_button") and self.verification_command.get().strip():
+            return "Run verification"
+        if self._run_in_progress():
+            return "Wait for active run"
+        if not self.selected_folder.get().strip():
+            return "Choose a project folder"
+        if not self.instructions.get("1.0", tk.END).strip():
+            return "Enter a task prompt"
+        return "Ready"
+
+    def _refresh_workflow_rail(self):
+        if not hasattr(self, "workflow_phase_value"):
+            return
+        state = self.task_state if self.task_state in TASK_STATE_LABELS else TASK_STATE_IDLE
+        self.workflow_phase.set(TASK_STATE_LABELS[state])
+        self.workflow_phase_value.configure(fg=TASK_STATE_COLORS[state])
+        self.workflow_model_signal.set(self._workflow_model_text())
+        self.workflow_next_action.set(self._workflow_next_action_text())
+
     def _button_hover(self, button, active, hint=None):
         if str(button.cget("state")) == tk.DISABLED:
             return
@@ -4276,6 +4484,7 @@ class CodeAgentApp(tk.Tk):
         selected_button = getattr(self, "apply_selected_button", None)
         if selected_button is not None:
             selected_button.configure(state=selected_state)
+        self._refresh_workflow_rail()
 
     def _current_resource_scope_ids(self, primary_run_id=None):
         """Return only the active run and its known verification/overseer children."""
@@ -4502,6 +4711,7 @@ class CodeAgentApp(tk.Tk):
             report_button.configure(
                 state=tk.NORMAL if self._current_report_handoff() is not None else tk.DISABLED
             )
+        self._refresh_workflow_rail()
 
     def _write_handoff_preview(self, text):
         if not hasattr(self, "handoff_preview"):
@@ -7656,6 +7866,7 @@ class CodeAgentApp(tk.Tk):
                     self.apply_pending(explicit=False)
         except queue.Empty:
             pass
+        self._refresh_workflow_rail()
         if not self.lifecycle.closed:
             self._schedule_poll()
 

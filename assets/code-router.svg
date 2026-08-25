@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title>CodeRouter icon</title>
+  <rect width="256" height="256" rx="48" fill="#080808"/>
+  <path d="M54 128h48M154 128h48M128 54v39M128 163v39" fill="none" stroke="#f3f3f3" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="45" cy="128" r="13" fill="#f3f3f3"/>
+  <circle cx="128" cy="128" r="22" fill="#080808" stroke="#f3f3f3" stroke-width="7"/>
+  <circle cx="211" cy="128" r="13" fill="#f3f3f3"/>
+  <path d="m116 128 12-12 12 12-12 12zM82 74l12 12M174 74l-12 12M82 182l12-12M174 182l-12-12" fill="none" stroke="#f3f3f3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
