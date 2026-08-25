@@ -1,12 +1,12 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — Review-inspector refinement complete and overseer-approved
+Checkpoint: 2026-08-25 — Trust & settings disclosure complete and verified
 
-The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity, and review-inspector refinement slices are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
+The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity, review-inspector refinement, and Trust & settings slices are green and verified. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
 
 ## Current checkpoint
 
-The current approved slice is the review-inspector refinement, layered over the evidence-first Activity presentation, model/queue disclosure, compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
+The current completed slice is the Trust & settings disclosure, layered over the review-inspector refinement, evidence-first Activity presentation, model/queue disclosure, compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
 
 - the compact single-line rail exposes `PHASE`, `MODEL-QUEUE`, and `NEXT` using the existing truthful task state, model status/health/fallback, and button/lifecycle gates;
 - rail values do not invent model identity and the next-action text follows the existing user permissions and visible controls;
@@ -17,6 +17,9 @@ The current approved slice is the review-inspector refinement, layered over the 
 - the review inspector keeps the existing Treeview/diff and shows compact `selected/total · inspecting relative-path` metadata near the changed-file list, with a bounded empty state;
 - the metadata refreshes on populate, clear, and extended selection while the first selected file continues to drive the inspected diff;
 - Treeview identity, multi-selection, diff behavior, `Apply selected`, and transactional review/apply behavior remain unchanged;
+- the compact `Trust & settings` disclosure sits between the visible Apply Policy controls and Actions without hiding or changing the Review changes, Auto-apply, permission note, Apply, Reject, or Undo safety controls;
+- Trust & settings is collapsed by default and expands on click, Return, or Space using non-destructive `grid`/`grid_remove` visibility; it shows only bounded redacted apply mode/permission note, active RunSnapshot project-instructions status, PermissionDecisionLedger count/last safe label, and the existing local-command user-action-only policy reminder;
+- a current inspect or verification permission request auto-opens Trust & settings and keeps it open, while ordinary idle/active snapshots remain manually collapsible; the surface performs no worker, provider, process, proposal, apply, persistence, or permission-authority action;
 - History, Manual verification, Activity, and Task tools are collapsed by default;
 - project/task controls, prompt, compact summary/status, review state, changed-file list/diff, and primary review actions remain visible;
 - the Task tools disclosure contains plan, read-only inspect, verification request, and Executor -> Overseer handoff controls;
@@ -32,10 +35,11 @@ The broader implementation already includes the dark Workbench shell, free-model
 
 ## Current verified evidence
 
-- Focused review-inspector, Activity, model/queue disclosure, workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 32 tests ... OK`.
-- Full suite: three consecutive runs, each `Ran 241 tests ... OK`, with no unexpected warnings.
+- Focused Trust & settings checks: `Ran 5 tests in 0.761s ... OK`.
+- Focused Trust & settings plus review-inspector, Activity, model/queue disclosure, workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 37 tests in 4.161s ... OK`.
+- Full suite: three consecutive runs, `Ran 246 tests in 13.735s`, `Ran 246 tests in 14.048s`, and `Ran 246 tests in 13.189s`; all `OK` with no unexpected warnings.
 - `python -m py_compile .\\codex_free_wrapper.py`: exit `0`.
-- Review-inspector smoke: `APP_SMOKE_OK 'Selected 0 of 0 \\xb7 no file selected' True True; APP_DESTROY_OK True True`.
+- ASCII-safe Trust & settings app smoke: `APP_SMOKE_OK False True normal normal`; `APP_DESTROY_OK True True`.
 - Asset verification: `assets/code-router.svg` hash matches the Portfolio source byte-for-byte.
 - `git diff --check`: exit `0`; only standard LF-to-CRLF notices.
 
@@ -54,13 +58,13 @@ The former global `_undo_has_active_resources()` check was replaced with the sam
 
 ## Current continuation status
 
-The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity presentation, and review-inspector refinement are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The rail, model/queue disclosure, Activity digest, and review metadata are UI-only views, the bundled icon has no runtime Portfolio-path dependency, and all preserve existing safety, worker, overseer, and lifecycle boundaries.
+The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity presentation, review-inspector refinement, and Trust & settings disclosure are complete and verified. Trust & settings keeps Apply Policy and safety actions visible, is collapsed by default, auto-opens only for current inspect/verification permission requests, and remains a bounded redacted UI-only view. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. All surfaces preserve existing worker, overseer, permission, and lifecycle boundaries.
 
 ## Next bounded roadmap
 
-Proceed autonomously in this order, one bounded slice at a time:
+Proceed only with an explicitly assigned bounded slice, one at a time:
 
-1. Settings/trust surfaces.
+1. Review and freeze the current Workbench safety surfaces before the next explicitly assigned roadmap item.
 
 Each slice must preserve the current primary workflow and may not expand into a new provider, command, persistence, or permission capability unless explicitly assigned.
 

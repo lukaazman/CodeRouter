@@ -136,6 +136,10 @@ MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 ACTIVITY_DIGEST_MAX_CHARS = 240
 ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS = 72
 REVIEW_SELECTION_META_MAX_CHARS = 240
+TRUST_SETTINGS_MAX_CHARS = 960
+LOCAL_COMMAND_POLICY_TEXT = (
+    "Typed input + explicit user action only; never from model, plan, instructions, history, or startup."
+)
 
 TASK_STATE_IDLE = "idle"
 TASK_STATE_COLLECTING = "collecting"
@@ -3278,6 +3282,8 @@ class CodeAgentApp(tk.Tk):
         self.workflow_model_detail_text = tk.StringVar(value="")
         self.workflow_next_action = tk.StringVar(value="Choose a project folder")
         self._model_queue_expanded = False
+        self.trust_settings_detail_text = tk.StringVar(value="")
+        self._trust_settings_expanded = False
         self.model_health = ModelHealthTracker()
         self.model_health_tracker = self.model_health
         configured_apply_mode = self.config_data.get("apply_mode", APPLY_MODE_REVIEW)
@@ -3665,7 +3671,34 @@ class CodeAgentApp(tk.Tk):
         self.auto_mode_button = ttk.Radiobutton(sidebar, text="Auto-apply", variable=self.apply_mode, value=APPLY_MODE_AUTO, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
         self.auto_mode_button.grid(row=9, column=0, sticky="w", pady=(0, 4))
         ttk.Label(sidebar, textvariable=self.permission_note, style="PanelMuted.TLabel", wraplength=235).grid(row=10, column=0, sticky="ew", pady=(0, SPACING["section"]))
-        ttk.Separator(sidebar).grid(row=11, column=0, sticky="ew", pady=(2, 14))
+        self.trust_settings_container = tk.Frame(sidebar, bg=PALETTE["surface"])
+        self.trust_settings_container.grid(row=11, column=0, sticky="ew", pady=(0, 14))
+        self.trust_settings_container.columnconfigure(0, weight=1)
+        self.trust_settings_button = self._button(
+            self.trust_settings_container,
+            "▸ Trust & settings",
+            self._toggle_trust_settings_disclosure,
+            "Ghost.TButton",
+            "Show bounded apply, instruction, permission, and local-command policy metadata",
+        )
+        self.trust_settings_button.grid(row=0, column=0, sticky="ew")
+        for sequence in ("<Return>", "<space>"):
+            self.trust_settings_button.bind(
+                sequence,
+                lambda _event: (self._toggle_trust_settings_disclosure(), "break")[1],
+            )
+        self.trust_settings_detail_label = tk.Label(
+            self.trust_settings_container,
+            textvariable=self.trust_settings_detail_text,
+            bg=PALETTE["surface"],
+            fg=PALETTE["text_muted"],
+            font=FONTS["mono_small"],
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=235,
+        )
+        self.trust_settings_detail_label.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        self.trust_settings_detail_label.grid_remove()
         ttk.Label(sidebar, text="ACTIONS", style="Section.TLabel").grid(row=12, column=0, sticky="w")
         self.run_button = self._button(sidebar, "Run / continue chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
         self.run_button.grid(row=13, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
@@ -4140,6 +4173,8 @@ class CodeAgentApp(tk.Tk):
         )
         for disclosure in ("history", "verification", "activity", "task_tools"):
             self._set_disclosure(disclosure, False)
+        self._refresh_trust_settings_surface()
+        self._set_trust_settings_disclosure(False)
         main.add(right, weight=6)
 
         self.bind_all("<Control-Return>", self._on_run_shortcut)
@@ -4180,7 +4215,102 @@ class CodeAgentApp(tk.Tk):
             )
         return button
 
+    def _trust_settings_is_active(self):
+        if getattr(self, "lifecycle", None) is None or self.lifecycle.closed:
+            return False
+        inspect_request = getattr(self, "inspect_request", None)
+        if inspect_request is not None and self._inspect_is_current():
+            return True
+        verification_request = getattr(self, "verification_request", None)
+        return bool(
+            verification_request is not None
+            and self._verification_request_is_current()
+        )
+
+    def _trust_current_snapshot(self):
+        lifecycle = getattr(self, "lifecycle", None)
+        if lifecycle is None or lifecycle.closed:
+            return None
+        snapshot = lifecycle.active_snapshot
+        return snapshot if isinstance(snapshot, RunSnapshot) else None
+
+    def _trust_safe_text(self, value, limit=HISTORY_MAX_TEXT_CHARS):
+        safe = self._redact_sensitive(value)
+        safe = " ".join(str(safe or "").split())
+        return safe[:limit]
+
+    def _trust_settings_metadata_text(self):
+        snapshot = self._trust_current_snapshot()
+        mode = getattr(snapshot, "apply_mode", None) or self.apply_mode.get()
+        mode_label = "Auto-apply" if mode == APPLY_MODE_AUTO else "Review changes"
+        permission_note = self._trust_safe_text(
+            self.permission_note.get(),
+            220,
+        ) or "No permission note"
+        if snapshot is None:
+            instruction_status = "no active snapshot"
+        else:
+            instruction_status = self._trust_safe_text(
+                snapshot.project_instructions_status,
+                280,
+            )
+            if not instruction_status:
+                instruction_status = (
+                    "loaded (content hidden)"
+                    if snapshot.project_instructions
+                    else "none loaded"
+                )
+        ledger = getattr(self, "permission_ledger", None)
+        records = tuple(ledger.records) if ledger is not None else ()
+        decision_count = min(len(records), 9999)
+        if records:
+            last_decision = self._trust_safe_text(records[-1].summary_text(), 180)
+            decision_text = f"{decision_count} recorded · last {last_decision}"
+        else:
+            decision_text = "0 recorded"
+        lines = (
+            f"Apply mode: {mode_label}",
+            f"Permission: {permission_note}",
+            f"Project instructions: {instruction_status}",
+            f"Permission decisions: {decision_text}",
+            f"Local command policy: {LOCAL_COMMAND_POLICY_TEXT}",
+        )
+        return self._redact_sensitive("\n".join(lines))[:TRUST_SETTINGS_MAX_CHARS]
+
+    def _set_trust_settings_disclosure(self, expanded):
+        if not hasattr(self, "trust_settings_detail_label"):
+            return
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            expanded = False
+        if self._trust_settings_is_active():
+            expanded = True
+        self._trust_settings_expanded = bool(expanded)
+        if self._trust_settings_expanded:
+            self.trust_settings_detail_label.grid()
+        else:
+            self.trust_settings_detail_label.grid_remove()
+        arrow = "▾" if self._trust_settings_expanded else "▸"
+        self.trust_settings_button.configure(text=f"{arrow} Trust & settings")
+
+    def _toggle_trust_settings_disclosure(self):
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            return
+        if self._trust_settings_is_active():
+            self._set_trust_settings_disclosure(True)
+            return
+        self._set_trust_settings_disclosure(not self._trust_settings_expanded)
+
+    def _refresh_trust_settings_surface(self):
+        if not hasattr(self, "trust_settings_detail_text"):
+            return
+        self.trust_settings_detail_text.set(self._trust_settings_metadata_text())
+        if hasattr(self, "trust_settings_button"):
+            arrow = "▾" if self._trust_settings_expanded else "▸"
+            self.trust_settings_button.configure(text=f"{arrow} Trust & settings")
+
     def _disclosure_is_active(self, section):
+        if section == "trust_settings":
+            return self._trust_settings_is_active()
         if section == "task_tools":
             return bool(
                 self._run_in_progress()
@@ -4246,6 +4376,8 @@ class CodeAgentApp(tk.Tk):
         for section in ("task_tools", "verification", "activity"):
             if self._disclosure_is_active(section) and not self._disclosure_expanded.get(section, False):
                 self._set_disclosure(section, True)
+        if self._disclosure_is_active("trust_settings") and not self._trust_settings_expanded:
+            self._set_trust_settings_disclosure(True)
 
     def _workflow_button_enabled(self, name):
         button = getattr(self, name, None)
@@ -4431,6 +4563,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_model_signal.set(self._workflow_model_text())
         self._refresh_model_queue_disclosure()
         self._refresh_activity_digest()
+        self._refresh_trust_settings_surface()
         self.workflow_next_action.set(self._workflow_next_action_text())
 
     def _button_hover(self, button, active, hint=None):
@@ -4635,6 +4768,7 @@ class CodeAgentApp(tk.Tk):
                 f"apply mode change blocked; active snapshot remains {expected_mode}"
             )
             self._update_apply_controls()
+            self._refresh_trust_settings_surface()
             return
         is_auto = self.apply_mode.get() == APPLY_MODE_AUTO
         self.auto_apply.set(is_auto)
@@ -4647,6 +4781,7 @@ class CodeAgentApp(tk.Tk):
         else:
             self.permission_note.set("Proposed edits stay in review until you apply them.")
             self.log("> apply mode: review")
+        self._refresh_trust_settings_surface()
 
     def set_task_state(self, state, detail="", log_message=None):
         if state not in TASK_STATE_LABELS:
@@ -5761,6 +5896,7 @@ class CodeAgentApp(tk.Tk):
             "permission_decision",
             accepted,
         )
+        self._refresh_trust_settings_surface()
         return accepted
 
     def _history_safe(self, value, limit=HISTORY_MAX_TEXT_CHARS):
