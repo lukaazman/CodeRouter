@@ -1,30 +1,29 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — P0 resource-scope regression closed
+Checkpoint: 2026-08-25 — Progressive-disclosure Workbench shell complete and overseer-approved
 
-The P0 resource-scope gate is green and overseer-approved. The repository is intentionally left uncommitted and unpushed. Do not start a new feature until the next bounded slice is explicitly approved.
+The P0 resource-scope gate and the progressive-disclosure Workbench shell are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
 
 ## Current checkpoint
 
-The current slice is selective review/apply:
+The current approved slice is the progressive-disclosure Workbench shell, layered over the existing selective review/apply lifecycle:
 
-- the review tree supports multi-selection;
-- `Apply selected` applies only the selected validated edits;
-- the operation remains transactional and preserves the unselected edits as pending review work;
-- Undo rolls back only the last successful selected transaction;
-- the existing full `Apply` path remains available and review-gated.
+- History, Manual verification, Activity, and Task tools are collapsed by default;
+- project/task controls, prompt, compact summary/status, review state, changed-file list/diff, and primary review actions remain visible;
+- the Task tools disclosure contains plan, read-only inspect, verification request, and Executor -> Overseer handoff controls;
+- active plan, inspect, verification, running work, and ready/active handoff state auto-opens the relevant disclosure;
+- active permission actions cannot be hidden, and disclosure toggles preserve existing widgets, text, selection, callbacks, and state through non-destructive grid visibility changes;
+- selective review/apply remains multi-file, transactional, review-gated, and preserves unselected edits as pending work;
+- partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal, while full Apply Undo remains IDLE.
 
 The broader implementation already includes the dark Workbench shell, free-model discovery and fallback queue, capability-aware model selection, streaming timeline, project instructions, plan approval, safe inspect/verify loops, executor-to-overseer evidence handoff, continuation gates, permission ledger, task export, session lineage, command palette, and bounded Undo.
 
-## Verification state at pause
+## Current verified evidence
 
-- Post-lifecycle `python -m py_compile .\\codex_free_wrapper.py`: passed.
-- Post-lifecycle full suite: green in three consecutive runs, each 216 tests OK with no unexpected warnings.
-- Focused selective/apply/undo/proposal/history tests: passed after lifecycle closeout.
-- Former task-history regression `test_plan_review_apply_reject_error_reset_and_close_are_recorded`: passed (`Ran 1 test ... OK`).
-- Tk smoke: passed.
-- Application init/update/destroy smoke: passed with `APP_SMOKE_OK idle False False False extended disabled disabled` and `APP_DESTROY_OK`.
-- Direct Tk marker: `TK_SMOKE_OK`.
+- Focused progressive-disclosure and Overseer handoff/worker checks: `Ran 18 tests ... OK`.
+- Full suite: three consecutive runs, each `Ran 221 tests ... OK`, with no unexpected warnings.
+- `python -m py_compile .\\codex_free_wrapper.py`: exit `0`.
+- Tk/app smoke: `APP_SMOKE_OK idle {'history': False, 'verification': False, 'activity': False, 'task_tools': False} normal disabled` and `APP_DESTROY_OK True True`.
 - `git diff --check`: exit `0`; only standard LF-to-CRLF notices.
 
 ## P0 resource-scope fix
@@ -42,19 +41,31 @@ The former global `_undo_has_active_resources()` check was replaced with the sam
 
 ## Current continuation status
 
-The selective-apply lifecycle closeout is complete and overseer-approved: partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. Verification-only closeout is complete. Freeze selective Apply/Undo and do not open another implementation slice until a new bounded task is explicitly assigned.
+The selective-apply lifecycle closeout and progressive-disclosure shell are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The disclosure layer is UI-only and preserves all existing safety and lifecycle boundaries.
+
+## Next bounded roadmap
+
+Proceed autonomously in this order, one bounded slice at a time:
+
+1. Compact workflow rail.
+2. Model/queue disclosure.
+3. Evidence-first Activity presentation.
+4. Review inspector refinement.
+5. Settings/trust surfaces.
+
+Each slice must preserve the current primary workflow and may not expand into a new provider, command, persistence, or permission capability unless explicitly assigned.
 
 ## Worker / executor instructions
 
 On continuation, the worker must:
 
 1. Read this file and inspect the current uncommitted diff before editing.
-2. Locate the existing lifecycle/resource lineage helpers, proposal guards, selected-apply path, and Undo path. Reuse those helpers rather than inventing a second run-id system.
-3. Make only the bounded P0 scope fix and its regression test. Do not add a new feature, redesign unrelated UI, commit, or push.
-4. Run the focused failing history test first, then the selective/apply/undo/proposal tests.
-5. Run the full suite three consecutive times. Every run must pass with no unexpected warnings.
-6. Run compile, Tk smoke, application init/update/destroy smoke, and `git diff --check`.
-7. Return a concise handoff containing changed files, exact commands and results, remaining risks, and the single next action. A green compile alone is not sufficient evidence.
+2. Take exactly one item from the Next bounded roadmap and keep the patch limited to that slice and its focused regression tests.
+3. Reuse existing UI, lifecycle, lineage, resource, permission, history, proposal, apply/undo, worker, and Overseer helpers; do not invent a second run-id system or weaken any guard.
+4. Preserve review-first behavior, plan/inspect/verification gates, root/path safety, cancellation, stale-event filtering, redaction, transactional rollback, and no-Tk-from-worker behavior.
+5. Run the focused slice tests, the full suite, compile, Tk/app smoke, and `git diff --check`; report exact results and any provider/OS limitation.
+6. Return a concise handoff containing changed files, evidence, remaining risks, and one next bounded action.
+7. Do not commit or push. Only the main task may commit/push after overseer approval.
 
 Required commands from the repository root:
 
@@ -72,28 +83,25 @@ The existing Tk and application smoke commands should be reused from the test/de
 
 ## Overseer instructions
 
-The overseer resumes as a reviewer of this exact checkpoint, not as a feature planner. It must:
+The overseer reviews one bounded roadmap slice at a time and must:
 
 1. Review the worker diff before accepting it.
-2. Confirm the P0 regression is fixed without weakening review-first behavior, explicit permission decisions, stale-event filtering, rollback, or process cleanup.
-3. Confirm selective Apply keeps unselected edits pending, failed writes roll back, rejected confirmation performs no write, and selected-only Undo remains bounded.
-4. Confirm the new stale-handle regression and the existing task-history regression both pass.
-5. Require the three consecutive full-suite passes plus compile, Tk/app smoke, and diff-check before approval.
-6. Return `approved` only when all gates are green. Otherwise return `needs_attention` with one concrete bounded correction for the worker.
-
-After approval, the only permitted next slice is a small selective-apply lifecycle closeout/review. The overseer must not open another feature queue until the P0 gate is green and the worker has supplied evidence.
+2. Confirm the slice changes only its approved surface and preserves review-first behavior, explicit permission decisions, stale-event filtering, cancellation, rollback, resource cleanup, and worker/Overseer isolation.
+3. Confirm focused tests, the full suite, compile, Tk/app smoke, and diff-check provide exact evidence.
+4. Return `approved` only when all gates are green. Otherwise return `needs_attention` with one concrete bounded correction for the worker.
+5. Do not expand the roadmap, add a new capability, or authorize unrelated work in the same slice.
+6. Commit/push decisions belong only to the main task after approval; worker and overseer do not publish changes.
 
 ## Continuation protocol
 
 Every worker cycle follows this order:
 
-`read handoff -> inspect diff -> one bounded change -> focused tests -> full gates -> overseer review -> next bounded slice`
+`read handoff -> inspect diff -> one bounded roadmap slice -> focused tests -> full gates -> overseer review -> next bounded slice`
 
-The user can continue by sending the next instruction to the main task; the main task routes implementation work to the worker and evidence/review work to the overseer. Until the P0 gate passes, the correct next instruction is only to finish and verify the resource-scope regression.
+The main task routes implementation work to the worker and evidence/review work to the overseer. After approval, the next cycle starts with the next roadmap item and does not reopen completed slices.
 
 ## Known boundaries
 
 - No live provider/OpenRouter runtime claim is required for this checkpoint; mocked/local verification is sufficient.
-- No commit or push has been performed.
-- The current working tree contains uncommitted CodeRouter changes; preserve them and do not reset or discard unrelated work.
+- Publication is controlled by the main task after approval; preserve existing changes and never reset or discard unrelated work.
 - Do not include raw project files, raw diffs, or stream bodies in task history, handoffs, exports, or permission metadata.

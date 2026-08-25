@@ -3328,6 +3328,15 @@ class CodeAgentApp(tk.Tk):
         self.animated_buttons = []
         self._poll_after_id = None
         self._command_palette_destroyed = False
+        self._disclosure_expanded = {
+            "history": False,
+            "verification": False,
+            "activity": False,
+            "task_tools": False,
+        }
+        self._disclosure_buttons = {}
+        self._disclosure_widgets = {}
+        self._disclosure_containers = {}
 
         self._build_styles()
         self._build_ui()
@@ -3443,7 +3452,7 @@ class CodeAgentApp(tk.Tk):
         sidebar = self._panel(shell)
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, SPACING["gutter"]))
         sidebar.columnconfigure(0, weight=1)
-        sidebar.rowconfigure(22, weight=1)
+        sidebar.rowconfigure(22, weight=0)
         ttk.Label(sidebar, text="WORKSPACE", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         self.project_button = self._button(sidebar, "Open project folder", self.choose_folder, "Secondary.TButton", "Choose the folder the agent can edit")
         self.project_button.grid(row=1, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
@@ -3477,7 +3486,13 @@ class CodeAgentApp(tk.Tk):
         tk.Label(stats, textvariable=self.char_count, bg=PALETTE["surface_alt"], fg=PALETTE["text_muted"], font=FONTS["body"]).grid(row=1, column=0, sticky="w", pady=(3, 0))
         tk.Label(stats, textvariable=self.pending_count, bg=PALETTE["surface_alt"], fg=PALETTE["warning"], font=FONTS["body"]).grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Separator(sidebar).grid(row=19, column=0, sticky="ew", pady=(14, 12))
-        ttk.Label(sidebar, text="HISTORY", style="Section.TLabel").grid(row=20, column=0, sticky="w")
+        self.history_disclosure_button = self._disclosure_button(
+            sidebar,
+            "history",
+            "▸ History",
+            "Show or hide saved task history",
+        )
+        self.history_disclosure_button.grid(row=20, column=0, sticky="ew")
         self.history_list = tk.Listbox(
             sidebar,
             height=5,
@@ -3538,9 +3553,16 @@ class CodeAgentApp(tk.Tk):
             "Prefill metadata only; a fresh plan is still required",
         )
         self.history_inspect_button.grid(row=23, column=0, sticky="ew", pady=(0, 4))
-        ttk.Label(sidebar, textvariable=self.history_status, style="PanelMuted.TLabel", wraplength=235).grid(row=24, column=0, sticky="ew")
+        self.history_status_label = ttk.Label(sidebar, textvariable=self.history_status, style="PanelMuted.TLabel", wraplength=235)
+        self.history_status_label.grid(row=24, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=25, column=0, sticky="ew", pady=(14, 12))
-        ttk.Label(sidebar, text="VERIFY · MANUAL", style="Section.TLabel").grid(row=26, column=0, sticky="w")
+        self.verification_disclosure_button = self._disclosure_button(
+            sidebar,
+            "verification",
+            "▸ Manual verification",
+            "Show or hide the explicit local verification control",
+        )
+        self.verification_disclosure_button.grid(row=26, column=0, sticky="ew")
         self.verification_command_entry = ttk.Entry(
             sidebar,
             textvariable=self.verification_command,
@@ -3567,7 +3589,8 @@ class CodeAgentApp(tk.Tk):
             "Request bounded process termination",
         )
         self.verification_cancel_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        ttk.Label(sidebar, textvariable=self.verification_status, style="PanelMuted.TLabel", wraplength=235).grid(row=29, column=0, sticky="ew")
+        self.verification_status_label = ttk.Label(sidebar, textvariable=self.verification_status, style="PanelMuted.TLabel", wraplength=235)
+        self.verification_status_label.grid(row=29, column=0, sticky="ew")
 
         main = ttk.PanedWindow(shell, orient=tk.HORIZONTAL)
         main.grid(row=0, column=1, columnspan=2, sticky="nsew")
@@ -3576,7 +3599,7 @@ class CodeAgentApp(tk.Tk):
         center.columnconfigure(0, weight=1)
         center.rowconfigure(2, weight=3)
         center.rowconfigure(5, weight=1)
-        center.rowconfigure(8, weight=2)
+        center.rowconfigure(8, weight=0)
         ttk.Label(center, text="WORKBENCH", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(center, text="Prompt", style="PanelTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(SPACING["section"], 0))
         self.instructions = scrolledtext.ScrolledText(center, height=8, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["accent"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
@@ -3589,7 +3612,13 @@ class CodeAgentApp(tk.Tk):
         self.summary.insert("1.0", "No active change yet.")
         self.summary.configure(state=tk.DISABLED)
 
-        ttk.Label(center, text="Activity log", style="PanelTitle.TLabel").grid(row=6, column=0, sticky="w")
+        self.activity_disclosure_button = self._disclosure_button(
+            center,
+            "activity",
+            "▸ Activity",
+            "Show or hide the append-only activity log",
+        )
+        self.activity_disclosure_button.grid(row=6, column=0, sticky="ew")
         self.activity = scrolledtext.ScrolledText(center, height=9, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["terminal"], fg=PALETTE["text_muted"], insertbackground=PALETTE["text"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.activity.grid(row=8, column=0, sticky="nsew", pady=(8, 0))
         ttk.Label(center, textvariable=self.model_status, style="PanelMuted.TLabel").grid(row=7, column=0, sticky="w", pady=(0, 2))
@@ -3597,15 +3626,22 @@ class CodeAgentApp(tk.Tk):
 
         right = self._panel(main)
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(3, weight=1)
+        right.rowconfigure(4, weight=1)
         ttk.Label(right, text="REVIEW INSPECTOR", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         state_row = tk.Frame(right, bg=PALETTE["surface"])
         state_row.grid(row=1, column=0, sticky="ew", pady=(SPACING["section"], 8))
         self.review_marker = tk.Label(state_row, text="●", bg=PALETTE["surface"], fg=TASK_STATE_COLORS[TASK_STATE_IDLE], font=("Segoe UI", 10))
         self.review_marker.pack(side=tk.LEFT, padx=(0, 7))
         ttk.Label(state_row, textvariable=self.review_state, style="Review.TLabel").pack(side=tk.LEFT)
+        self.task_tools_disclosure_button = self._disclosure_button(
+            right,
+            "task_tools",
+            "▸ Task tools",
+            "Show or hide plan, inspect, verification, and overseer tools",
+        )
+        self.task_tools_disclosure_button.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         plan_panel = tk.Frame(right, bg=PALETTE["surface"])
-        plan_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        plan_panel.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(plan_panel, text="PLAN", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.plan_preview = scrolledtext.ScrolledText(
             plan_panel,
@@ -3624,7 +3660,7 @@ class CodeAgentApp(tk.Tk):
         self.plan_preview.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.plan_preview.configure(state=tk.DISABLED)
         diff_pane = ttk.PanedWindow(right, orient=tk.VERTICAL)
-        diff_pane.grid(row=3, column=0, sticky="nsew", pady=(0, 12))
+        diff_pane.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
 
         list_panel = tk.Frame(diff_pane, bg=PALETTE["surface"])
         list_panel.columnconfigure(0, weight=1)
@@ -3650,7 +3686,7 @@ class CodeAgentApp(tk.Tk):
         diff_pane.add(diff_panel, weight=2)
 
         plan_actions = tk.Frame(right, bg=PALETTE["surface"])
-        plan_actions.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        plan_actions.grid(row=5, column=0, sticky="ew", pady=(0, 8))
         plan_actions.columnconfigure(0, weight=1)
         plan_actions.columnconfigure(1, weight=1)
         plan_actions.columnconfigure(2, weight=1)
@@ -3665,7 +3701,7 @@ class CodeAgentApp(tk.Tk):
         self.cancel_plan_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
         inspect_panel = tk.Frame(right, bg=PALETTE["surface"])
-        inspect_panel.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        inspect_panel.grid(row=6, column=0, sticky="ew", pady=(0, 10))
         inspect_panel.columnconfigure(0, weight=1)
         ttk.Label(inspect_panel, text="READ-ONLY INSPECT REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.inspect_preview = scrolledtext.ScrolledText(
@@ -3706,7 +3742,7 @@ class CodeAgentApp(tk.Tk):
         self.deny_inspect_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         verify_panel = tk.Frame(right, bg=PALETTE["surface"])
-        verify_panel.grid(row=6, column=0, sticky="ew", pady=(0, 10))
+        verify_panel.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         verify_panel.columnconfigure(0, weight=1)
         ttk.Label(verify_panel, text="VERIFICATION REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.verification_request_preview = scrolledtext.ScrolledText(
@@ -3747,7 +3783,7 @@ class CodeAgentApp(tk.Tk):
         self.deny_verification_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         review_actions = tk.Frame(right, bg=PALETTE["surface"])
-        review_actions.grid(row=7, column=0, sticky="ew")
+        review_actions.grid(row=8, column=0, sticky="ew")
         for column in range(5):
             review_actions.columnconfigure(column, weight=1)
         self.apply_button = self._button(review_actions, "Apply reviewed changes", self.apply_pending, "Primary.TButton", "Write the reviewed changes to disk")
@@ -3786,7 +3822,7 @@ class CodeAgentApp(tk.Tk):
         self.export_report_button.grid(row=0, column=4, sticky="ew", padx=(5, 0))
 
         handoff_panel = tk.Frame(right, bg=PALETTE["surface"])
-        handoff_panel.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        handoff_panel.grid(row=9, column=0, sticky="ew", pady=(12, 0))
         handoff_panel.columnconfigure(0, weight=1)
         ttk.Label(handoff_panel, text="EXECUTOR → OVERSEER", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.handoff_preview = scrolledtext.ScrolledText(
@@ -3845,6 +3881,40 @@ class CodeAgentApp(tk.Tk):
             "Request bounded overseer cancellation",
         )
         self.cancel_overseer_button.grid(row=0, column=3, sticky="ew", padx=(4, 0))
+
+        self._disclosure_widgets.update(
+            {
+                "history": (
+                    history_list_frame,
+                    self.history_detail,
+                    self.history_inspect_button,
+                    self.history_status_label,
+                ),
+                "verification": (
+                    self.verification_command_entry,
+                    verification_actions,
+                    self.verification_status_label,
+                ),
+                "activity": (self.activity,),
+                "task_tools": (
+                    plan_panel,
+                    plan_actions,
+                    inspect_panel,
+                    verify_panel,
+                    handoff_panel,
+                ),
+            }
+        )
+        self._disclosure_containers.update(
+            {
+                "history": sidebar,
+                "verification": sidebar,
+                "activity": center,
+                "task_tools": right,
+            }
+        )
+        for disclosure in ("history", "verification", "activity", "task_tools"):
+            self._set_disclosure(disclosure, False)
         main.add(right, weight=6)
 
         self.bind_all("<Control-Return>", self._on_run_shortcut)
@@ -3868,6 +3938,89 @@ class CodeAgentApp(tk.Tk):
         button.bind("<Enter>", lambda _event, b=button, h=hint: self._button_hover(b, True, h))
         button.bind("<Leave>", lambda _event, b=button: self._button_hover(b, False, None))
         return button
+
+    def _disclosure_button(self, parent, section, label, hint):
+        button = self._button(
+            parent,
+            label,
+            lambda name=section: self._toggle_disclosure(name),
+            "Ghost.TButton",
+            hint,
+        )
+        self._disclosure_buttons[section] = button
+        for sequence in ("<Return>", "<space>"):
+            button.bind(
+                sequence,
+                lambda _event, name=section: (self._toggle_disclosure(name), "break")[1],
+            )
+        return button
+
+    def _disclosure_is_active(self, section):
+        if section == "task_tools":
+            return bool(
+                self._run_in_progress()
+                or getattr(self, "pending_plan", None)
+                or getattr(self, "inspect_request", None)
+                or getattr(self, "verification_request", None)
+                or self._verification_is_active()
+                or self._overseer_is_active()
+                or getattr(self, "overseer_review", None) is not None
+                or getattr(self, "_overseer_prepared_next_step", None) is not None
+                or self._current_report_handoff() is not None
+            )
+        if section == "verification":
+            return bool(
+                getattr(self, "verification_request", None)
+                or self._verification_is_active()
+            )
+        if section == "activity":
+            return bool(
+                self._run_in_progress()
+                or getattr(self, "pending_plan", None)
+                or getattr(self, "inspect_request", None)
+                or getattr(self, "verification_request", None)
+                or self._verification_is_active()
+                or self._overseer_is_active()
+            )
+        return False
+
+    def _set_disclosure(self, section, expanded):
+        widgets = self._disclosure_widgets.get(section, ())
+        expanded = bool(expanded)
+        self._disclosure_expanded[section] = expanded
+        for widget in widgets:
+            if expanded:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        button = self._disclosure_buttons.get(section)
+        if button is not None:
+            label = {
+                "history": "History",
+                "verification": "Manual verification",
+                "activity": "Activity",
+                "task_tools": "Task tools",
+            }.get(section, section.title())
+            arrow = "▾" if expanded else "▸"
+            button.configure(text=f"{arrow} {label}")
+        container = self._disclosure_containers.get(section)
+        if section == "history" and container is not None:
+            container.rowconfigure(22, weight=1 if expanded else 0)
+        elif section == "activity" and container is not None:
+            container.rowconfigure(8, weight=2 if expanded else 0)
+
+    def _toggle_disclosure(self, section):
+        if section not in self._disclosure_widgets:
+            return
+        if self._disclosure_is_active(section):
+            self._set_disclosure(section, True)
+            return
+        self._set_disclosure(section, not self._disclosure_expanded.get(section, False))
+
+    def _auto_open_disclosures(self):
+        for section in ("task_tools", "verification", "activity"):
+            if self._disclosure_is_active(section) and not self._disclosure_expanded.get(section, False):
+                self._set_disclosure(section, True)
 
     def _button_hover(self, button, active, hint=None):
         if str(button.cget("state")) == tk.DISABLED:
@@ -4247,6 +4400,7 @@ class CodeAgentApp(tk.Tk):
 
     def _update_lifecycle_controls(self):
         busy = self._run_in_progress()
+        self._auto_open_disclosures()
         control_state = tk.DISABLED if busy else tk.NORMAL
         for name in (
             "run_button",
