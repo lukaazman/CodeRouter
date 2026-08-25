@@ -1,15 +1,16 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — Compact workflow rail + CodeRouter window icon complete and overseer-approved
+Checkpoint: 2026-08-25 — Model/queue disclosure complete and overseer-approved
 
-The P0 resource-scope gate and the combined compact workflow-rail + CodeRouter window-icon slice are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
+The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, and model/queue disclosure slice are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
 
 ## Current checkpoint
 
-The current approved slice is the compact workflow rail and bundled CodeRouter window icon, layered over the existing progressive-disclosure Workbench and selective review/apply lifecycle:
+The current approved slice is the model/queue disclosure, layered over the compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
 
 - the compact single-line rail exposes `PHASE`, `MODEL-QUEUE`, and `NEXT` using the existing truthful task state, model status/health/fallback, and button/lifecycle gates;
 - rail values do not invent model identity and the next-action text follows the existing user permissions and visible controls;
+- `MODEL / QUEUE` is collapsed by default and expands on click, Return, or Space to show bounded redacted existing `model_status`, the deterministic free fallback queue, health metadata, and the active-run signal without changing model selection or provider logic;
 - History, Manual verification, Activity, and Task tools are collapsed by default;
 - project/task controls, prompt, compact summary/status, review state, changed-file list/diff, and primary review actions remain visible;
 - the Task tools disclosure contains plan, read-only inspect, verification request, and Executor -> Overseer handoff controls;
@@ -25,10 +26,10 @@ The broader implementation already includes the dark Workbench shell, free-model
 
 ## Current verified evidence
 
-- Focused workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 17 tests ... OK`.
-- Full suite: three consecutive runs, each `Ran 226 tests ... OK`, with no unexpected warnings.
+- Focused model/queue disclosure, workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 22 tests ... OK`.
+- Full suite: three consecutive runs, each `Ran 231 tests ... OK`, with no unexpected warnings.
 - `python -m py_compile .\\codex_free_wrapper.py`: exit `0`.
-- Tk/app smoke: `APP_SMOKE_OK idle True 32 32 IDLE Choose a project folder` and `APP_DESTROY_OK True True`.
+- Tk/app smoke: `APP_SMOKE_OK idle False True '\\u25b8 MODEL / QUEUE' True; MODEL_DISCLOSURE_OPEN True True True; APP_DESTROY_OK True True`.
 - Asset verification: `assets/code-router.svg` hash matches the Portfolio source byte-for-byte.
 - `git diff --check`: exit `0`; only standard LF-to-CRLF notices.
 
@@ -47,16 +48,15 @@ The former global `_undo_has_active_resources()` check was replaced with the sam
 
 ## Current continuation status
 
-The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, and CodeRouter window icon are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The rail is UI-only, the bundled icon has no runtime Portfolio-path dependency, and both preserve all existing safety, worker, overseer, and lifecycle boundaries.
+The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, and model/queue disclosure are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The rail and disclosure are UI-only metadata views, the bundled icon has no runtime Portfolio-path dependency, and all preserve existing safety, worker, overseer, and lifecycle boundaries.
 
 ## Next bounded roadmap
 
 Proceed autonomously in this order, one bounded slice at a time:
 
-1. Model/queue disclosure.
-2. Evidence-first Activity presentation.
-3. Review inspector refinement.
-4. Settings/trust surfaces.
+1. Evidence-first Activity presentation.
+2. Review inspector refinement.
+3. Settings/trust surfaces.
 
 Each slice must preserve the current primary workflow and may not expand into a new provider, command, persistence, or permission capability unless explicitly assigned.
 

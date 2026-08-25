@@ -131,6 +131,8 @@ LOCAL_COMMANDS = ("/status", "/model", "/permissions", "/review")
 LOCAL_COMMAND_MAX_RESULT_CHARS = 720
 LOCAL_COMMAND_MAX_ITEMS = 6
 LOCAL_COMMAND_HINT = "Ctrl+K commands · Ctrl+Enter run · Esc reject pending"
+MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
+MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 
 TASK_STATE_IDLE = "idle"
 TASK_STATE_COLLECTING = "collecting"
@@ -3268,7 +3270,10 @@ class CodeAgentApp(tk.Tk):
         self.model_status = tk.StringVar(value="Free model fallback")
         self.workflow_phase = tk.StringVar(value=TASK_STATE_LABELS[TASK_STATE_IDLE])
         self.workflow_model_signal = tk.StringVar(value="Free model fallback")
+        self.workflow_model_disclosure_label = tk.StringVar(value="▸ MODEL / QUEUE")
+        self.workflow_model_detail_text = tk.StringVar(value="")
         self.workflow_next_action = tk.StringVar(value="Choose a project folder")
+        self._model_queue_expanded = False
         self.model_health = ModelHealthTracker()
         self.model_health_tracker = self.model_health
         configured_apply_mode = self.config_data.get("apply_mode", APPLY_MODE_REVIEW)
@@ -3556,13 +3561,31 @@ class CodeAgentApp(tk.Tk):
         )
         self.workflow_phase_value.grid(row=0, column=1, sticky="w", padx=(6, 18))
         ttk.Separator(self.workflow_rail, orient=tk.VERTICAL).grid(row=0, column=2, sticky="ns", padx=(0, 18))
-        tk.Label(
+        self.workflow_model_disclosure_button = tk.Button(
             self.workflow_rail,
-            text="MODEL / QUEUE",
+            textvariable=self.workflow_model_disclosure_label,
+            command=self._toggle_model_queue_disclosure,
             bg=PALETTE["surface_alt"],
             fg=PALETTE["text_subtle"],
             font=FONTS["section"],
-        ).grid(row=0, column=3, sticky="w")
+            activebackground=PALETTE["border_strong"],
+            activeforeground=PALETTE["text"],
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=PALETTE["surface_alt"],
+            highlightcolor=PALETTE["focus"],
+            padx=0,
+            pady=1,
+            takefocus=True,
+            anchor="w",
+        )
+        self.workflow_model_disclosure_button.grid(row=0, column=3, sticky="w")
+        for sequence in ("<Return>", "<space>"):
+            self.workflow_model_disclosure_button.bind(
+                sequence,
+                lambda _event: (self._toggle_model_queue_disclosure(), "break")[1],
+            )
         self.workflow_model_value = tk.Label(
             self.workflow_rail,
             textvariable=self.workflow_model_signal,
@@ -3572,6 +3595,25 @@ class CodeAgentApp(tk.Tk):
             anchor="w",
         )
         self.workflow_model_value.grid(row=0, column=4, sticky="ew", padx=(6, 18))
+        self.workflow_model_detail = tk.Label(
+            self.workflow_rail,
+            textvariable=self.workflow_model_detail_text,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_muted"],
+            font=FONTS["mono_small"],
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=720,
+        )
+        self.workflow_model_detail.grid(
+            row=1,
+            column=3,
+            columnspan=5,
+            sticky="ew",
+            padx=(0, 18),
+            pady=(4, 0),
+        )
+        self.workflow_model_detail.grid_remove()
         ttk.Separator(self.workflow_rail, orient=tk.VERTICAL).grid(row=0, column=5, sticky="ns", padx=(0, 18))
         tk.Label(
             self.workflow_rail,
@@ -4194,6 +4236,57 @@ class CodeAgentApp(tk.Tk):
         safe = self._redact_sensitive(status)
         return " ".join(safe.split())[:180]
 
+    def _model_queue_metadata_text(self):
+        status = " ".join(str(self.model_status.get() or "").split())
+        status = self._redact_sensitive(status) or "No model status"
+        fallback_queue = " → ".join(str(model) for model in MODEL_FALLBACKS)
+        records = tuple(self.model_health.records)[-MODEL_QUEUE_DISCLOSURE_MAX_RECORDS:]
+        if records:
+            health_signal = " | ".join(
+                self._redact_sensitive(record.status_text()) for record in records
+            )
+        else:
+            health_signal = "none recorded"
+        run_active = bool(
+            self._run_in_progress()
+            or (
+                getattr(self, "lifecycle", None) is not None
+                and self.lifecycle.active_run_id
+                and not self.lifecycle.closed
+            )
+        )
+        run_signal = "active" if run_active else "idle"
+        detail = (
+            f"Status: {status}\n"
+            f"Fallback queue: {fallback_queue}\n"
+            f"Health: {health_signal}\n"
+            f"Run: {run_signal}"
+        )
+        return self._redact_sensitive(detail)[:MODEL_QUEUE_DISCLOSURE_MAX_CHARS]
+
+    def _set_model_queue_disclosure(self, expanded):
+        if not hasattr(self, "workflow_model_detail"):
+            return
+        self._model_queue_expanded = bool(expanded)
+        if self._model_queue_expanded:
+            self.workflow_model_detail.grid()
+        else:
+            self.workflow_model_detail.grid_remove()
+        arrow = "▾" if self._model_queue_expanded else "▸"
+        self.workflow_model_disclosure_label.set(f"{arrow} MODEL / QUEUE")
+
+    def _toggle_model_queue_disclosure(self):
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            return
+        self._set_model_queue_disclosure(not self._model_queue_expanded)
+
+    def _refresh_model_queue_disclosure(self):
+        if not hasattr(self, "workflow_model_detail_text"):
+            return
+        self.workflow_model_detail_text.set(self._model_queue_metadata_text())
+        arrow = "▾" if self._model_queue_expanded else "▸"
+        self.workflow_model_disclosure_label.set(f"{arrow} MODEL / QUEUE")
+
     def _workflow_next_action_text(self):
         if self.lifecycle.closed:
             return "Closed"
@@ -4228,6 +4321,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_phase.set(TASK_STATE_LABELS[state])
         self.workflow_phase_value.configure(fg=TASK_STATE_COLORS[state])
         self.workflow_model_signal.set(self._workflow_model_text())
+        self._refresh_model_queue_disclosure()
         self.workflow_next_action.set(self._workflow_next_action_text())
 
     def _button_hover(self, button, active, hint=None):
