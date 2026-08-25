@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import tkinter as tk
 import unittest
@@ -138,15 +139,14 @@ class PermissionLedgerTests(unittest.TestCase):
                 self.assertNotIn(forbidden, serialized.casefold())
 
 
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")
 class PermissionLedgerUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

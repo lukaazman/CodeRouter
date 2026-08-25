@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import tempfile
 import threading
@@ -226,15 +227,14 @@ class WorkerCancellationTests(unittest.TestCase):
             self.assertTrue(events.empty())
 
 
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")
 class AppCancellationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

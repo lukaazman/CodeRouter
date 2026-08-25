@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import codex_free_wrapper as wrapper
+from tests.ui_test_helpers import build_hidden_app
 
 
 class ApplyUndoTransactionTests(unittest.TestCase):
@@ -105,7 +106,7 @@ class ApplyUndoTransactionTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")
 class ApplyUndoUiTests(unittest.TestCase):
     def make_app(self, root):
-        return wrapper.CodeAgentApp(history_path=Path(root) / "history.json")
+        return build_hidden_app(wrapper, history_path=Path(root) / "history.json")
 
     def prepare_applied_app(self, root, edits=None, run_id="ui-undo"):
         root = Path(root)
@@ -157,6 +158,39 @@ class ApplyUndoUiTests(unittest.TestCase):
                 self.assertIsNone(app.pending_proposal)
             finally:
                 app.destroy()
+
+    def test_new_run_activation_clears_old_undo_before_new_proposal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            app, target, _proposal = self.prepare_applied_app(root, run_id="old-run")
+            try:
+                self.assertIsNotNone(app._last_apply_undo)
+                new_snapshot = wrapper.create_run_snapshot(
+                    root,
+                    (),
+                    (),
+                    wrapper.APPLY_MODE_REVIEW,
+                    run_id="new-run",
+                    request_text="new task",
+                )
+                app._activate_run(new_snapshot)
+                app.run_snapshot = new_snapshot
+                app.set_task_state(wrapper.TASK_STATE_REVIEW, "New proposal ready")
+                self.assertIsNone(app._last_apply_undo)
+
+                new_proposal = wrapper.create_pending_proposal(
+                    new_snapshot,
+                    [{"path": "new.txt", "content": "new content"}],
+                )
+                app._set_pending_proposal(new_proposal)
+                self.assertIs(app.pending_proposal, new_proposal)
+                self.assertFalse(app.undo_last_apply())
+                self.assertEqual(app.task_state, wrapper.TASK_STATE_REVIEW)
+                self.assertEqual(target.read_text(encoding="utf-8"), "after")
+                self.assertFalse((root / "new.txt").exists())
+            finally:
+                if not app.lifecycle.closed:
+                    app.on_close()
 
     def test_confirmation_rejection_and_active_worker_do_not_write(self):
         with tempfile.TemporaryDirectory() as temp_dir:

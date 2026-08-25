@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 import tkinter as tk
@@ -12,11 +13,9 @@ class WorkflowRailUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.project_dir = tempfile.TemporaryDirectory()
@@ -88,6 +87,10 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.assertIn('fill="#080808"', svg)
         self.assertIn('stroke="#f3f3f3"', svg)
         self.assertNotIn("Portfolio", str(source))
+        self.assertEqual(
+            hashlib.sha256(source.read_bytes()).hexdigest().upper(),
+            "9F670D8873B55F59CABDA20F3DCE39BC61A64F87B6F6F2140F6EAB847E7ECBC3",
+        )
         self.assertEqual(self.app._window_icon_source, source)
         if self.app._window_icon_image is None:
             self.assertFalse(self.app._window_icon_applied)
@@ -95,6 +98,30 @@ class WorkflowRailUiTests(unittest.TestCase):
             self.assertTrue(self.app._window_icon_applied)
             self.assertEqual(self.app._window_icon_image.width(), wrapper.WINDOW_ICON_SIZE)
             self.assertEqual(self.app._window_icon_image.height(), wrapper.WINDOW_ICON_SIZE)
+
+    def test_icon_rounded_corners_are_transparent_when_supported(self):
+        image = self.app._window_icon_image
+        transparency_get = getattr(image, "transparency_get", None)
+        if image is None or not callable(transparency_get):
+            self.skipTest("Tk PhotoImage transparency inspection unavailable")
+        try:
+            corner_transparent = image.transparency_get(0, 0)
+            center_transparent = image.transparency_get(
+                wrapper.WINDOW_ICON_SIZE // 2,
+                wrapper.WINDOW_ICON_SIZE // 2,
+            )
+        except (AttributeError, tk.TclError, TypeError):
+            self.skipTest("Tk PhotoImage transparency inspection unavailable")
+        self.assertTrue(corner_transparent)
+        self.assertFalse(center_transparent)
+
+    def test_toolbar_logo_is_visible_and_retains_bundled_icon_image(self):
+        logo = self.app.toolbar_logo_label
+        self.assertNotEqual(logo.grid_info(), {})
+        self.assertIsNotNone(self.app._window_icon_image)
+        self.assertIs(logo.image, self.app._window_icon_image)
+        self.assertEqual(logo.cget("image"), str(self.app._window_icon_image))
+        self.assertEqual(self.app._window_icon_source, Path(wrapper.WINDOW_ICON_SOURCE))
 
     def test_state_and_existing_gate_changes_update_phase_and_next_action(self):
         snapshot = self.activate_snapshot()

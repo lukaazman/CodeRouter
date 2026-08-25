@@ -89,11 +89,9 @@ class SelectiveApplyUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.project_dir = tempfile.TemporaryDirectory()

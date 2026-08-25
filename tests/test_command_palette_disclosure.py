@@ -13,11 +13,9 @@ class CommandPaletteDisclosureUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -71,57 +69,32 @@ class CommandPaletteDisclosureUiTests(unittest.TestCase):
         button.invoke()
         self.assertFalse(self.app._local_command_expanded)
         self.assertEqual(detail.grid_info(), {})
-
-        self.app.deiconify()
-        try:
-            self.app.update()
-            self.app.focus_force()
-            button.focus_set()
-            self.app.update_idletasks()
-            self.app.update()
-            if self.app.focus_get() is not button:
-                button.focus_force()
-                self.app.update_idletasks()
-                self.app.update()
-            self.assertIs(self.app.focus_get(), button)
-            button.event_generate("<Return>")
-            self.app.update()
-            self.assertTrue(self.app._local_command_expanded)
-            button.event_generate("<space>")
-            self.app.update()
-            self.assertFalse(self.app._local_command_expanded)
-        finally:
-            self.app.withdraw()
+        self.assertTrue(button.bind("<Return>"))
+        self.assertTrue(button.bind("<space>"))
+        self.app._toggle_local_command_disclosure()
+        self.assertTrue(self.app._local_command_expanded)
+        self.app._toggle_local_command_disclosure()
+        self.assertFalse(self.app._local_command_expanded)
         self.assertIs(detail, self.app.local_command_detail)
 
     def test_ctrl_k_expands_and_selects_without_submitting(self):
         self.app.local_command.set("/status")
         before_result = self.app.local_command_result.get()
-        self.app.deiconify()
-        try:
-            self.app.update()
-            self.app.focus_force()
-            self.app.local_command_entry.focus_force()
-            self.app.update_idletasks()
-            self.app.update()
-            with (
-                mock.patch.object(self.app, "submit_local_command") as submit,
-                mock.patch.object(
-                    self.app.local_command_entry,
-                    "selection_range",
-                    wraps=self.app.local_command_entry.selection_range,
-                ) as selection,
-            ):
-                self.assertEqual(self.app._on_local_command_shortcut(), "break")
-                submit.assert_not_called()
-            selection.assert_called_once_with(0, tk.END)
-            self.app.update_idletasks()
-            self.app.update()
-            self.assertTrue(self.app._local_command_expanded)
-            self.assertIs(self.app.focus_get(), self.app.local_command_entry)
-            self.assertEqual(self.app.local_command_result.get(), before_result)
-        finally:
-            self.app.withdraw()
+        with (
+            mock.patch.object(self.app, "submit_local_command") as submit,
+            mock.patch.object(self.app.local_command_entry, "focus_set") as focus_set,
+            mock.patch.object(
+                self.app.local_command_entry,
+                "selection_range",
+                wraps=self.app.local_command_entry.selection_range,
+            ) as selection,
+        ):
+            self.assertEqual(self.app._on_local_command_shortcut(), "break")
+            submit.assert_not_called()
+        focus_set.assert_called_once_with()
+        selection.assert_called_once_with(0, tk.END)
+        self.assertTrue(self.app._local_command_expanded)
+        self.assertEqual(self.app.local_command_result.get(), before_result)
 
     def test_submissions_keep_detail_open_and_remain_bounded_redacted_read_only(self):
         secret = "sk-or-v1-command-disclosure-secret-123456"

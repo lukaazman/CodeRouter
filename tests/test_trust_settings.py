@@ -12,11 +12,9 @@ class TrustSettingsUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.project_dir = tempfile.TemporaryDirectory()
@@ -71,27 +69,12 @@ class TrustSettingsUiTests(unittest.TestCase):
         button.invoke()
         self.assertFalse(self.app._trust_settings_expanded)
         self.assertEqual(self.app.trust_settings_detail_label.grid_info(), {})
-
-        self.app.deiconify()
-        try:
-            self.app.update()
-            self.app.focus_force()
-            button.focus_set()
-            self.app.update_idletasks()
-            self.app.update()
-            if self.app.focus_get() is not button:
-                button.focus_force()
-                self.app.update_idletasks()
-                self.app.update()
-            self.assertIs(self.app.focus_get(), button)
-            button.event_generate("<Return>")
-            self.app.update()
-            self.assertTrue(self.app._trust_settings_expanded)
-            button.event_generate("<space>")
-            self.app.update()
-            self.assertFalse(self.app._trust_settings_expanded)
-        finally:
-            self.app.withdraw()
+        self.assertTrue(button.bind("<Return>"))
+        self.assertTrue(button.bind("<space>"))
+        self.app._toggle_trust_settings_disclosure()
+        self.assertTrue(self.app._trust_settings_expanded)
+        self.app._toggle_trust_settings_disclosure()
+        self.assertFalse(self.app._trust_settings_expanded)
 
     def test_detail_is_bounded_redacted_and_never_displays_commands_or_content(self):
         secret = "Bearer trust-settings-secret-value"

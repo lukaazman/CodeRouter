@@ -12,11 +12,9 @@ class ActivityEvidenceUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.history_dir = tempfile.TemporaryDirectory()
@@ -96,6 +94,7 @@ class ActivityEvidenceUiTests(unittest.TestCase):
     def test_activity_round_trip_preserves_widget_content_and_scroll_state(self):
         activity = self.app.activity
         disclosure = self.app.activity_disclosure_button
+        self.assertIsInstance(activity, wrapper.PreservingActivityLog)
         self.app.log("visible bounded evidence")
         before_content = activity.get("1.0", tk.END)
         before_view = activity.yview()

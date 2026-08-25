@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 APP_TITLE = "CodeRouter"
 WINDOW_ICON_SOURCE = Path(__file__).resolve().parent / "assets" / "code-router.svg"
 WINDOW_ICON_SIZE = 32
+WINDOW_ICON_CORNER_RADIUS = 48
 WINDOW_ICON_BACKGROUND = "#080808"
 WINDOW_ICON_FOREGROUND = "#f3f3f3"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -136,6 +137,9 @@ MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 ACTIVITY_DIGEST_MAX_CHARS = 240
 ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS = 72
 REVIEW_SELECTION_META_MAX_CHARS = 240
+SCANNED_CONTEXT_MAX_PATHS = 6
+SCANNED_CONTEXT_MAX_PATH_CHARS = 180
+SCANNED_CONTEXT_MAX_CHARS = 760
 TRUST_SETTINGS_MAX_CHARS = 960
 LOCAL_COMMAND_POLICY_TEXT = (
     "Typed input + explicit user action only; never from model, plan, instructions, history, or startup."
@@ -173,6 +177,8 @@ HISTORY_MAX_TEXT_CHARS = 240
 HISTORY_MAX_PATH_CHARS = 1024
 HISTORY_MAX_REASONS = 40
 HISTORY_MAX_TRANSITIONS = 80
+HISTORY_SEARCH_MAX_CHARS = 96
+HISTORY_SEARCH_STATUS_MAX_CHARS = 160
 HISTORY_BROWSER_MAX_STEPS = 8
 HISTORY_BROWSER_MAX_TRANSITIONS = 8
 HISTORY_BROWSER_MAX_REASONS = 8
@@ -3239,9 +3245,52 @@ def event_matches_run(event, active_run_id, closed=False):
     return bool(active_run_id) and not closed and isinstance(event, tuple) and len(event) >= 3 and event[0] == active_run_id
 
 
+class PreservingActivityLog(scrolledtext.ScrolledText):
+    """Keep the append-only Activity viewport stable while its grid is removed."""
+
+    def __init__(self, *args, **kwargs):
+        self._logical_yview = None
+        super().__init__(*args, **kwargs)
+
+    def _remember_yview(self):
+        try:
+            view = tuple(super().yview())
+        except tk.TclError:
+            return
+        if len(view) >= 2:
+            self._logical_yview = view
+
+    def see(self, index):
+        result = super().see(index)
+        self._remember_yview()
+        return result
+
+    def yview(self, *args):
+        try:
+            mapped = bool(self.winfo_ismapped())
+        except tk.TclError:
+            mapped = False
+        if not args and not mapped and self._logical_yview is not None:
+            return self._logical_yview
+        result = super().yview(*args)
+        self._remember_yview()
+        return result
+
+    def restore_logical_yview(self):
+        if self._logical_yview is None:
+            return
+        try:
+            if self.winfo_ismapped():
+                super().yview_moveto(self._logical_yview[0])
+                self._remember_yview()
+        except tk.TclError:
+            pass
+
+
 class CodeAgentApp(tk.Tk):
     def __init__(self, history_path=None, overseer_adapter=None):
         super().__init__()
+        self.withdraw()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.title(APP_TITLE)
         self.geometry("1440x900")
@@ -3274,6 +3323,12 @@ class CodeAgentApp(tk.Tk):
         self.extra_context_count = tk.StringVar(value=self._extra_context_label())
         self.char_count = tk.StringVar(value="0 chars")
         self.pending_count = tk.StringVar(value="0 pending")
+        self.scanned_context_detail_text = tk.StringVar(value="No successful scan yet.")
+        self._scanned_context_expanded = False
+        self._scanned_context_scanned_count = 0
+        self._scanned_context_paths = ()
+        self._scanned_context_root = None
+        self._scanned_context_extra_signature = ()
         self.review_selection_meta = tk.StringVar(value="Selected 0 of 0 · no file selected")
         self.model_status = tk.StringVar(value="Free model fallback")
         self.workflow_phase = tk.StringVar(value=TASK_STATE_LABELS[TASK_STATE_IDLE])
@@ -3322,6 +3377,11 @@ class CodeAgentApp(tk.Tk):
         self.inspect_request = None
         self.verification_request = None
         self._verification_permission_consumed_run_id = None
+        self.history_search_query = tk.StringVar(master=self, value="")
+        self.history_filter_status = tk.StringVar(
+            master=self,
+            value="0 saved tasks · newest first",
+        )
         self.history_status = tk.StringVar(value="No saved tasks")
         self.activity_digest = tk.StringVar(
             value="ACTIVITY · phase=IDLE · run=idle · events=0 · permissions=0 · errors/blockers=0 · last=none"
@@ -3434,8 +3494,25 @@ class CodeAgentApp(tk.Tk):
         image = tk.PhotoImage(master=self, width=size, height=size)
         image.put(WINDOW_ICON_BACKGROUND, to=(0, 0, size - 1, size - 1))
         scale = size / 256.0
+        corner_radius = WINDOW_ICON_CORNER_RADIUS * scale
         stroke_width = 7.0
         white_pixels = set()
+        transparent_pixels = []
+
+        def inside_rounded_rect(pixel_x, pixel_y):
+            point_x = pixel_x + 0.5
+            point_y = pixel_y + 0.5
+            if (
+                corner_radius <= point_x <= size - corner_radius
+                or corner_radius <= point_y <= size - corner_radius
+            ):
+                return True
+            corner_x = corner_radius if point_x < corner_radius else size - corner_radius
+            corner_y = corner_radius if point_y < corner_radius else size - corner_radius
+            return (
+                (point_x - corner_x) ** 2 + (point_y - corner_y) ** 2
+                <= corner_radius**2
+            )
 
         def distance_to_segment(px, py, start, end):
             x1, y1 = start
@@ -3467,6 +3544,8 @@ class CodeAgentApp(tk.Tk):
         )
         for pixel_y in range(size):
             for pixel_x in range(size):
+                if not inside_rounded_rect(pixel_x, pixel_y):
+                    transparent_pixels.append((pixel_x, pixel_y))
                 point_x = (pixel_x + 0.5) / scale
                 point_y = (pixel_y + 0.5) / scale
                 if any(
@@ -3490,6 +3569,19 @@ class CodeAgentApp(tk.Tk):
 
         for pixel_x, pixel_y in sorted(white_pixels, key=lambda item: (item[1], item[0])):
             image.put(WINDOW_ICON_FOREGROUND, to=(pixel_x, pixel_y))
+        transparency_set = getattr(image, "transparency_set", None)
+        if callable(transparency_set):
+            try:
+                for pixel_x, pixel_y in transparent_pixels:
+                    transparency_set(pixel_x, pixel_y, True)
+            except (AttributeError, tk.TclError, TypeError):
+                # Older Tk builds may not expose per-pixel transparency.
+                # Keep the opaque black raster as the safe fallback.
+                for pixel_x, pixel_y in transparent_pixels:
+                    try:
+                        image.put(WINDOW_ICON_BACKGROUND, to=(pixel_x, pixel_y))
+                    except (AttributeError, tk.TclError, TypeError):
+                        break
         return image
 
     def _setup_window_icon(self):
@@ -3499,9 +3591,15 @@ class CodeAgentApp(tk.Tk):
         self._window_icon_applied = False
         try:
             image = self._build_window_icon_image()
-            self.iconphoto(True, image)
             self._window_icon_image = image
-            self._window_icon_applied = True
+            for default in (False, True):
+                try:
+                    self.iconphoto(default, image)
+                    self._window_icon_applied = True
+                except Exception:
+                    continue
+            if not self._window_icon_applied:
+                self._window_icon_image = None
         except Exception:
             # Window icons are optional in headless/Tk variants; never block startup.
             self._window_icon_image = None
@@ -3513,7 +3611,21 @@ class CodeAgentApp(tk.Tk):
         toolbar = tk.Frame(self, bg=PALETTE["canvas"], padx=SPACING["page"], pady=SPACING["page"])
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.columnconfigure(1, weight=1)
-        ttk.Label(toolbar, text=APP_TITLE, style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.toolbar_brand = tk.Frame(toolbar, bg=PALETTE["canvas"])
+        self.toolbar_brand.grid(row=0, column=0, sticky="w")
+        self.toolbar_logo_label = tk.Label(
+            self.toolbar_brand,
+            image=self._window_icon_image if self._window_icon_image is not None else "",
+            bg=PALETTE["canvas"],
+            width=WINDOW_ICON_SIZE,
+            height=WINDOW_ICON_SIZE,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        if self._window_icon_image is not None:
+            self.toolbar_logo_label.image = self._window_icon_image
+        self.toolbar_logo_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(self.toolbar_brand, text=APP_TITLE, style="Title.TLabel").grid(row=0, column=1, sticky="w")
         ttk.Label(toolbar, text="LOCAL FREE AGENT / WORKBENCH", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 0))
         ttk.Label(toolbar, textvariable=self.hint_text, style="Muted.TLabel").grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(3, 0))
         status_frame = tk.Frame(toolbar, bg=PALETTE["canvas"])
@@ -3734,6 +3846,31 @@ class CodeAgentApp(tk.Tk):
         tk.Label(stats, textvariable=self.file_count, bg=PALETTE["surface_alt"], fg=PALETTE["text"], font=FONTS["body_bold"]).grid(row=0, column=0, sticky="w")
         tk.Label(stats, textvariable=self.char_count, bg=PALETTE["surface_alt"], fg=PALETTE["text_muted"], font=FONTS["body"]).grid(row=1, column=0, sticky="w", pady=(3, 0))
         tk.Label(stats, textvariable=self.pending_count, bg=PALETTE["surface_alt"], fg=PALETTE["warning"], font=FONTS["body"]).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.scanned_context_disclosure_button = self._button(
+            stats,
+            "▸ Scanned context",
+            self._toggle_scanned_context_disclosure,
+            "Ghost.TButton",
+            "Show bounded metadata from the latest successful scan",
+        )
+        self.scanned_context_disclosure_button.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        for sequence in ("<Return>", "<space>"):
+            self.scanned_context_disclosure_button.bind(
+                sequence,
+                lambda _event: (self._toggle_scanned_context_disclosure(), "break")[1],
+            )
+        self.scanned_context_detail_label = tk.Label(
+            stats,
+            textvariable=self.scanned_context_detail_text,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_muted"],
+            font=FONTS["mono_small"],
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=235,
+        )
+        self.scanned_context_detail_label.grid(row=4, column=0, sticky="ew", pady=(5, 0))
+        self.scanned_context_detail_label.grid_remove()
         ttk.Separator(sidebar).grid(row=19, column=0, sticky="ew", pady=(14, 12))
         self.history_disclosure_button = self._disclosure_button(
             sidebar,
@@ -3761,7 +3898,21 @@ class CodeAgentApp(tk.Tk):
         history_list_frame = tk.Frame(sidebar, bg=PALETTE["surface"])
         history_list_frame.grid(row=21, column=0, sticky="ew", pady=(SPACING["section"], 8))
         history_list_frame.columnconfigure(0, weight=1)
-        self.history_list.grid(row=0, column=0, sticky="ew")
+        self.history_search_entry = ttk.Entry(
+            history_list_frame,
+            textvariable=self.history_search_query,
+            font=FONTS["mono_small"],
+        )
+        self.history_search_entry.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.history_search_entry.bind("<KeyRelease>", self._on_history_search_changed)
+        self.history_filter_status_label = ttk.Label(
+            history_list_frame,
+            textvariable=self.history_filter_status,
+            style="PanelMuted.TLabel",
+            wraplength=235,
+        )
+        self.history_filter_status_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 5))
+        self.history_list.grid(row=2, column=0, sticky="ew")
         history_scroll = tk.Scrollbar(
             history_list_frame,
             orient=tk.VERTICAL,
@@ -3773,7 +3924,7 @@ class CodeAgentApp(tk.Tk):
             borderwidth=0,
             highlightthickness=0,
         )
-        history_scroll.grid(row=0, column=1, sticky="ns")
+        history_scroll.grid(row=2, column=1, sticky="ns")
         self.history_list.configure(yscrollcommand=history_scroll.set)
         self.history_list.bind("<<ListboxSelect>>", self._on_history_selected)
         self.history_detail = scrolledtext.ScrolledText(
@@ -3888,7 +4039,7 @@ class CodeAgentApp(tk.Tk):
             style="PanelMuted.TLabel",
         )
         self.activity_model_status_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
-        self.activity = scrolledtext.ScrolledText(center, height=9, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["terminal"], fg=PALETTE["text_muted"], insertbackground=PALETTE["text"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
+        self.activity = PreservingActivityLog(center, height=9, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["terminal"], fg=PALETTE["text_muted"], insertbackground=PALETTE["text"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.activity.grid(row=8, column=0, sticky="nsew", pady=(8, 0))
         main.add(center, weight=5)
 
@@ -4328,6 +4479,116 @@ class CodeAgentApp(tk.Tk):
             arrow = "▾" if self._trust_settings_expanded else "▸"
             self.trust_settings_button.configure(text=f"{arrow} Trust & settings")
 
+    def _scanned_context_signature(self):
+        values = []
+        for path_text in tuple(getattr(self, "extra_context_paths", ()) or ()):
+            try:
+                values.append(str(Path(path_text).resolve()))
+            except (OSError, TypeError, ValueError):
+                values.append("")
+        return tuple(values)
+
+    def _safe_scanned_context_path(self, item):
+        raw = str(getattr(item, "relative_path", "") or "").replace("\\", "/").strip()
+        if not raw or is_secret_like_relative_path(raw):
+            return None
+        if PureWindowsPath(raw).is_absolute() or PureWindowsPath(raw).drive:
+            return None
+        parts = tuple(raw.split("/"))
+        if any(not part or part in {".", ".."} for part in parts):
+            return None
+        if raw.casefold().startswith(f"{EXTERNAL_CONTEXT_PREFIX.casefold()}/"):
+            suffix = raw.split("/", 1)[1]
+            if not suffix or len(raw) > SCANNED_CONTEXT_MAX_PATH_CHARS:
+                return None
+            return f"{EXTERNAL_CONTEXT_PREFIX}/{suffix}"
+        try:
+            normalized = normalize_edit_path(raw)
+        except (TypeError, ValueError):
+            return None
+        if len(normalized) > SCANNED_CONTEXT_MAX_PATH_CHARS:
+            return None
+        return normalized
+
+    def _scanned_context_detail_value(self):
+        if self._scanned_context_root is None:
+            return "No successful scan yet."
+        lines = (
+            f"Scanned: {self._scanned_context_scanned_count} files · "
+            f"shown: {len(self._scanned_context_paths)} paths",
+        )
+        if self._scanned_context_paths:
+            lines += ("Paths:",)
+            lines += tuple(f"· {path}" for path in self._scanned_context_paths)
+        else:
+            lines += ("No safe project-relative paths available.",)
+        return self._redact_sensitive("\n".join(lines))[:SCANNED_CONTEXT_MAX_CHARS]
+
+    def _clear_scanned_context_preview(self, message="No successful scan yet."):
+        self._scanned_context_scanned_count = 0
+        self._scanned_context_paths = ()
+        self._scanned_context_root = None
+        self._scanned_context_extra_signature = ()
+        if hasattr(self, "scanned_context_detail_text"):
+            self.scanned_context_detail_text.set(self._redact_sensitive(message)[:SCANNED_CONTEXT_MAX_CHARS])
+
+    def _set_scanned_context_preview(self, files, root):
+        safe_paths = []
+        for item in tuple(files or ()):
+            safe_path = self._safe_scanned_context_path(item)
+            if safe_path is not None and safe_path not in safe_paths:
+                safe_paths.append(safe_path)
+            if len(safe_paths) >= SCANNED_CONTEXT_MAX_PATHS:
+                break
+        self._scanned_context_scanned_count = len(tuple(files or ()))
+        self._scanned_context_paths = tuple(safe_paths)
+        try:
+            self._scanned_context_root = Path(root).resolve()
+        except (OSError, TypeError, ValueError):
+            self._clear_scanned_context_preview("No current successful scan.")
+            return
+        self._scanned_context_extra_signature = self._scanned_context_signature()
+        self._refresh_scanned_context_preview()
+
+    def _refresh_scanned_context_preview(self):
+        if not hasattr(self, "scanned_context_detail_text"):
+            return
+        if self._scanned_context_root is not None:
+            try:
+                selected_root = Path(self.selected_folder.get()).resolve()
+            except (OSError, TypeError, ValueError):
+                selected_root = None
+            try:
+                scanned_root_available = self._scanned_context_root.is_dir()
+            except OSError:
+                scanned_root_available = False
+            if (
+                not scanned_root_available
+                or selected_root != self._scanned_context_root
+                or self._scanned_context_signature() != self._scanned_context_extra_signature
+            ):
+                self._clear_scanned_context_preview("No current successful scan.")
+                return
+        self.scanned_context_detail_text.set(self._scanned_context_detail_value())
+
+    def _set_scanned_context_disclosure(self, expanded):
+        if not hasattr(self, "scanned_context_detail_label"):
+            return
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            expanded = False
+        self._scanned_context_expanded = bool(expanded)
+        if self._scanned_context_expanded:
+            self.scanned_context_detail_label.grid()
+        else:
+            self.scanned_context_detail_label.grid_remove()
+        arrow = "▾" if self._scanned_context_expanded else "▸"
+        self.scanned_context_disclosure_button.configure(text=f"{arrow} Scanned context")
+
+    def _toggle_scanned_context_disclosure(self):
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            return
+        self._set_scanned_context_disclosure(not self._scanned_context_expanded)
+
     def _disclosure_is_active(self, section):
         if section == "trust_settings":
             return self._trust_settings_is_active()
@@ -4383,6 +4644,12 @@ class CodeAgentApp(tk.Tk):
             container.rowconfigure(22, weight=1 if expanded else 0)
         elif section == "activity" and container is not None:
             container.rowconfigure(8, weight=2 if expanded else 0)
+            if expanded:
+                try:
+                    self.update_idletasks()
+                    self.activity.restore_logical_yview()
+                except tk.TclError:
+                    pass
 
     def _toggle_disclosure(self, section):
         if section not in self._disclosure_widgets:
@@ -4577,6 +4844,7 @@ class CodeAgentApp(tk.Tk):
     def _refresh_workflow_rail(self):
         if not hasattr(self, "workflow_phase_value"):
             return
+        self._refresh_scanned_context_preview()
         state = self.task_state if self.task_state in TASK_STATE_LABELS else TASK_STATE_IDLE
         self.workflow_phase.set(TASK_STATE_LABELS[state])
         self.workflow_phase_value.configure(fg=TASK_STATE_COLORS[state])
@@ -4626,10 +4894,6 @@ class CodeAgentApp(tk.Tk):
         entry = getattr(self, "local_command_entry", None)
         if entry is not None:
             entry.focus_set()
-            try:
-                entry.focus_force()
-            except (tk.TclError, RuntimeError):
-                pass
             entry.selection_range(0, tk.END)
         return "break"
 
@@ -6062,33 +6326,102 @@ class CodeAgentApp(tk.Tk):
         self.log(f"> exported bounded task report: {destination}")
         return True
 
-    def _refresh_history_browser(self, select_task_id=None):
-        self.history_records = self.history_store.load()
-        # HistoryStore already enforces the count/size bound; keep every
-        # bounded record inspectable while the Listbox remains compact.
-        ordered = list(reversed(self.history_records))
-        self._history_browser_records = ordered
+    def _history_search_text(self):
+        if not hasattr(self, "history_search_query"):
+            return ""
+        raw = str(self.history_search_query.get() or "")
+        safe = self._history_safe(raw, HISTORY_SEARCH_MAX_CHARS)
+        if safe != raw:
+            self.history_search_query.set(safe)
+        return safe
+
+    def _history_record_matches_query(self, record, query):
+        if not query:
+            return True
+        safe = record.sanitized() if isinstance(record, HistoryRecord) else None
+        if safe is None:
+            return False
+        transition_text = " ".join(
+            f"{state} {detail}"
+            for state, detail, _timestamp in safe.state_transitions
+        )
+        searchable = self._redact_sensitive(
+            " ".join(
+                (
+                    history_record_label(safe),
+                    safe.request_summary,
+                    safe.outcome,
+                    transition_text,
+                )
+            )
+        )
+        return query.casefold() in searchable.casefold()
+
+    def _history_filtered_records(self, ordered):
+        query = self._history_search_text()
+        return [
+            record
+            for record in ordered
+            if self._history_record_matches_query(record, query)
+        ]
+
+    def _refresh_history_filter_status(self, total, shown, query):
+        if not hasattr(self, "history_filter_status"):
+            return
+        if query:
+            label = "match" if shown == 1 else "matches"
+            text = f"{shown} {label} · metadata-only filter"
+        else:
+            label = "saved task" if total == 1 else "saved tasks"
+            text = f"{total} {label} · newest first"
+        self.history_filter_status.set(text[:HISTORY_SEARCH_STATUS_MAX_CHARS])
+
+    def _render_history_browser(self, ordered, select_task_id=None):
+        filtered = self._history_filtered_records(ordered)
+        self._history_browser_records = filtered
+        query = self._history_search_text()
+        self._refresh_history_filter_status(len(ordered), len(filtered), query)
         if not hasattr(self, "history_list"):
             return
         self.history_list.delete(0, tk.END)
-        for record in ordered:
+        for record in filtered:
             self.history_list.insert(tk.END, history_record_label(record))
         current_id = select_task_id
         if current_id is None and self.selected_history_record is not None:
             current_id = self.selected_history_record.task_id
         selected_index = next(
-            (index for index, record in enumerate(ordered) if record.task_id == current_id),
-            0 if ordered else None,
+            (index for index, record in enumerate(filtered) if record.task_id == current_id),
+            0 if filtered else None,
         )
         if selected_index is None:
+            self.history_list.selection_clear(0, tk.END)
             self.selected_history_record = None
             self._write_history_detail("")
-            self.history_status.set("No saved tasks")
+            self.history_status.set(
+                "No history matches; clear search to restore tasks"
+                if query
+                else "No saved tasks"
+            )
         else:
+            self.history_list.selection_clear(0, tk.END)
             self.history_list.selection_set(selected_index)
             self.history_list.see(selected_index)
-            self.inspect_history_record(ordered[selected_index], refresh_list=False)
+            self.inspect_history_record(filtered[selected_index], refresh_list=False)
         self._update_lifecycle_controls()
+
+    def _refresh_history_browser(self, select_task_id=None):
+        self.history_records = self.history_store.load()
+        # HistoryStore already enforces the count/size bound; keep every
+        # bounded record inspectable while the Listbox remains compact.
+        ordered = list(reversed(self.history_records))
+        self._render_history_browser(ordered, select_task_id=select_task_id)
+
+    def _on_history_search_changed(self, _event=None):
+        if not hasattr(self, "history_list"):
+            return
+        # Search is presentation-only: filter the already loaded in-memory
+        # browser records and never write or reload HistoryStore here.
+        self._render_history_browser(list(reversed(self.history_records)))
 
     def _write_history_detail(self, text):
         if not hasattr(self, "history_detail"):
@@ -6313,6 +6646,12 @@ class CodeAgentApp(tk.Tk):
         previous_run_id = self.lifecycle.active_run_id
         if previous_run_id and previous_run_id != snapshot.run_id:
             self.run_resources.cancel(previous_run_id)
+        undo_transaction = self._last_apply_undo
+        if (
+            isinstance(undo_transaction, UndoTransaction)
+            and undo_transaction.source_run_id != snapshot.run_id
+        ):
+            self._clear_last_apply_undo()
         self.run_resources.create(snapshot.run_id)
         self.lifecycle.activate(snapshot)
         self.permission_ledger.bind_snapshot(snapshot, preserve=preserve_permission_ledger)
@@ -7110,6 +7449,7 @@ class CodeAgentApp(tk.Tk):
             self._history_clear_current()
             self._clear_pending_proposal()
             self.selected_folder.set(folder)
+            self._clear_scanned_context_preview("No current successful scan.")
             self.config_data["last_folder"] = folder
             save_local_config(self.config_data)
             self.scan_folder(preserve_task_state=False)
@@ -7139,6 +7479,7 @@ class CodeAgentApp(tk.Tk):
         self.config_data["extra_context_files"] = self.extra_context_paths
         save_local_config(self.config_data)
         self.extra_context_count.set(self._extra_context_label())
+        self._clear_scanned_context_preview("No current successful scan.")
         self.scan_folder(silent=True)
         self.log(f"> added {added} context files" + (f", skipped {skipped}" if skipped else ""))
 
@@ -7157,6 +7498,7 @@ class CodeAgentApp(tk.Tk):
         self.config_data["extra_context_files"] = []
         save_local_config(self.config_data)
         self.extra_context_count.set(self._extra_context_label())
+        self._clear_scanned_context_preview("No current successful scan.")
         self.scan_folder(silent=True)
         self.log(f"> cleared {count} context files")
 
@@ -7288,6 +7630,7 @@ class CodeAgentApp(tk.Tk):
         self._write_plan_preview("")
         self._discard_pending_proposal("new chat")
         self._clear_pending_proposal()
+        self._clear_scanned_context_preview()
         self.set_summary("New chat started. Previous model context cleared.")
         self.log("> session reset")
         self.set_task_state(TASK_STATE_IDLE, "Ready")
@@ -7298,6 +7641,7 @@ class CodeAgentApp(tk.Tk):
         if self.pending_proposal:
             self._report_lifecycle_action("scan blocked while a proposal is pending; apply or reject it first.")
             return False
+        self._clear_scanned_context_preview("No current successful scan.")
         folder = self._validate_folder(show_error=not silent)
         if not folder:
             return False
@@ -7312,6 +7656,7 @@ class CodeAgentApp(tk.Tk):
         total_chars = sum(len(item.content) for item in files)
         self.file_count.set(f"{len(files)} files")
         self.char_count.set(f"{total_chars:,} chars")
+        self._set_scanned_context_preview(files, folder)
         if not preserve_task_state:
             self.set_task_state(TASK_STATE_IDLE, "Snapshot ready")
         if not silent:
@@ -10829,6 +11174,7 @@ def one_line(text):
 
 def main():
     app = CodeAgentApp()
+    app.deiconify()
     app.mainloop()
 
 

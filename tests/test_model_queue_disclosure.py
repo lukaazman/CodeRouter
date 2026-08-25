@@ -12,11 +12,9 @@ class ModelQueueDisclosureUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.history_dir = tempfile.TemporaryDirectory()
@@ -59,20 +57,12 @@ class ModelQueueDisclosureUiTests(unittest.TestCase):
         self.app.update_idletasks()
         self.assertFalse(self.app._model_queue_expanded)
         self.assertEqual(detail_widget.grid_info(), {})
-
-        try:
-            self.app.deiconify()
-            self.app.update()
-            disclosure.focus_set()
-            self.assertIs(self.app.focus_get(), disclosure)
-            disclosure.event_generate("<Return>")
-            self.app.update()
-            self.assertTrue(self.app._model_queue_expanded)
-            disclosure.event_generate("<space>")
-            self.app.update()
-            self.assertFalse(self.app._model_queue_expanded)
-        finally:
-            self.app.withdraw()
+        self.assertTrue(disclosure.bind("<Return>"))
+        self.assertTrue(disclosure.bind("<space>"))
+        self.app._toggle_model_queue_disclosure()
+        self.assertTrue(self.app._model_queue_expanded)
+        self.app._toggle_model_queue_disclosure()
+        self.assertFalse(self.app._model_queue_expanded)
         self.assertIs(detail_widget, self.app.workflow_model_detail)
 
     def test_fallback_queue_and_health_metadata_are_rendered(self):

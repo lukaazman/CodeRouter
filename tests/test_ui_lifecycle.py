@@ -1,3 +1,4 @@
+import os
 import tempfile
 import tkinter as tk
 import unittest
@@ -5,24 +6,23 @@ from pathlib import Path
 from unittest import mock
 
 import codex_free_wrapper as wrapper
+from tests.ui_test_helpers import build_hidden_app
 
 
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")
 class UiLifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
+            tk.Tcl()
         except tk.TclError as exc:
-            raise unittest.SkipTest(f"Tk unavailable: {exc}")
+            raise unittest.SkipTest(f"Tcl unavailable: {exc}")
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_config_path = wrapper.CONFIG_PATH
         wrapper.CONFIG_PATH = Path(self.temp_dir.name) / "local_config.json"
-        self.app = wrapper.CodeAgentApp()
-        self.app.withdraw()
+        self.app = build_hidden_app(wrapper)
 
     def tearDown(self):
         if self.app is not None and not self.app.lifecycle.closed:

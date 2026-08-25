@@ -1,123 +1,84 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — Command palette disclosure complete and verified
+Checkpoint: 2026-08-25 — Combined no-window UI, icon, scanned-context, History-search, Activity, and Undo hardening verified; approval pending
 
-The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity, review-inspector refinement, Trust & settings, and Command palette disclosure slices are green and verified. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
+This checkpoint freezes the current Workbench rework before the next roadmap slice. The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity, review inspector, Trust & settings, Command palette disclosure, read-only scanned-context map, metadata-only History search, scanned-root availability hardening, and selective Apply/Undo lifecycle are implemented in the working tree. Worker and overseer cycles review and test only; the main task alone commits and pushes.
+
+## Safety and window boundary
+
+CodeAgentApp.__init__() withdraws immediately after super().__init__(), before protocol, title, geometry, icon, or UI setup. Only the fully initialized production main() reveals the app. Tests use hidden CodeAgentApp fixtures or no-window tk.Tcl() probes; there are no standalone probe roots, and tests never call deiconify(), mainloop(), focus_force(), event_generate(), or a visible app launch. Do not run the app for routine checks. If a real runtime check is ever unavoidable, launch it hidden/off-screen and terminate it without activating or flashing a taskbar/window surface.
 
 ## Current checkpoint
 
-The current completed slice is the compact Command palette disclosure, layered over Trust & settings, the review-inspector refinement, evidence-first Activity presentation, model/queue disclosure, compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
+- Compact workflow rail exposes truthful PHASE, MODEL-QUEUE, and NEXT values without inventing model identity or changing provider/model selection.
+- MODEL / QUEUE expands on click, Return, or Space and shows bounded redacted model status, deterministic free fallback queue, health metadata, and active-run signal.
+- Activity digest exposes bounded phase/run, timeline, permission, error/blocker, and last-evidence metadata. The existing append-only Activity log remains the source of truth.
+- PreservingActivityLog keeps the existing widget, callbacks, content, and logical yview across disclosure transitions.
+- Review inspector preserves Treeview identity, multi-selection, diff behavior, Apply selected, and transactional review/apply behavior while exposing compact selected/total and relative-path metadata.
+- Trust & settings is collapsed by default but auto-opens for current inspect/verification permission requests. It does not hide Apply Policy or safety actions and does not add execution behavior.
+- Local command disclosure keeps exact-command, redaction, read-only, stale, closed, and explicit user-action guards. Ctrl+K expands and uses focus_set() without submitting.
+- Scanned context is collapsed by default and exposes only bounded redacted metadata from the latest successful Tk-thread scan. Missing/changed roots, non-directories, reset, failure, and stale previews clear old paths.
+- History search is collapsed by default, case-insensitive, metadata-only, bounded, in-memory, and persistence-free. No-match selection clears safely; blank search restores the existing inspect-only browser.
+- History, Manual verification, Activity, and Task tools stay collapsed by default; primary project/task controls, prompt, summary/status, review state, changed files, diff, and review actions remain visible.
+- Active plan, inspect, verification, running work, permission actions, and ready/active Executor -> Overseer handoff state auto-open the relevant disclosure.
+- assets/code-router.svg is bundled and byte-identical to C:\Users\Luka\Documents\GitHub\Portfolio\assets\projects\code-router.svg. The dependency-free 32x32 Tk PhotoImage honors the canonical rounded mark (rx=48), uses transparency_set outside the mark where supported, retains the image on the app, and fails closed if icon setup is unavailable. The toolbar reuses the same image; no Portfolio path is used at runtime.
+- Selective review/apply remains multi-file, transactional, review-gated, and preserves unselected edits. Partial Apply -> Undo is available only for a non-empty accepted same-run pending proposal; full Apply -> Undo returns to IDLE.
+- Activating a different snapshot/run clears a prior-run _last_apply_undo transaction before a new proposal can be reviewed. Same-run partial Apply -> Undo remains available.
+- Existing free-agent discovery, capability-aware selection, fallback queue, streaming timeline, project instructions, plan approval, inspect/verify loops, executor-to-overseer evidence handoff, continuation gates, permission ledger, task export, session lineage, command palette, and bounded Undo remain the underlying behavior.
 
-- the compact single-line rail exposes `PHASE`, `MODEL-QUEUE`, and `NEXT` using the existing truthful task state, model status/health/fallback, and button/lifecycle gates;
-- rail values do not invent model identity and the next-action text follows the existing user permissions and visible controls;
-- `MODEL / QUEUE` is collapsed by default and expands on click, Return, or Space to show bounded redacted existing `model_status`, the deterministic free fallback queue, health metadata, and the active-run signal without changing model selection or provider logic;
-- the compact always-visible Activity digest reports phase/run signal, bounded timeline event count, permission-decision count, error/blocker count, and a safe last-evidence label;
-- the existing append-only Activity disclosure and log remain the source of truth; expanding/collapsing preserves the existing widget, content, scroll state, and callbacks;
-- digest values are bounded, redacted metadata only and never expose raw stream/command output or secrets; the presentation adds no worker, provider, process, proposal, apply, or other execution side effect;
-- the review inspector keeps the existing Treeview/diff and shows compact `selected/total · inspecting relative-path` metadata near the changed-file list, with a bounded empty state;
-- the metadata refreshes on populate, clear, and extended selection while the first selected file continues to drive the inspected diff;
-- Treeview identity, multi-selection, diff behavior, `Apply selected`, and transactional review/apply behavior remain unchanged;
-- the compact `Trust & settings` disclosure sits between the visible Apply Policy controls and Actions without hiding or changing the Review changes, Auto-apply, permission note, Apply, Reject, or Undo safety controls;
-- Trust & settings is collapsed by default and expands on click, Return, or Space using non-destructive `grid`/`grid_remove` visibility; it shows only bounded redacted apply mode/permission note, active RunSnapshot project-instructions status, PermissionDecisionLedger count/last safe label, and the existing local-command user-action-only policy reminder;
-- a current inspect or verification permission request auto-opens Trust & settings and keeps it open, while ordinary idle/active snapshots remain manually collapsible; the surface performs no worker, provider, process, proposal, apply, persistence, or permission-authority action;
-- the toolbar `▸ Local command` disclosure is collapsed by default and expands on click, Return, or Space using `grid`/`grid_remove`; the existing command entry, Submit button, result label, Return binding, and callbacks remain the same stateful widgets inside the detail;
-- Ctrl+K expands the command detail, focuses and selects the existing entry without submitting; an explicit submit keeps the detail open so bounded feedback remains visible, while exact-command, redaction, read-only, stale, and closed guards remain unchanged;
-- the command-palette presentation adds no command, provider, network, persistence, worker, process, proposal, Apply, Undo, or permission-authority behavior;
-- History, Manual verification, Activity, and Task tools are collapsed by default;
-- project/task controls, prompt, compact summary/status, review state, changed-file list/diff, and primary review actions remain visible;
-- the Task tools disclosure contains plan, read-only inspect, verification request, and Executor -> Overseer handoff controls;
-- active plan, inspect, verification, running work, and ready/active handoff state auto-opens the relevant disclosure;
-- active permission actions cannot be hidden, and disclosure toggles preserve existing widgets, text, selection, callbacks, and state through non-destructive grid visibility changes;
-- `_update_apply_controls()` refreshes the rail after Apply, Apply selected, and Reject button states are finalized, preventing a stale `Ready` signal when review actions are enabled;
-- `assets/code-router.svg` is bundled and matches `C:\Users\Luka\Documents\GitHub\Portfolio\assets\projects\code-router.svg` byte-identically;
-- the bundled mark is applied through a dependency-free 32x32 Tk `PhotoImage` retained on the app instance, with fail-closed behavior when icon setup is unavailable;
-- selective review/apply remains multi-file, transactional, review-gated, and preserves unselected edits as pending work;
-- partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal, while full Apply Undo remains IDLE.
+## Verified evidence
 
-The broader implementation already includes the dark Workbench shell, free-model discovery and fallback queue, capability-aware model selection, streaming timeline, project instructions, plan approval, safe inspect/verify loops, executor-to-overseer evidence handoff, continuation gates, permission ledger, task export, session lineage, command palette, and bounded Undo.
+- Focused hidden regression checks: worker ran 19 tests in 2.030s — OK, covering Undo invalidation, hidden app construction, scanned context, History search, and UI lifecycle.
+- Latest full hidden suite: python -m unittest discover -s tests -p "test_*.py" — Ran 263 tests in 15.095s — OK.
+- python -m py_compile codex_free_wrapper.py — exit 0.
+- Static test scan contains no tk.Tk(), deiconify, mainloop, focus_force, or event_generate calls.
+- No CodeRouter/python/pythonw process was left running; no visible app, taskbar surface, or focus-stealing smoke path was used.
+- Icon transparency regression passed when Tk supports transparency_get; the bundled SVG hash matches the Portfolio source byte-for-byte.
+- git diff --check passed; only normal LF-to-CRLF notices were reported.
 
-## Current verified evidence
+## Resource-scope invariant
 
-- Focused Command palette disclosure plus existing command-palette checks: `Ran 11 tests in 1.185s ... OK`.
-- Related Command palette, disclosure, rail, Activity, and lifecycle checks: `Ran 38 tests in 4.446s ... OK`.
-- Full suite: three consecutive runs, `Ran 251 tests in 14.220s`, `Ran 251 tests in 14.490s`, and `Ran 251 tests in 14.170s`; all `OK` with no unexpected warnings.
-- `python -m py_compile .\\codex_free_wrapper.py`: exit `0`.
-- ASCII-safe Command palette app smoke: `APP_SMOKE_OK True True True True`; `APP_DESTROY_OK True True`.
-- Asset verification: `assets/code-router.svg` hash matches the Portfolio source byte-for-byte.
-- `git diff --check`: exit `0`; only standard LF-to-CRLF notices.
-
-## P0 resource-scope fix
-
-The active-resource checks are now run-scoped:
-
-1. Include the current proposal/lifecycle run and its linked verification/overseer child runs.
-2. Ignore unrelated stale run IDs from previous runs.
-3. Keep blocking genuinely active current workers, provider responses, and processes.
-4. Apply the same scope rule consistently to normal Apply, `Apply selected`, and Undo.
-5. Preserve stale-event filtering and cleanup behavior; do not solve this by weakening lifecycle safety or clearing registries globally.
-6. Add a regression proving that an old stale handle does not block the current Apply while a current-run handle still blocks it.
-
-The former global `_undo_has_active_resources()` check was replaced with the same scoped helper.
-
-## Current continuation status
-
-The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity presentation, review-inspector refinement, Trust & settings disclosure, and Command palette disclosure are complete and verified. Trust & settings keeps Apply Policy and safety actions visible; the command palette keeps exact local commands and explicit user action semantics while reducing always-on toolbar clutter. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. All surfaces preserve existing worker, overseer, permission, and lifecycle boundaries.
+Active-resource checks are run-scoped: include the current proposal/lifecycle run and linked verification/overseer child runs; ignore unrelated stale run IDs; block genuinely active current workers, provider responses, and processes; apply the same scope to normal Apply, Apply selected, and Undo; preserve stale-event filtering and cleanup; never weaken lifecycle safety or clear registries globally. Keep the regression proving stale handles do not block the current Apply while current-run handles still do.
 
 ## Next bounded roadmap
 
-Proceed only with an explicitly assigned bounded slice, one at a time:
+Proceed one bounded slice at a time:
 
-1. Review and freeze the current Workbench command/trust surfaces before the next explicitly assigned roadmap item.
+1. Review and freeze the current Workbench disclosure surfaces, including scanned context, History search, Activity scroll preservation, hidden startup, exact Portfolio icon usage, and prior-run Undo invalidation.
+2. Improve the next highest-value Codex/Claude-Code-style workflow gap only after slice 1 is approved: prefer visible progress/evidence, queue transparency, cancellation/recovery, or safe task-history continuity.
+3. Continue performance and safety hardening without adding paid-provider dependence, heavy AI visual effects, gradients, oversized rounded cards, hidden permission changes, or unrelated capability.
 
-Each slice must preserve the current primary workflow and may not expand into a new provider, command, persistence, or permission capability unless explicitly assigned.
+Every slice must preserve the primary workflow and remain limited to its focused regression tests. Do not add a provider, command, persistence, or permission capability unless explicitly assigned by the main task.
 
 ## Worker / executor instructions
 
-On continuation, the worker must:
-
-1. Read this file and inspect the current uncommitted diff before editing.
-2. Take exactly one item from the Next bounded roadmap and keep the patch limited to that slice and its focused regression tests.
-3. Reuse existing UI, lifecycle, lineage, resource, permission, history, proposal, apply/undo, worker, and Overseer helpers; do not invent a second run-id system or weaken any guard.
-4. Preserve review-first behavior, plan/inspect/verification gates, root/path safety, cancellation, stale-event filtering, redaction, transactional rollback, and no-Tk-from-worker behavior.
-5. Run the focused slice tests, the full suite, compile, Tk/app smoke, and `git diff --check`; report exact results and any provider/OS limitation.
-6. Return a concise handoff containing changed files, evidence, remaining risks, and one next bounded action.
-7. Do not commit or push. Only the main task may commit/push after overseer approval.
-
-Required commands from the repository root:
-
-```powershell
-python -m unittest tests.test_task_history.TaskHistoryUiTests.test_plan_review_apply_reject_error_reset_and_close_are_recorded -q
-python -m unittest tests.test_selective_apply tests.test_apply_undo tests.test_proposal_lifecycle -q
-python -m py_compile .\codex_free_wrapper.py
-python -m unittest discover -s tests -q
-python -m unittest discover -s tests -q
-python -m unittest discover -s tests -q
-git diff --check
-```
-
-The existing Tk and application smoke commands should be reused from the test/debug helpers already present in the repository; report their exact result rather than claiming runtime proof from compilation.
+1. Read this plan and inspect the current uncommitted diff before editing.
+2. Take exactly one approved roadmap item and keep the patch limited to that slice and focused tests.
+3. Reuse existing UI, lifecycle, lineage, resource, permission, history, proposal, Apply/Undo, worker, and Overseer helpers. Do not invent a second run-id system or weaken a guard.
+4. Preserve review-first behavior, plan/inspect/verification gates, root/path safety, cancellation, stale-event filtering, redaction, transactional rollback, no-Tk-from-worker behavior, and hidden/no-flash startup.
+5. Run focused tests, the full hidden suite, compile, hidden UI lifecycle checks, and git diff --check. Report exact results and any provider/OS limitation. Never run main(), deiconify(), mainloop(), focus_force(), event_generate(), or a visible Tk probe.
+6. Return changed files, evidence, remaining risks, and one next bounded action.
+7. Do not commit or push. Only the main task may publish after Overseer approval.
 
 ## Overseer instructions
 
-The overseer reviews one bounded roadmap slice at a time and must:
-
 1. Review the worker diff before accepting it.
 2. Confirm the slice changes only its approved surface and preserves review-first behavior, explicit permission decisions, stale-event filtering, cancellation, rollback, resource cleanup, and worker/Overseer isolation.
-3. Confirm focused tests, the full suite, compile, Tk/app smoke, and diff-check provide exact evidence.
-4. Return `approved` only when all gates are green. Otherwise return `needs_attention` with one concrete bounded correction for the worker.
-5. Do not expand the roadmap, add a new capability, or authorize unrelated work in the same slice.
-6. Commit/push decisions belong only to the main task after approval; worker and overseer do not publish changes.
+3. Confirm exact focused-test, full-suite, compile, hidden UI, and diff-check evidence.
+4. Return approved only when the gates are green. Otherwise return needs_attention with one concrete bounded correction.
+5. Do not expand the roadmap, add a new capability, authorize unrelated work, commit, or push.
 
 ## Continuation protocol
 
-Every worker cycle follows this order:
+Every cycle follows:
 
-`read handoff -> inspect diff -> one bounded roadmap slice -> focused tests -> full gates -> overseer review -> next bounded slice`
+read handoff -> inspect diff -> one bounded slice -> focused hidden tests -> full hidden gates -> Overseer review -> next bounded slice
 
-The main task routes implementation work to the worker and evidence/review work to the overseer. After approval, the next cycle starts with the next roadmap item and does not reopen completed slices.
+The main task routes implementation to the worker and evidence/review to the Overseer. After approval, the next cycle starts with the next roadmap item and does not reopen completed slices.
 
 ## Known boundaries
 
 - No live provider/OpenRouter runtime claim is required for this checkpoint; mocked/local verification is sufficient.
-- Publication is controlled by the main task after approval; preserve existing changes and never reset or discard unrelated work.
+- Compilation is not runtime proof; hidden lifecycle and regression tests are the required evidence for this checkpoint.
+- Publication is controlled by the main task after approval. Preserve unrelated changes and never reset or discard them.
 - Do not include raw project files, raw diffs, or stream bodies in task history, handoffs, exports, or permission metadata.
