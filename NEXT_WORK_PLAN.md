@@ -1,16 +1,19 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — Model/queue disclosure complete and overseer-approved
+Checkpoint: 2026-08-25 — Evidence-first Activity presentation complete and overseer-approved
 
-The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, and model/queue disclosure slice are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
+The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, and evidence-first Activity slice are green and overseer-approved. Publication is controlled by the main task after approval; worker and overseer cycles do not commit or push.
 
 ## Current checkpoint
 
-The current approved slice is the model/queue disclosure, layered over the compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
+The current approved slice is the evidence-first Activity presentation, layered over the model/queue disclosure, compact workflow rail, bundled CodeRouter window icon, progressive-disclosure Workbench, and selective review/apply lifecycle:
 
 - the compact single-line rail exposes `PHASE`, `MODEL-QUEUE`, and `NEXT` using the existing truthful task state, model status/health/fallback, and button/lifecycle gates;
 - rail values do not invent model identity and the next-action text follows the existing user permissions and visible controls;
 - `MODEL / QUEUE` is collapsed by default and expands on click, Return, or Space to show bounded redacted existing `model_status`, the deterministic free fallback queue, health metadata, and the active-run signal without changing model selection or provider logic;
+- the compact always-visible Activity digest reports phase/run signal, bounded timeline event count, permission-decision count, error/blocker count, and a safe last-evidence label;
+- the existing append-only Activity disclosure and log remain the source of truth; expanding/collapsing preserves the existing widget, content, scroll state, and callbacks;
+- digest values are bounded, redacted metadata only and never expose raw stream/command output or secrets; the presentation adds no worker, provider, process, proposal, apply, or other execution side effect;
 - History, Manual verification, Activity, and Task tools are collapsed by default;
 - project/task controls, prompt, compact summary/status, review state, changed-file list/diff, and primary review actions remain visible;
 - the Task tools disclosure contains plan, read-only inspect, verification request, and Executor -> Overseer handoff controls;
@@ -26,10 +29,10 @@ The broader implementation already includes the dark Workbench shell, free-model
 
 ## Current verified evidence
 
-- Focused model/queue disclosure, workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 22 tests ... OK`.
-- Full suite: three consecutive runs, each `Ran 231 tests ... OK`, with no unexpected warnings.
+- Focused Activity, model/queue disclosure, workflow-rail, progressive-disclosure, and lifecycle checks: `Ran 27 tests ... OK`.
+- Full suite: three consecutive runs, each `Ran 236 tests ... OK`, with no unexpected warnings.
 - `python -m py_compile .\\codex_free_wrapper.py`: exit `0`.
-- Tk/app smoke: `APP_SMOKE_OK idle False True '\\u25b8 MODEL / QUEUE' True; MODEL_DISCLOSURE_OPEN True True True; APP_DESTROY_OK True True`.
+- Activity smoke: `APP_SMOKE_OK True 'ACTIVITY ... events=0 ... permissions=0 ... errors/blockers=0 ... last=none' False; ACTIVITY_OPEN True True; APP_DESTROY_OK True True`.
 - Asset verification: `assets/code-router.svg` hash matches the Portfolio source byte-for-byte.
 - `git diff --check`: exit `0`; only standard LF-to-CRLF notices.
 
@@ -48,15 +51,14 @@ The former global `_undo_has_active_resources()` check was replaced with the sam
 
 ## Current continuation status
 
-The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, and model/queue disclosure are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The rail and disclosure are UI-only metadata views, the bundled icon has no runtime Portfolio-path dependency, and all preserve existing safety, worker, overseer, and lifecycle boundaries.
+The selective-apply lifecycle closeout, progressive-disclosure shell, compact workflow rail, CodeRouter window icon, model/queue disclosure, and evidence-first Activity presentation are complete and overseer-approved. Partial Apply -> Undo returns to REVIEW only for a non-empty same-run accepted pending proposal; full Apply Undo remains IDLE; remaining Apply stays transactional. The rail, model/queue disclosure, and Activity digest are UI-only metadata views, the bundled icon has no runtime Portfolio-path dependency, and all preserve existing safety, worker, overseer, and lifecycle boundaries.
 
 ## Next bounded roadmap
 
 Proceed autonomously in this order, one bounded slice at a time:
 
-1. Evidence-first Activity presentation.
-2. Review inspector refinement.
-3. Settings/trust surfaces.
+1. Review inspector refinement.
+2. Settings/trust surfaces.
 
 Each slice must preserve the current primary workflow and may not expand into a new provider, command, persistence, or permission capability unless explicitly assigned.
 

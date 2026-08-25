@@ -133,6 +133,8 @@ LOCAL_COMMAND_MAX_ITEMS = 6
 LOCAL_COMMAND_HINT = "Ctrl+K commands · Ctrl+Enter run · Esc reject pending"
 MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
 MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
+ACTIVITY_DIGEST_MAX_CHARS = 240
+ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS = 72
 
 TASK_STATE_IDLE = "idle"
 TASK_STATE_COLLECTING = "collecting"
@@ -3312,6 +3314,9 @@ class CodeAgentApp(tk.Tk):
         self.verification_request = None
         self._verification_permission_consumed_run_id = None
         self.history_status = tk.StringVar(value="No saved tasks")
+        self.activity_digest = tk.StringVar(
+            value="ACTIVITY · phase=IDLE · run=idle · events=0 · permissions=0 · errors/blockers=0 · last=none"
+        )
         self.verification_command = tk.StringVar(value="")
         self.verification_status = tk.StringVar(value="Manual only · no command started")
         self.verification_run_id = None
@@ -3808,9 +3813,28 @@ class CodeAgentApp(tk.Tk):
             "Show or hide the append-only activity log",
         )
         self.activity_disclosure_button.grid(row=6, column=0, sticky="ew")
+        activity_meta = tk.Frame(center, bg=PALETTE["surface"])
+        activity_meta.grid(row=7, column=0, sticky="ew", pady=(4, 2))
+        activity_meta.columnconfigure(0, weight=1)
+        self.activity_digest_label = tk.Label(
+            activity_meta,
+            textvariable=self.activity_digest,
+            bg=PALETTE["surface"],
+            fg=PALETTE["text_muted"],
+            font=FONTS["mono_small"],
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=720,
+        )
+        self.activity_digest_label.grid(row=0, column=0, sticky="ew")
+        self.activity_model_status_label = ttk.Label(
+            activity_meta,
+            textvariable=self.model_status,
+            style="PanelMuted.TLabel",
+        )
+        self.activity_model_status_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.activity = scrolledtext.ScrolledText(center, height=9, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["terminal"], fg=PALETTE["text_muted"], insertbackground=PALETTE["text"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.activity.grid(row=8, column=0, sticky="nsew", pady=(8, 0))
-        ttk.Label(center, textvariable=self.model_status, style="PanelMuted.TLabel").grid(row=7, column=0, sticky="w", pady=(0, 2))
         main.add(center, weight=5)
 
         right = self._panel(main)
@@ -4236,6 +4260,78 @@ class CodeAgentApp(tk.Tk):
         safe = self._redact_sensitive(status)
         return " ".join(safe.split())[:180]
 
+    def _activity_last_evidence_label(self):
+        excluded = {"stream_delta", "verification_output"}
+        labels = {
+            "task_state": "task state",
+            "permission_decision": "permission decision",
+            "model_status": "model status",
+            "model_health": "model health",
+            "fallback": "fallback status",
+            "plan": "plan evidence",
+            "inspect_request": "inspect permission",
+            "verification_request": "verification permission",
+            "verification_complete": "verification result",
+            "verification_exit": "verification result",
+            "verification_timeout": "verification result",
+            "verification_cancel": "verification result",
+            "verification_error": "verification result",
+            "proposal": "proposal evidence",
+            "diffs": "review diff metadata",
+            "files": "changed-file metadata",
+            "overseer_start": "overseer evidence",
+            "overseer_status": "overseer evidence",
+            "overseer_final": "overseer evidence",
+            "overseer_error": "overseer evidence",
+            "session": "response assembled",
+        }
+        for entry in reversed(self.run_timeline):
+            kind = str(entry.get("kind", "") or "").casefold()
+            if not kind or kind in excluded:
+                continue
+            label = labels.get(kind, kind.replace("_", " "))
+            return self._redact_sensitive(label)[:ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS]
+        return "none"
+
+    def _activity_error_blocker_count(self):
+        markers = ("error", "failed", "failure", "blocked", "blocker", "rollback")
+        pattern = re.compile(r"\b(?:error|failed|failure|blocked|blocker|rollback)\b", re.IGNORECASE)
+        count = 0
+        for entry in self.run_timeline:
+            kind = str(entry.get("kind", "") or "").casefold()
+            text = self._redact_sensitive(entry.get("text", ""))
+            if any(marker in kind for marker in markers) or pattern.search(text):
+                count += 1
+        return count
+
+    def _refresh_activity_digest(self):
+        if not hasattr(self, "activity_digest"):
+            return
+        state = self.task_state if self.task_state in TASK_STATE_LABELS else TASK_STATE_IDLE
+        lifecycle = getattr(self, "lifecycle", None)
+        if lifecycle is None or lifecycle.closed:
+            run_signal = "closed" if lifecycle is not None and lifecycle.closed else "idle"
+        else:
+            run_signal = (
+                "active"
+                if lifecycle.active_run_id or self._run_in_progress()
+                else "idle"
+            )
+        event_count = len(self.run_timeline)
+        event_text = f"{min(event_count, 9999)}{'+' if event_count > 9999 else ''}"
+        permission_count = len(self.permission_ledger.records)
+        permission_text = f"{min(permission_count, 9999)}{'+' if permission_count > 9999 else ''}"
+        error_count = self._activity_error_blocker_count()
+        error_text = f"{min(error_count, 9999)}{'+' if error_count > 9999 else ''}"
+        detail = (
+            f"ACTIVITY · phase={TASK_STATE_LABELS[state]} · run={run_signal} · "
+            f"events={event_text} · permissions={permission_text} · "
+            f"errors/blockers={error_text} · last={self._activity_last_evidence_label()}"
+        )
+        self.activity_digest.set(
+            self._redact_sensitive(detail)[:ACTIVITY_DIGEST_MAX_CHARS]
+        )
+
     def _model_queue_metadata_text(self):
         status = " ".join(str(self.model_status.get() or "").split())
         status = self._redact_sensitive(status) or "No model status"
@@ -4322,6 +4418,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_phase_value.configure(fg=TASK_STATE_COLORS[state])
         self.workflow_model_signal.set(self._workflow_model_text())
         self._refresh_model_queue_disclosure()
+        self._refresh_activity_digest()
         self.workflow_next_action.set(self._workflow_next_action_text())
 
     def _button_hover(self, button, active, hint=None):
@@ -6879,12 +6976,14 @@ class CodeAgentApp(tk.Tk):
         safe_text = self._redact_sensitive(text)
         self.activity.insert(tk.END, f"[{state_label}] {safe_text}\n")
         self.activity.see(tk.END)
+        self._refresh_activity_digest()
 
     def _reset_run_timeline(self, run_id=None):
         self.run_timeline = []
         self.streamed_text = ""
         self._timeline_run_id = run_id
         self._last_timeline_sequence = 0
+        self._refresh_activity_digest()
 
     def _record_timeline_event(self, run_id, sequence, kind, payload, source_run_id=None, source_sequence=None):
         if self._timeline_run_id != run_id:
@@ -6966,6 +7065,7 @@ class CodeAgentApp(tk.Tk):
                 entry["source_sequence"] = source_sequence
             self.run_timeline.append(entry)
         self._last_timeline_sequence = sequence
+        self._refresh_activity_digest()
         return True
 
     def set_summary(self, text):
