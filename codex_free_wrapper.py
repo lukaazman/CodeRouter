@@ -135,6 +135,7 @@ MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
 MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 ACTIVITY_DIGEST_MAX_CHARS = 240
 ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS = 72
+REVIEW_SELECTION_META_MAX_CHARS = 240
 
 TASK_STATE_IDLE = "idle"
 TASK_STATE_COLLECTING = "collecting"
@@ -3269,6 +3270,7 @@ class CodeAgentApp(tk.Tk):
         self.extra_context_count = tk.StringVar(value=self._extra_context_label())
         self.char_count = tk.StringVar(value="0 chars")
         self.pending_count = tk.StringVar(value="0 pending")
+        self.review_selection_meta = tk.StringVar(value="Selected 0 of 0 · no file selected")
         self.model_status = tk.StringVar(value="Free model fallback")
         self.workflow_phase = tk.StringVar(value=TASK_STATE_LABELS[TASK_STATE_IDLE])
         self.workflow_model_signal = tk.StringVar(value="Free model fallback")
@@ -3885,6 +3887,16 @@ class CodeAgentApp(tk.Tk):
         self.edited_files.column("lines", width=70, anchor="e")
         self.edited_files.grid(row=0, column=0, sticky="nsew")
         self.edited_files.bind("<<TreeviewSelect>>", self.on_file_selected)
+        self.review_selection_meta_label = tk.Label(
+            list_panel,
+            textvariable=self.review_selection_meta,
+            bg=PALETTE["surface"],
+            fg=PALETTE["text_muted"],
+            font=FONTS["mono_small"],
+            anchor="w",
+            justify=tk.LEFT,
+        )
+        self.review_selection_meta_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         diff_pane.add(list_panel, weight=1)
 
         diff_panel = tk.Frame(diff_pane, bg=PALETTE["surface"])
@@ -7779,9 +7791,29 @@ class CodeAgentApp(tk.Tk):
         self.set_task_state(TASK_STATE_REJECTED, f"Rejected {count} files")
         self.log(f"> rejected {count} pending files")
 
+    def _refresh_review_selection_meta(self):
+        if not hasattr(self, "review_selection_meta") or not hasattr(self, "edited_files"):
+            return
+        items = tuple(self.edited_files.get_children())
+        selection = tuple(self.edited_files.selection())
+        total = len(items)
+        if not selection:
+            text = f"Selected 0 of {total} · no file selected"
+        else:
+            try:
+                inspected_path = normalize_edit_path(selection[0])
+            except (TypeError, ValueError):
+                inspected_path = "(path unavailable)"
+            inspected_path = self._redact_sensitive(inspected_path)
+            text = f"Selected {len(selection)} of {total} · inspecting {inspected_path}"
+        self.review_selection_meta.set(
+            self._redact_sensitive(text)[:REVIEW_SELECTION_META_MAX_CHARS]
+        )
+
     def clear_changed_files(self):
         for item in self.edited_files.get_children():
             self.edited_files.delete(item)
+        self._refresh_review_selection_meta()
 
     def populate_changed_files(self, rows):
         self.clear_changed_files()
@@ -7791,9 +7823,11 @@ class CodeAgentApp(tk.Tk):
             self.edited_files.selection_set(rows[0]["path"])
             self.edited_files.focus(rows[0]["path"])
             self.write_diff(self.diff_by_path.get(rows[0]["path"], ""))
+        self._refresh_review_selection_meta()
 
     def on_file_selected(self, _event):
         selection = self.edited_files.selection()
+        self._refresh_review_selection_meta()
         if not selection:
             self._update_apply_controls()
             return
