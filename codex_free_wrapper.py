@@ -3298,6 +3298,7 @@ class CodeAgentApp(tk.Tk):
         self.local_command_result = tk.StringVar(
             value="Local only · /status  /model  /permissions  /review"
         )
+        self._local_command_expanded = False
 
         self.work_queue = queue.Queue()
         self.lifecycle = RunLifecycle()
@@ -3523,29 +3524,48 @@ class CodeAgentApp(tk.Tk):
 
         command_bar = tk.Frame(toolbar, bg=PALETTE["canvas"])
         command_bar.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(SPACING["section"], 0))
-        command_bar.columnconfigure(1, weight=1)
-        ttk.Label(command_bar, text="LOCAL COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        self.local_command_entry = ttk.Entry(
+        command_bar.columnconfigure(0, weight=1)
+        self.local_command_disclosure_button = self._button(
             command_bar,
+            "▸ Local command",
+            self._toggle_local_command_disclosure,
+            "Ghost.TButton",
+            "Show the exact local read-only command input",
+        )
+        self.local_command_disclosure_button.grid(row=0, column=0, sticky="w")
+        for sequence in ("<Return>", "<space>"):
+            self.local_command_disclosure_button.bind(
+                sequence,
+                lambda _event: (self._toggle_local_command_disclosure(), "break")[1],
+            )
+
+        self.local_command_detail = tk.Frame(command_bar, bg=PALETTE["canvas"])
+        self.local_command_detail.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.local_command_detail.columnconfigure(1, weight=1)
+        ttk.Label(self.local_command_detail, text="LOCAL COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.local_command_entry = ttk.Entry(
+            self.local_command_detail,
             textvariable=self.local_command,
             font=FONTS["mono_small"],
         )
         self.local_command_entry.grid(row=0, column=1, sticky="ew", padx=(10, 6))
         self.local_command_submit_button = self._button(
-            command_bar,
+            self.local_command_detail,
             "Submit",
             self.submit_local_command,
             "Secondary.TButton",
             "Run one exact local read-only command",
         )
         self.local_command_submit_button.grid(row=0, column=2, sticky="ew")
-        ttk.Label(
-            command_bar,
+        self.local_command_result_label = ttk.Label(
+            self.local_command_detail,
             textvariable=self.local_command_result,
             style="Muted.TLabel",
             wraplength=720,
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        )
+        self.local_command_result_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
         self.local_command_entry.bind("<Return>", self._on_local_command_submit)
+        self.local_command_detail.grid_remove()
 
         self.workflow_rail = tk.Frame(
             toolbar,
@@ -4566,6 +4586,24 @@ class CodeAgentApp(tk.Tk):
         self._refresh_trust_settings_surface()
         self.workflow_next_action.set(self._workflow_next_action_text())
 
+    def _set_local_command_disclosure(self, expanded):
+        if not hasattr(self, "local_command_detail"):
+            return
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            expanded = False
+        self._local_command_expanded = bool(expanded)
+        if self._local_command_expanded:
+            self.local_command_detail.grid()
+        else:
+            self.local_command_detail.grid_remove()
+        arrow = "▾" if self._local_command_expanded else "▸"
+        self.local_command_disclosure_button.configure(text=f"{arrow} Local command")
+
+    def _toggle_local_command_disclosure(self):
+        if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
+            return
+        self._set_local_command_disclosure(not self._local_command_expanded)
+
     def _button_hover(self, button, active, hint=None):
         if str(button.cget("state")) == tk.DISABLED:
             return
@@ -4580,9 +4618,18 @@ class CodeAgentApp(tk.Tk):
     def _on_local_command_shortcut(self, _event=None):
         if self.lifecycle.closed or self._command_palette_destroyed:
             return "break"
+        self._set_local_command_disclosure(True)
+        try:
+            self.update_idletasks()
+        except (tk.TclError, RuntimeError):
+            return "break"
         entry = getattr(self, "local_command_entry", None)
         if entry is not None:
             entry.focus_set()
+            try:
+                entry.focus_force()
+            except (tk.TclError, RuntimeError):
+                pass
             entry.selection_range(0, tk.END)
         return "break"
 
@@ -4689,6 +4736,7 @@ class CodeAgentApp(tk.Tk):
     def submit_local_command(self, value=None):
         if self.lifecycle.closed or self._command_palette_destroyed:
             return False
+        self._set_local_command_disclosure(True)
         if self._local_command_is_stale():
             self.local_command_result.set("Unavailable · current task state is stale.")
             return False
