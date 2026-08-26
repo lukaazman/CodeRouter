@@ -1,8 +1,8 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-26 — Workbench reachability, compact empty inspector, and explicit OpenRouter PKCE onboarding approved; checkpoint ready for publication
+Checkpoint: 2026-08-26 — Workbench reachability, PKCE onboarding, compact cancellation/recovery, and metadata-only History Retry approved; checkpoint ready for publication
 
-This checkpoint records the approved Workbench rework before the next roadmap slice. It includes the P0 resource-scope gate, compact workflow rail, canonical CodeRouter icon, model/queue disclosure, evidence-first Activity, reachable Workbench scrolling, compact Review Inspector empty state, Trust & settings with guided OpenRouter onboarding, command palette disclosure, scanned-context map, metadata-only History search, scanned-root hardening, and selective Apply/Undo lifecycle. Worker and overseer cycles review and test only; the main task alone commits and pushes.
+This checkpoint records the approved Workbench rework and the bounded recovery slices completed after it. It includes the P0 resource-scope gate, compact workflow rail, canonical CodeRouter icon, model/queue disclosure, evidence-first Activity, reachable Workbench scrolling, compact Review Inspector empty state, Trust & settings with guided OpenRouter onboarding, command palette disclosure, scanned-context map, metadata-only History search, scanned-root hardening, selective Apply/Undo lifecycle, explicit active-run cancellation, consistent cancellation history outcomes, and metadata-only History Retry. Worker and overseer cycles review and test only; the main task alone commits and pushes.
 
 ## Safety and window boundary
 
@@ -22,6 +22,9 @@ CodeAgentApp.__init__() withdraws immediately after super().__init__(), before p
 - Local command disclosure keeps exact-command, redaction, read-only, stale, closed, and explicit user-action guards. Ctrl+K expands and uses focus_set() without submitting.
 - Scanned context is collapsed by default and exposes only bounded redacted metadata from the latest successful Tk-thread scan. Missing/changed roots, non-directories, reset, failure, and stale previews clear old paths.
 - History search is collapsed by default, case-insensitive, metadata-only, bounded, in-memory, and persistence-free. No-match selection clears safely; blank search restores the existing inspect-only browser.
+- Stop is compact and disabled at idle; during collecting/planning/plan/running it cancels the active plan/executor run, closes owned resources, invalidates handoff identity, and leaves a safe IDLE · Cancelled state. Escape preserves higher-priority permission/review/Overseer actions.
+- Explicit plan, inspect, and verification cancellations finish bounded history with a redacted `cancelled` outcome before run invalidation; normal verification DENY remains rejected.
+- History Retry is available only inside the optional History disclosure and only for a selected safe record with a non-empty valid root, matching/blank current folder, prompt, key, and no active work. It loads metadata only and starts a fresh planning run; empty roots fail closed before path resolution.
 - History, Manual verification, Activity, and Task tools stay collapsed by default; primary project/task controls, prompt, summary/status, review state, changed files, diff, and review actions remain visible.
 - Active plan, inspect, verification, running work, permission actions, and ready/active Executor -> Overseer handoff state auto-open the relevant disclosure.
 - assets/code-router.svg is bundled and byte-identical to C:\Users\Luka\Documents\GitHub\Portfolio\assets\projects\code-router.svg. The dependency-free 32x32 Tk PhotoImage honors the canonical rounded mark (rx=48), uses transparency_set outside the mark where supported, retains the image on the app, and fails closed if icon setup is unavailable. The toolbar reuses the same image; no Portfolio path is used at runtime.
@@ -31,8 +34,8 @@ CodeAgentApp.__init__() withdraws immediately after super().__init__(), before p
 
 ## Verified evidence
 
-- Focused hidden regression checks: OAuth/Trust/scroll/activity worker pass 20/20 OK; Review Inspector empty-state worker pass 6/6 OK.
-- Latest full hidden suite: python -m unittest discover -s tests -p "test_*.py" — Ran 274 tests — OK.
+- Focused hidden regression checks: cancellation/history/retry overseer pass 11/11 OK; independent worker verification pass 22/22 OK; prior OAuth/Trust/scroll/activity and Review Inspector slices remain covered.
+- Latest full hidden suite: python -m unittest discover -s tests -p "test_*.py" — Ran 285 tests — OK.
 - Mocked/local PKCE exchange, callback parsing, secret boundary, hidden UI disclosure, scroll reachability, and empty-state round trips are covered; no live provider claim is made.
 - python -m py_compile codex_free_wrapper.py — exit 0.
 - Static test scan contains no tk.Tk(), deiconify, mainloop, focus_force, or event_generate calls.
@@ -49,7 +52,7 @@ Active-resource checks are run-scoped: include the current proposal/lifecycle ru
 Proceed one bounded slice at a time:
 
 1. Keep the approved reachability, empty-state, disclosure, hidden-startup, icon, security, and Undo surfaces covered by focused regressions.
-2. Continue the next bounded Codex/Claude-Code-style gap through worker then overseer: prioritize visible progress/evidence, queue transparency, cancellation/recovery, or safe task-history continuity.
+2. Continue the next bounded Codex/Claude-Code-style gap through worker then overseer: prioritize visible progress/evidence, queue transparency, performance, or safe task-history continuity beyond the completed cancellation/retry paths.
 3. Continue performance and safety hardening without adding paid-provider dependence, heavy AI visual effects, gradients, oversized rounded cards, hidden permission changes, or unrelated capability.
 4. Publish only genuinely large checkpoints; do not create small commits between bounded slices.
 

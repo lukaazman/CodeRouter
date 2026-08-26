@@ -3849,6 +3849,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_rail.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(SPACING["section"], 0))
         self.workflow_rail.columnconfigure(4, weight=1)
         self.workflow_rail.columnconfigure(7, weight=2)
+        self.workflow_rail.columnconfigure(8, weight=0)
         tk.Label(
             self.workflow_rail,
             text="PHASE",
@@ -3935,6 +3936,19 @@ class CodeAgentApp(tk.Tk):
             anchor="w",
         )
         self.workflow_next_action_value.grid(row=0, column=7, sticky="ew", padx=(6, 0))
+        self.stop_button = self._button(
+            self.workflow_rail,
+            "Stop",
+            self.cancel_active_run,
+            "Danger.TButton",
+            "Cancel the active plan or executor run",
+        )
+        self.stop_button.grid(
+            row=0,
+            column=8,
+            sticky="e",
+            padx=(12, 0),
+        )
 
         self.workbench_viewport = tk.Frame(self, bg=PALETTE["canvas"])
         self.workbench_viewport.grid(row=1, column=0, sticky="nsew")
@@ -4147,14 +4161,27 @@ class CodeAgentApp(tk.Tk):
         )
         self.history_detail.grid(row=22, column=0, sticky="nsew", pady=(0, 8))
         self.history_detail.configure(state=tk.DISABLED)
+        history_actions = tk.Frame(sidebar, bg=PALETTE["surface"])
+        history_actions.grid(row=23, column=0, sticky="ew", pady=(0, 4))
+        history_actions.columnconfigure(0, weight=1)
+        history_actions.columnconfigure(1, weight=1)
         self.history_inspect_button = self._button(
-            sidebar,
-            "Load selected (inspection)",
+            history_actions,
+            "Load",
             self.resume_selected_history,
             "Secondary.TButton",
             "Prefill metadata only; a fresh plan is still required",
         )
-        self.history_inspect_button.grid(row=23, column=0, sticky="ew", pady=(0, 4))
+        self.history_inspect_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.history_retry_button = self._button(
+            history_actions,
+            "Retry",
+            self.retry_selected_history,
+            "Secondary.TButton",
+            "Start a fresh plan from the selected metadata-only task",
+        )
+        self.history_retry_button.configure(state=tk.DISABLED)
+        self.history_retry_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self.history_status_label = ttk.Label(sidebar, textvariable=self.history_status, style="PanelMuted.TLabel", wraplength=235)
         self.history_status_label.grid(row=24, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=25, column=0, sticky="ew", pady=(14, 12))
@@ -4529,7 +4556,7 @@ class CodeAgentApp(tk.Tk):
                 "history": (
                     history_list_frame,
                     self.history_detail,
-                    self.history_inspect_button,
+                    history_actions,
                     self.history_status_label,
                 ),
                 "verification": (
@@ -5497,6 +5524,8 @@ class CodeAgentApp(tk.Tk):
             self.reject_pending()
         elif self._overseer_is_active():
             self.cancel_overseer()
+        elif self._run_in_progress():
+            self.cancel_active_run()
         return "break"
 
     def _run_in_progress(self):
@@ -5722,6 +5751,9 @@ class CodeAgentApp(tk.Tk):
 
     def _update_lifecycle_controls(self):
         busy = self._run_in_progress()
+        stop_button = getattr(self, "stop_button", None)
+        if stop_button is not None:
+            stop_button.configure(state=tk.NORMAL if busy else tk.DISABLED)
         self._auto_open_disclosures()
         control_state = tk.DISABLED if busy else tk.NORMAL
         for name in (
@@ -5739,6 +5771,9 @@ class CodeAgentApp(tk.Tk):
         if history_button is not None:
             has_selection = self.selected_history_record is not None
             history_button.configure(state=tk.NORMAL if has_selection and not busy else tk.DISABLED)
+        retry_button = getattr(self, "history_retry_button", None)
+        if retry_button is not None:
+            retry_button.configure(state=tk.NORMAL if self._history_retry_is_ready() else tk.DISABLED)
         mode_state = tk.DISABLED if self._mode_locked_for_active_run() else tk.NORMAL
         for name in ("review_mode_button", "auto_mode_button"):
             button = getattr(self, name, None)
@@ -6069,6 +6104,8 @@ class CodeAgentApp(tk.Tk):
             decision,
             run_id=request.run_id,
         )
+        if decision == PERMISSION_DECISION_CANCEL:
+            self._history_finish("cancelled", "verification cancelled by user")
         self._invalidate_handoff("verification denied")
         self._invalidate_run()
         self._history_clear_current()
@@ -6207,6 +6244,7 @@ class CodeAgentApp(tk.Tk):
             PERMISSION_DECISION_CANCEL,
             run_id=request.run_id,
         )
+        self._history_finish("cancelled", "inspect cancelled by user")
         self._invalidate_handoff("inspect cancelled")
         self._invalidate_run()
         self._history_clear_current()
@@ -6930,6 +6968,72 @@ class CodeAgentApp(tk.Tk):
         if record is None:
             return False
         return self.resume_task(record.task_id)
+
+    def _history_retry_is_ready(self):
+        record = self.selected_history_record
+        if (
+            self.lifecycle.closed
+            or self._run_in_progress()
+            or self.pending_plan
+            or self.pending_proposal
+            or self._verification_is_active()
+            or self._overseer_is_active()
+            or not isinstance(record, HistoryRecord)
+            or not str(self.api_key or "").strip()
+            or not str(record.request_summary or "").strip()
+            or not str(record.project_root or "").strip()
+        ):
+            return False
+        try:
+            recorded_root = Path(record.project_root).resolve()
+            if not recorded_root.is_dir():
+                return False
+            current_text = self.selected_folder.get().strip()
+            if not current_text:
+                return True
+            return Path(current_text).resolve() == recorded_root
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def retry_selected_history(self):
+        record = self.selected_history_record
+        if not isinstance(record, HistoryRecord):
+            self.history_status.set("Retry unavailable · select a saved task")
+            return False
+        if self.lifecycle.closed:
+            return False
+        if self._run_in_progress() or self._verification_is_active() or self._overseer_is_active():
+            self._report_lifecycle_action("history retry blocked while work is active")
+            return False
+        if self.pending_plan or self.pending_proposal:
+            self._report_lifecycle_action("history retry blocked while a plan or proposal is pending")
+            return False
+        if not str(self.api_key or "").strip():
+            self.history_status.set("Retry unavailable · connect OpenRouter first")
+            return False
+        if not str(record.request_summary or "").strip():
+            self.history_status.set("Retry unavailable · saved task has no request")
+            return False
+        if not str(record.project_root or "").strip():
+            self.history_status.set("Retry unavailable · saved project folder is invalid")
+            return False
+        try:
+            recorded_root = Path(record.project_root).resolve()
+            if not recorded_root.is_dir():
+                self.history_status.set("Retry unavailable · saved project folder is unavailable")
+                return False
+            current_text = self.selected_folder.get().strip()
+            if current_text and Path(current_text).resolve() != recorded_root:
+                self.history_status.set("Retry unavailable · select the saved project folder")
+                return False
+        except (OSError, RuntimeError, TypeError, ValueError):
+            self.history_status.set("Retry unavailable · saved project folder is invalid")
+            return False
+        if not self.resume_task(record.task_id):
+            return False
+        self.history_status.set("Retrying selected task · preparing a fresh plan")
+        self.run_agent()
+        return True
 
     def _history_begin(self, snapshot, initial_state=TASK_STATE_PLANNING, detail="Preparing plan"):
         record = HistoryRecord.start(snapshot, initial_state=initial_state, detail=detail)
@@ -7837,6 +7941,7 @@ class CodeAgentApp(tk.Tk):
     def cancel_plan(self):
         if not self.pending_plan:
             return
+        self._history_finish("cancelled", "plan cancelled by user")
         self._invalidate_handoff("plan cancelled")
         self._discard_pending_plan("cancel")
         self._invalidate_run()
@@ -7844,6 +7949,31 @@ class CodeAgentApp(tk.Tk):
         self.approved_plan = None
         self.set_summary("Plan cancelled. No edit run was started.")
         self.set_task_state(TASK_STATE_IDLE, "Plan cancelled")
+
+    def cancel_active_run(self):
+        """Cancel the active executor run without discarding chat history."""
+        if self.lifecycle.closed or not self._run_in_progress():
+            return False
+        if self.pending_plan:
+            self.cancel_plan()
+            return True
+        if self.inspect_request:
+            return bool(self.cancel_inspect())
+        if self.verification_request:
+            return bool(self.cancel_verification_request())
+
+        self._invalidate_handoff("run cancelled")
+        verification_was_active = self._stop_verification(keep_identity=False)
+        self._history_finish("cancelled", "active run cancelled by user")
+        self._invalidate_run()
+        self.approved_plan = None
+        self._write_plan_preview("")
+        if verification_was_active:
+            self.verification_status.set("Cancelled")
+        self.set_summary("Run cancelled. No changes were written.")
+        self.set_task_state(TASK_STATE_IDLE, "Cancelled")
+        self.log("> active run cancelled", state=TASK_STATE_IDLE)
+        return True
 
     def _set_pending_proposal(self, proposal):
         self.pending_proposal = proposal
