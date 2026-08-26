@@ -104,13 +104,15 @@ class ActivityEvidenceUiTests(unittest.TestCase):
         self.assertNotEqual(activity.grid_info(), {})
         self.assertIs(activity, self.app.activity)
         self.assertEqual(activity.get("1.0", tk.END), before_content)
+        expanded_view = tuple(super(wrapper.PreservingActivityLog, activity).yview())
+        self.assertEqual(activity._logical_yview, expanded_view)
 
         disclosure.invoke()
         self.app.update_idletasks()
         self.assertEqual(activity.grid_info(), {})
         self.assertIs(activity, self.app.activity)
         self.assertEqual(activity.get("1.0", tk.END), before_content)
-        self.assertEqual(activity.yview(), before_view)
+        self.assertEqual(activity.yview(), expanded_view)
 
     def test_active_run_digest_remains_truthful(self):
         snapshot = self.activate_snapshot("active-activity-evidence")

@@ -72,6 +72,33 @@ class ReviewInspectorUiTests(unittest.TestCase):
             "Selected 0 of 0 · no file selected",
         )
 
+    def test_empty_state_rows_clear_round_trip_preserves_widget_identity(self):
+        edited_files = self.app.edited_files
+        diff = self.app.diff
+        diff_pane = self.app.review_diff_pane
+        empty_state = self.app.review_empty_state
+
+        self.assertNotEqual(empty_state.grid_info(), {})
+        self.assertEqual(diff_pane.grid_info(), {})
+        self.assertEqual(tuple(edited_files.get_children()), ())
+
+        self.app.diff_by_path = {
+            "first.txt": "--- FILE first.txt ---\n+replacement\n",
+        }
+        self.app.populate_changed_files([{"path": "first.txt", "stats": "+1 / -0"}])
+        self.assertEqual(empty_state.grid_info(), {})
+        self.assertNotEqual(diff_pane.grid_info(), {})
+        self.assertEqual(tuple(edited_files.get_children()), ("first.txt",))
+        self.assertIn("first.txt", diff.get("1.0", tk.END))
+
+        self.app.clear_changed_files()
+        self.assertNotEqual(empty_state.grid_info(), {})
+        self.assertEqual(diff_pane.grid_info(), {})
+        self.assertEqual(tuple(edited_files.get_children()), ())
+        self.assertIs(edited_files, self.app.edited_files)
+        self.assertIs(diff, self.app.diff)
+        self.assertIs(diff_pane, self.app.review_diff_pane)
+        self.assertIs(empty_state, self.app.review_empty_state)
     def test_two_changed_files_show_selection_count_and_inspected_path(self):
         self.prepare_two_file_review()
         self.assertEqual(

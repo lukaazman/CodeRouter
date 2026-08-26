@@ -1,4 +1,5 @@
 import codecs
+import base64
 import ctypes
 import difflib
 import hashlib
@@ -13,6 +14,10 @@ import threading
 import time
 import tkinter as tk
 import uuid
+import urllib.parse
+import webbrowser
+import http.server
+import secrets as secrets_module
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -30,6 +35,12 @@ WINDOW_ICON_BACKGROUND = "#080808"
 WINDOW_ICON_FOREGROUND = "#f3f3f3"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+OPENROUTER_AUTH_KEYS_URL = "https://openrouter.ai/api/v1/auth/keys"
+OPENROUTER_OAUTH_CALLBACK_PATH = "/oauth/callback"
+OPENROUTER_OAUTH_HOST = "127.0.0.1"
+OPENROUTER_OAUTH_TIMEOUT_SECONDS = 180
+OPENROUTER_OAUTH_KEY_LABEL = "CodeRouter"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
 CONFIG_PATH = Path(__file__).with_name("local_config.json")
 EXTERNAL_CONTEXT_PREFIX = "__external_context__"
@@ -371,6 +382,144 @@ PROTECTED_EDIT_SUFFIXES = {
     ".key",
     ".pem",
 }
+
+
+def create_openrouter_pkce_pair():
+    verifier = secrets_module.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def build_openrouter_auth_url(callback_url, code_challenge, key_label=OPENROUTER_OAUTH_KEY_LABEL):
+    callback = str(callback_url or "").strip()
+    challenge = str(code_challenge or "").strip()
+    try:
+        parsed = urllib.parse.urlsplit(callback)
+        valid_host = parsed.hostname in {"localhost", OPENROUTER_OAUTH_HOST}
+        valid_callback = parsed.scheme == "http" and valid_host and parsed.port is not None
+    except ValueError:
+        valid_callback = False
+    if not valid_callback or not challenge:
+        raise ValueError("OpenRouter OAuth callback or PKCE challenge is invalid.")
+    query = urllib.parse.urlencode(
+        {
+            "callback_url": callback,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "key_label": str(key_label or OPENROUTER_OAUTH_KEY_LABEL)[:64],
+        }
+    )
+    return f"{OPENROUTER_AUTH_URL}?{query}"
+
+
+def parse_openrouter_callback_url(callback_url):
+    try:
+        parsed = urllib.parse.urlsplit(str(callback_url or ""))
+    except ValueError:
+        return "", "OpenRouter callback was invalid."
+    if parsed.path != OPENROUTER_OAUTH_CALLBACK_PATH:
+        return "", "OpenRouter callback was invalid."
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if query.get("error"):
+        return "", "OpenRouter authorization was not completed."
+    code = str(query.get("code", [""])[0] or "").strip()
+    if not code or len(code) > 512:
+        return "", "OpenRouter authorization code was invalid."
+    return code, ""
+
+
+def exchange_openrouter_oauth_code(code, code_verifier, opener=None):
+    safe_code = str(code or "").strip()
+    verifier = str(code_verifier or "").strip()
+    if not safe_code or not verifier:
+        raise ValueError("OpenRouter OAuth code is incomplete.")
+    request = Request(
+        OPENROUTER_AUTH_KEYS_URL,
+        data=json.dumps(
+            {
+                "code": safe_code,
+                "code_verifier": verifier,
+                "code_challenge_method": "S256",
+            }
+        ).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    opener = opener or urlopen
+    try:
+        response = opener(request, timeout=PROVIDER_REQUEST_TIMEOUT_SECONDS)
+        try:
+            raw_response = response.read(64 * 1024)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+    except HTTPError as exc:
+        raise RuntimeError(f"OpenRouter sign-in rejected (HTTP {exc.code}).") from None
+    except (OSError, URLError, TimeoutError):
+        raise RuntimeError("OpenRouter sign-in could not reach the authorization service.") from None
+    try:
+        payload = json.loads(raw_response.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError("OpenRouter sign-in returned invalid data.") from None
+    key = payload.get("key") if isinstance(payload, dict) else None
+    if not isinstance(key, str) or not 16 <= len(key) <= 256 or not key.startswith("sk-"):
+        raise RuntimeError("OpenRouter sign-in did not return a usable API key.")
+    return key
+
+
+class _OpenRouterCallbackServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, server_address):
+        super().__init__(server_address, _OpenRouterCallbackHandler)
+        self.callback_event = threading.Event()
+        self.callback_url = ""
+
+
+class _OpenRouterCallbackHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        server = self.server
+        try:
+            parsed = urllib.parse.urlsplit(self.path)
+        except ValueError:
+            parsed = None
+        code = ""
+        error = ""
+        if parsed is not None and parsed.path == OPENROUTER_OAUTH_CALLBACK_PATH:
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            code = str(query.get("code", [""])[0] or "").strip()
+            error = str(query.get("error", [""])[0] or "").strip()
+            if len(code) > 512:
+                code = ""
+            server.callback_code = code
+            server.callback_error = bool(error)
+            server.callback_event.set()
+            status = 200 if code and not error else 400
+            body = (
+                b"CodeRouter connection received. You can close this tab and return "
+                b"to the app."
+                if status == 200
+                else b"CodeRouter connection was not completed. Return to the app."
+            )
+        else:
+            status = 404
+            body = b"CodeRouter callback was not found."
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *_args):
+        return
 
 
 @dataclass
@@ -3424,6 +3573,16 @@ class CodeAgentApp(tk.Tk):
         self._disclosure_buttons = {}
         self._disclosure_widgets = {}
         self._disclosure_containers = {}
+        self._openrouter_auth_queue = queue.Queue()
+        self._openrouter_auth_thread = None
+        self._openrouter_auth_server = None
+        self._openrouter_auth_cancel_event = None
+        self._openrouter_auth_generation = 0
+        self.openrouter_auth_status = tk.StringVar(value="")
+        self._workbench_window_id = None
+        self._workbench_scrollbar_visible = False
+        self._workbench_scroll_sync_after_id = None
+        self._workbench_scroll_syncing = False
 
         self._build_styles()
         self._build_ui()
@@ -3777,8 +3936,42 @@ class CodeAgentApp(tk.Tk):
         )
         self.workflow_next_action_value.grid(row=0, column=7, sticky="ew", padx=(6, 0))
 
-        shell = tk.Frame(self, bg=PALETTE["canvas"], padx=SPACING["page"], pady=SPACING["page"])
-        shell.grid(row=1, column=0, sticky="nsew")
+        self.workbench_viewport = tk.Frame(self, bg=PALETTE["canvas"])
+        self.workbench_viewport.grid(row=1, column=0, sticky="nsew")
+        self.workbench_viewport.columnconfigure(0, weight=1)
+        self.workbench_viewport.rowconfigure(0, weight=1)
+        self.workbench_canvas = tk.Canvas(
+            self.workbench_viewport,
+            bg=PALETTE["canvas"],
+            borderwidth=0,
+            highlightthickness=0,
+            yscrollincrement=24,
+        )
+        self.workbench_canvas.grid(row=0, column=0, sticky="nsew")
+        self.workbench_scrollbar = tk.Scrollbar(
+            self.workbench_viewport,
+            orient=tk.VERTICAL,
+            command=self.workbench_canvas.yview,
+            bg=PALETTE["surface_raised"],
+            troughcolor=PALETTE["canvas"],
+            activebackground=PALETTE["border_strong"],
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.workbench_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.workbench_scrollbar.grid_remove()
+        self.workbench_canvas.configure(yscrollcommand=self.workbench_scrollbar.set)
+        self.workbench_canvas.bind("<Configure>", self._on_workbench_canvas_configure)
+
+        shell = tk.Frame(self.workbench_canvas, bg=PALETTE["canvas"], padx=SPACING["page"], pady=SPACING["page"])
+        self.workbench_body = shell
+        self._workbench_window_id = self.workbench_canvas.create_window(
+            (0, 0),
+            window=shell,
+            anchor="nw",
+        )
+        shell.bind("<Configure>", self._on_workbench_body_configure)
         shell.columnconfigure(1, weight=5)
         shell.columnconfigure(2, weight=4)
         shell.rowconfigure(0, weight=1)
@@ -3831,6 +4024,15 @@ class CodeAgentApp(tk.Tk):
         )
         self.trust_settings_detail_label.grid(row=1, column=0, sticky="ew", pady=(5, 0))
         self.trust_settings_detail_label.grid_remove()
+        self.openrouter_connect_button = self._button(
+            self.trust_settings_container,
+            "Connect OpenRouter",
+            self._start_openrouter_login,
+            "Secondary.TButton",
+            "Open a secure OpenRouter browser login using a local PKCE callback",
+        )
+        self.openrouter_connect_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.openrouter_connect_button.grid_remove()
         ttk.Label(sidebar, text="ACTIONS", style="Section.TLabel").grid(row=12, column=0, sticky="w")
         self.run_button = self._button(sidebar, "Run / continue chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
         self.run_button.grid(row=13, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
@@ -3993,6 +4195,7 @@ class CodeAgentApp(tk.Tk):
         self.verification_status_label.grid(row=29, column=0, sticky="ew")
 
         main = ttk.PanedWindow(shell, orient=tk.HORIZONTAL)
+        self.workbench_main = main
         main.grid(row=0, column=1, columnspan=2, sticky="nsew")
 
         center = self._panel(main)
@@ -4078,10 +4281,10 @@ class CodeAgentApp(tk.Tk):
         )
         self.plan_preview.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.plan_preview.configure(state=tk.DISABLED)
-        diff_pane = ttk.PanedWindow(right, orient=tk.VERTICAL)
-        diff_pane.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
+        self.review_diff_pane = ttk.PanedWindow(right, orient=tk.VERTICAL)
+        self.review_diff_pane.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
 
-        list_panel = tk.Frame(diff_pane, bg=PALETTE["surface"])
+        list_panel = tk.Frame(self.review_diff_pane, bg=PALETTE["surface"])
         list_panel.columnconfigure(0, weight=1)
         list_panel.rowconfigure(0, weight=1)
         self.edited_files = ttk.Treeview(list_panel, columns=("status", "lines"), show="headings", selectmode="extended")
@@ -4101,9 +4304,9 @@ class CodeAgentApp(tk.Tk):
             justify=tk.LEFT,
         )
         self.review_selection_meta_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        diff_pane.add(list_panel, weight=1)
+        self.review_diff_pane.add(list_panel, weight=1)
 
-        diff_panel = tk.Frame(diff_pane, bg=PALETTE["surface"])
+        diff_panel = tk.Frame(self.review_diff_pane, bg=PALETTE["surface"])
         diff_panel.columnconfigure(0, weight=1)
         diff_panel.rowconfigure(0, weight=1)
         self.diff = scrolledtext.ScrolledText(diff_panel, wrap=tk.NONE, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["text"])
@@ -4112,7 +4315,17 @@ class CodeAgentApp(tk.Tk):
         self.diff.tag_configure("del", foreground=PALETTE["danger"], background="#3a2025")
         self.diff.tag_configure("file", foreground=PALETTE["accent"], font=FONTS["body_bold"])
         self.diff.tag_configure("meta", foreground=PALETTE["text_subtle"])
-        diff_pane.add(diff_panel, weight=2)
+        self.review_diff_pane.add(diff_panel, weight=2)
+        self.review_empty_state = ttk.Label(
+            right,
+            text="No pending changes",
+            style="PanelMuted.TLabel",
+            anchor="center",
+            justify=tk.CENTER,
+        )
+        self.review_empty_state.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
+        self.review_diff_pane.grid_remove()
+        self._queue_workbench_scroll_sync()
 
         plan_actions = tk.Frame(right, bg=PALETTE["surface"])
         plan_actions.grid(row=5, column=0, sticky="ew", pady=(0, 8))
@@ -4347,12 +4560,110 @@ class CodeAgentApp(tk.Tk):
         self._refresh_trust_settings_surface()
         self._set_trust_settings_disclosure(False)
         main.add(right, weight=6)
+        self._queue_workbench_scroll_sync()
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(sequence, self._on_workbench_mousewheel, add="+")
 
         self.bind_all("<Control-Return>", self._on_run_shortcut)
         self.bind_all("<Control-Key-k>", self._on_local_command_shortcut)
         self.bind_all("<Escape>", self._on_escape_shortcut)
         self.log("CodeRouter started. API key is hidden and loaded from local config or environment.")
 
+    def _cancel_workbench_scroll_sync(self):
+        after_id = self._workbench_scroll_sync_after_id
+        self._workbench_scroll_sync_after_id = None
+        if after_id is None:
+            return
+        try:
+            self.after_cancel(after_id)
+        except (tk.TclError, RuntimeError):
+            pass
+    def _queue_workbench_scroll_sync(self):
+        if self._workbench_scroll_sync_after_id is not None:
+            return
+        try:
+            self._workbench_scroll_sync_after_id = self.after_idle(self._run_workbench_scroll_sync)
+        except tk.TclError:
+            self._workbench_scroll_sync_after_id = None
+
+    def _run_workbench_scroll_sync(self):
+        self._workbench_scroll_sync_after_id = None
+        self._sync_workbench_scrollregion()
+
+    def _on_workbench_canvas_configure(self, event):
+        if self._workbench_window_id is not None:
+            self.workbench_canvas.itemconfigure(
+                self._workbench_window_id,
+                width=max(int(event.width), 1),
+            )
+        self._sync_workbench_scrollregion()
+
+    def _on_workbench_body_configure(self, _event=None):
+        self._sync_workbench_scrollregion()
+
+    def _sync_workbench_scrollregion(self):
+        if self._workbench_scroll_syncing:
+            return
+        self._workbench_scroll_syncing = True
+        try:
+            bbox = self.workbench_canvas.bbox("all")
+            if not bbox:
+                self.workbench_canvas.configure(scrollregion=(0, 0, 0, 0))
+                should_show = False
+            else:
+                self.workbench_canvas.configure(scrollregion=bbox)
+                content_height = max(0, bbox[3] - bbox[1])
+                viewport_height = max(0, self.workbench_canvas.winfo_height())
+                should_show = viewport_height > 1 and content_height > viewport_height + 1
+
+            if should_show != self._workbench_scrollbar_visible:
+                if should_show:
+                    self.workbench_scrollbar.grid()
+                else:
+                    self.workbench_scrollbar.grid_remove()
+                    self.workbench_canvas.yview_moveto(0)
+                self._workbench_scrollbar_visible = should_show
+                self._queue_workbench_scroll_sync()
+        except tk.TclError:
+            return
+        finally:
+            self._workbench_scroll_syncing = False
+
+    def _workbench_widget_is_inside(self, widget):
+        while widget is not None:
+            if widget is self.workbench_viewport:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _workbench_widget_owns_internal_scroll(self, widget):
+        scrollable_classes = {"Text", "Listbox", "Treeview", "Scrollbar", "TScrollbar"}
+        while widget is not None:
+            try:
+                if widget.winfo_class() in scrollable_classes:
+                    return True
+            except tk.TclError:
+                return False
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_workbench_mousewheel(self, event):
+        widget = getattr(event, "widget", None)
+        if not self._workbench_widget_is_inside(widget) or self._workbench_widget_owns_internal_scroll(widget):
+            return None
+        if getattr(event, "num", None) == 4:
+            units = -3
+        elif getattr(event, "num", None) == 5:
+            units = 3
+        else:
+            delta = getattr(event, "delta", 0)
+            units = -int(delta / 120) if delta else 0
+            if delta and units == 0:
+                units = -1 if delta > 0 else 1
+        if units:
+            self.workbench_canvas.yview_scroll(units, "units")
+        return "break"
     def _panel(self, parent, padding=None):
         panel_padding = padding if padding is not None else SPACING["panel"]
         return tk.Frame(
@@ -4440,6 +4751,7 @@ class CodeAgentApp(tk.Tk):
         else:
             decision_text = "0 recorded"
         lines = (
+            f"OpenRouter: {self._openrouter_connection_label()}",
             f"Apply mode: {mode_label}",
             f"Permission: {permission_note}",
             f"Project instructions: {instruction_status}",
@@ -4448,6 +4760,31 @@ class CodeAgentApp(tk.Tk):
         )
         return self._redact_sensitive("\n".join(lines))[:TRUST_SETTINGS_MAX_CHARS]
 
+    def _openrouter_auth_is_active(self):
+        thread = self._openrouter_auth_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def _openrouter_connection_label(self):
+        if self._openrouter_auth_is_active():
+            return "connecting in browser"
+        status = " ".join(str(self.openrouter_auth_status.get() or "").split())
+        if status:
+            return self._redact_sensitive(status)[:160]
+        if self.api_key:
+            return "connected · local key ready"
+        return "not connected · use Connect OpenRouter"
+
+    def _refresh_openrouter_connect_control(self):
+        if not hasattr(self, "openrouter_connect_button"):
+            return
+        active = self._openrouter_auth_is_active()
+        self.openrouter_connect_button.configure(
+            text="Connecting…" if active else (
+                "Reconnect OpenRouter" if self.api_key else "Connect OpenRouter"
+            ),
+            state=tk.DISABLED if active else tk.NORMAL,
+        )
+
     def _set_trust_settings_disclosure(self, expanded):
         if not hasattr(self, "trust_settings_detail_label"):
             return
@@ -4455,11 +4792,15 @@ class CodeAgentApp(tk.Tk):
             expanded = False
         if self._trust_settings_is_active():
             expanded = True
+        if self._openrouter_auth_is_active():
+            expanded = True
         self._trust_settings_expanded = bool(expanded)
         if self._trust_settings_expanded:
             self.trust_settings_detail_label.grid()
+            self.openrouter_connect_button.grid()
         else:
             self.trust_settings_detail_label.grid_remove()
+            self.openrouter_connect_button.grid_remove()
         arrow = "▾" if self._trust_settings_expanded else "▸"
         self.trust_settings_button.configure(text=f"{arrow} Trust & settings")
 
@@ -4475,9 +4816,131 @@ class CodeAgentApp(tk.Tk):
         if not hasattr(self, "trust_settings_detail_text"):
             return
         self.trust_settings_detail_text.set(self._trust_settings_metadata_text())
+        self._refresh_openrouter_connect_control()
         if hasattr(self, "trust_settings_button"):
             arrow = "▾" if self._trust_settings_expanded else "▸"
             self.trust_settings_button.configure(text=f"{arrow} Trust & settings")
+
+    def _start_openrouter_login(self):
+        if self.lifecycle.closed or self._openrouter_auth_is_active():
+            return
+        self._openrouter_auth_generation += 1
+        generation = self._openrouter_auth_generation
+        cancel_event = threading.Event()
+        self._openrouter_auth_cancel_event = cancel_event
+        self.openrouter_auth_status.set("Starting secure browser connection…")
+        self._set_trust_settings_disclosure(True)
+        self._refresh_trust_settings_surface()
+        thread = threading.Thread(
+            target=self._openrouter_auth_worker,
+            args=(generation, cancel_event),
+            name="coderouter-openrouter-auth",
+            daemon=True,
+        )
+        self._openrouter_auth_thread = thread
+        thread.start()
+        self._refresh_openrouter_connect_control()
+
+    def _openrouter_auth_worker(self, generation, cancel_event):
+        server = None
+        try:
+            server = _OpenRouterCallbackServer((OPENROUTER_OAUTH_HOST, 0))
+            self._openrouter_auth_server = server
+            port = int(server.server_address[1])
+            callback_url = (
+                f"http://localhost:{port}{OPENROUTER_OAUTH_CALLBACK_PATH}"
+            )
+            code_verifier, code_challenge = create_openrouter_pkce_pair()
+            server.callback_url = callback_url
+            auth_url = build_openrouter_auth_url(callback_url, code_challenge)
+            if cancel_event.is_set():
+                return
+            if not webbrowser.open(auth_url, new=2, autoraise=True):
+                raise RuntimeError("Default browser could not be opened.")
+            server.timeout = 0.25
+            deadline = time.monotonic() + OPENROUTER_OAUTH_TIMEOUT_SECONDS
+            while not cancel_event.is_set() and time.monotonic() < deadline:
+                server.handle_request()
+                if server.callback_event.is_set():
+                    break
+            if cancel_event.is_set():
+                return
+            if not server.callback_event.is_set():
+                self._openrouter_auth_queue.put(
+                    (generation, "error", "OpenRouter login timed out. Start again when ready.")
+                )
+                return
+            if getattr(server, "callback_error", False):
+                self._openrouter_auth_queue.put(
+                    (generation, "error", "OpenRouter authorization was not completed.")
+                )
+                return
+            code = str(getattr(server, "callback_code", "") or "").strip()
+            if not code:
+                self._openrouter_auth_queue.put(
+                    (generation, "error", "OpenRouter authorization code was invalid.")
+                )
+                return
+            key = exchange_openrouter_oauth_code(code, code_verifier)
+            if not cancel_event.is_set():
+                self._openrouter_auth_queue.put((generation, "success", key))
+        except Exception as exc:
+            if not cancel_event.is_set():
+                message = str(exc)
+                if not isinstance(exc, RuntimeError):
+                    message = "OpenRouter connection failed. Try again."
+                self._openrouter_auth_queue.put(
+                    (generation, "error", self._redact_sensitive(message)[:160])
+                )
+        finally:
+            if server is not None:
+                try:
+                    server.server_close()
+                except OSError:
+                    pass
+            if self._openrouter_auth_server is server:
+                self._openrouter_auth_server = None
+
+    def _drain_openrouter_auth_results(self):
+        while True:
+            try:
+                generation, result, payload = self._openrouter_auth_queue.get_nowait()
+            except queue.Empty:
+                break
+            if generation != self._openrouter_auth_generation or self.lifecycle.closed:
+                continue
+            self._openrouter_auth_thread = None
+            self._openrouter_auth_cancel_event = None
+            if result == "success":
+                key = str(payload or "")
+                self.api_key = key
+                self.config_data["openrouter_api_key"] = key
+                try:
+                    save_local_config(self.config_data)
+                except OSError:
+                    self.openrouter_auth_status.set(
+                        "connected for this session · local save failed"
+                    )
+                else:
+                    self.openrouter_auth_status.set("connected · key stored locally")
+                self.log("OpenRouter connected through secure browser authorization.")
+            else:
+                self.openrouter_auth_status.set(
+                    self._redact_sensitive(str(payload or "OpenRouter connection failed."))[:160]
+                )
+            self._set_trust_settings_disclosure(self._trust_settings_expanded)
+            self._refresh_trust_settings_surface()
+
+    def _cancel_openrouter_auth(self, quiet=False):
+        self._openrouter_auth_generation += 1
+        cancel_event = self._openrouter_auth_cancel_event
+        if cancel_event is not None:
+            cancel_event.set()
+        self._openrouter_auth_cancel_event = None
+        self._openrouter_auth_thread = None
+        if not quiet and hasattr(self, "openrouter_auth_status"):
+            self.openrouter_auth_status.set("connection cancelled")
+            self._refresh_trust_settings_surface()
 
     def _scanned_context_signature(self):
         values = []
@@ -7413,7 +7876,9 @@ class CodeAgentApp(tk.Tk):
         self._clear_last_apply_undo()
         self._invalidate_handoff("application close")
         self._stop_verification(keep_identity=False)
+        self._cancel_openrouter_auth(quiet=True)
         workers = self._worker_handles_snapshot()
+        self._cancel_workbench_scroll_sync()
         self._cancel_poll_timer()
         self._history_finish("closed", "application closed")
         self._history_clear_current()
@@ -8339,19 +8804,32 @@ class CodeAgentApp(tk.Tk):
             self._redact_sensitive(text)[:REVIEW_SELECTION_META_MAX_CHARS]
         )
 
+    def _set_review_inspector_empty_state(self, has_rows):
+        show_rows = bool(has_rows)
+        if show_rows:
+            self.review_empty_state.grid_remove()
+            self.review_diff_pane.grid()
+        else:
+            self.review_diff_pane.grid_remove()
+            self.review_empty_state.grid()
+        self._queue_workbench_scroll_sync()
+
     def clear_changed_files(self):
         for item in self.edited_files.get_children():
             self.edited_files.delete(item)
+        self._set_review_inspector_empty_state(False)
         self._refresh_review_selection_meta()
 
     def populate_changed_files(self, rows):
         self.clear_changed_files()
+        has_rows = bool(rows)
         for row in rows:
             self.edited_files.insert("", tk.END, iid=row["path"], values=(row["path"], row["stats"]))
-        if rows:
+        if has_rows:
             self.edited_files.selection_set(rows[0]["path"])
             self.edited_files.focus(rows[0]["path"])
             self.write_diff(self.diff_by_path.get(rows[0]["path"], ""))
+        self._set_review_inspector_empty_state(has_rows)
         self._refresh_review_selection_meta()
 
     def on_file_selected(self, _event):
@@ -8393,6 +8871,7 @@ class CodeAgentApp(tk.Tk):
     def destroy(self):
         self._command_palette_destroyed = True
         self._cancel_poll_timer()
+        self._cancel_workbench_scroll_sync()
         return super().destroy()
 
     def _schedule_poll(self):
@@ -8408,6 +8887,7 @@ class CodeAgentApp(tk.Tk):
     def _poll_queue(self):
         if self.lifecycle.closed:
             return
+        self._drain_openrouter_auth_results()
         try:
             while True:
                 event = self.work_queue.get_nowait()

@@ -87,8 +87,10 @@ agents while keeping the app free and local:
 ## Configuration
 
 Copy `local_config.example.json` to `local_config.json` and provide an
-OpenRouter API key, or set `OPENROUTER_API_KEY`. `local_config.json` is local
-configuration and must not be committed.
+OpenRouter API key, or expand Trust & settings in the app and choose
+Connect OpenRouter for the guided browser setup. The PKCE flow stores the
+user-controlled key only in ignored `local_config.json`; `OPENROUTER_API_KEY`
+is also supported. Never commit `local_config.json`.
 
 ## Verification note
 

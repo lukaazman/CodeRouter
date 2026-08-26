@@ -1,8 +1,8 @@
 # CodeRouter Continuation Plan
 
-Checkpoint: 2026-08-25 — Combined no-window UI, icon, scanned-context, History-search, Activity, and Undo hardening verified; approval pending
+Checkpoint: 2026-08-26 — Workbench reachability, compact empty inspector, and explicit OpenRouter PKCE onboarding approved; checkpoint ready for publication
 
-This checkpoint freezes the current Workbench rework before the next roadmap slice. The P0 resource-scope gate, compact workflow rail, CodeRouter window icon, model/queue disclosure, evidence-first Activity, review inspector, Trust & settings, Command palette disclosure, read-only scanned-context map, metadata-only History search, scanned-root availability hardening, and selective Apply/Undo lifecycle are implemented in the working tree. Worker and overseer cycles review and test only; the main task alone commits and pushes.
+This checkpoint records the approved Workbench rework before the next roadmap slice. It includes the P0 resource-scope gate, compact workflow rail, canonical CodeRouter icon, model/queue disclosure, evidence-first Activity, reachable Workbench scrolling, compact Review Inspector empty state, Trust & settings with guided OpenRouter onboarding, command palette disclosure, scanned-context map, metadata-only History search, scanned-root hardening, and selective Apply/Undo lifecycle. Worker and overseer cycles review and test only; the main task alone commits and pushes.
 
 ## Safety and window boundary
 
@@ -16,6 +16,9 @@ CodeAgentApp.__init__() withdraws immediately after super().__init__(), before p
 - PreservingActivityLog keeps the existing widget, callbacks, content, and logical yview across disclosure transitions.
 - Review inspector preserves Treeview identity, multi-selection, diff behavior, Apply selected, and transactional review/apply behavior while exposing compact selected/total and relative-path metadata.
 - Trust & settings is collapsed by default but auto-opens for current inspect/verification permission requests. It does not hide Apply Policy or safety actions and does not add execution behavior.
+- Idle Review Inspector state shows a compact “No pending changes” surface; the existing file/diff PanedWindow appears only when rows exist and returns on clear without recreating widgets.
+- Workbench content is hosted in a vertically scrollable canvas with a conditional scrollbar; internal Text/Listbox/Treeview scroll ownership and the horizontal review PanedWindow are preserved.
+- OpenRouter connection is explicit-only: localhost PKCE S256 callback, bounded cancellation/timeout, separate UI queue, and local ignored-config storage; keys, codes, and verifiers stay out of logs/history/evidence.
 - Local command disclosure keeps exact-command, redaction, read-only, stale, closed, and explicit user-action guards. Ctrl+K expands and uses focus_set() without submitting.
 - Scanned context is collapsed by default and exposes only bounded redacted metadata from the latest successful Tk-thread scan. Missing/changed roots, non-directories, reset, failure, and stale previews clear old paths.
 - History search is collapsed by default, case-insensitive, metadata-only, bounded, in-memory, and persistence-free. No-match selection clears safely; blank search restores the existing inspect-only browser.
@@ -28,8 +31,9 @@ CodeAgentApp.__init__() withdraws immediately after super().__init__(), before p
 
 ## Verified evidence
 
-- Focused hidden regression checks: worker ran 19 tests in 2.030s — OK, covering Undo invalidation, hidden app construction, scanned context, History search, and UI lifecycle.
-- Latest full hidden suite: python -m unittest discover -s tests -p "test_*.py" — Ran 263 tests in 15.095s — OK.
+- Focused hidden regression checks: OAuth/Trust/scroll/activity worker pass 20/20 OK; Review Inspector empty-state worker pass 6/6 OK.
+- Latest full hidden suite: python -m unittest discover -s tests -p "test_*.py" — Ran 274 tests — OK.
+- Mocked/local PKCE exchange, callback parsing, secret boundary, hidden UI disclosure, scroll reachability, and empty-state round trips are covered; no live provider claim is made.
 - python -m py_compile codex_free_wrapper.py — exit 0.
 - Static test scan contains no tk.Tk(), deiconify, mainloop, focus_force, or event_generate calls.
 - No CodeRouter/python/pythonw process was left running; no visible app, taskbar surface, or focus-stealing smoke path was used.
@@ -44,9 +48,10 @@ Active-resource checks are run-scoped: include the current proposal/lifecycle ru
 
 Proceed one bounded slice at a time:
 
-1. Review and freeze the current Workbench disclosure surfaces, including scanned context, History search, Activity scroll preservation, hidden startup, exact Portfolio icon usage, and prior-run Undo invalidation.
-2. Improve the next highest-value Codex/Claude-Code-style workflow gap only after slice 1 is approved: prefer visible progress/evidence, queue transparency, cancellation/recovery, or safe task-history continuity.
+1. Keep the approved reachability, empty-state, disclosure, hidden-startup, icon, security, and Undo surfaces covered by focused regressions.
+2. Continue the next bounded Codex/Claude-Code-style gap through worker then overseer: prioritize visible progress/evidence, queue transparency, cancellation/recovery, or safe task-history continuity.
 3. Continue performance and safety hardening without adding paid-provider dependence, heavy AI visual effects, gradients, oversized rounded cards, hidden permission changes, or unrelated capability.
+4. Publish only genuinely large checkpoints; do not create small commits between bounded slices.
 
 Every slice must preserve the primary workflow and remain limited to its focused regression tests. Do not add a provider, command, persistence, or permission capability unless explicitly assigned by the main task.
 
