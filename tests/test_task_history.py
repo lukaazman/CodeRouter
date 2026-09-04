@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 
 
 def make_snapshot(root, task_id="task-1", run_id=None, request_text="Make the bounded change."):

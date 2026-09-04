@@ -4,7 +4,7 @@ import tkinter as tk
 import unittest
 from pathlib import Path
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 from tests.ui_test_helpers import build_hidden_app
 
 

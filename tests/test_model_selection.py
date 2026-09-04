@@ -2,7 +2,7 @@ import queue
 import unittest
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 
 
 def free_record(model_id, context_length=None, capabilities=None):

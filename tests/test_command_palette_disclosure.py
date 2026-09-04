@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 
 
 @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")

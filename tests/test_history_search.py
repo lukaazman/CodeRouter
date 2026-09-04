@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 from tests.ui_test_helpers import build_hidden_app
 
 

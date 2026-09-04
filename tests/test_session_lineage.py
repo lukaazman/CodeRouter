@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 
 
 def make_snapshot(root, task_id="task-lineage", session_id="session-lineage", parent_task_id="", parent_session_id=""):

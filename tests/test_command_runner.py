@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 
 
 class FakeProcess:
@@ -76,8 +76,8 @@ def run_worker(host, process, root, run_id="verification-test"):
 class VerificationParsingTests(unittest.TestCase):
     def test_valid_command_uses_argv_and_rejects_shell_input(self):
         self.assertEqual(
-            wrapper.parse_verification_command("python -m py_compile codex_free_wrapper.py"),
-            ("python", "-m", "py_compile", "codex_free_wrapper.py"),
+            wrapper.parse_verification_command("python -m py_compile CodeRouter.py"),
+            ("python", "-m", "py_compile", "CodeRouter.py"),
         )
         for invalid in ("", "   ", "python; whoami", "python && whoami", "python > output", "python\nnext", "powershell -Command x"):
             with self.subTest(invalid=invalid):

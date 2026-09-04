@@ -10,7 +10,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
-import codex_free_wrapper as wrapper
+import CodeRouter as wrapper
 from tests.ui_test_helpers import build_hidden_app
 
 
