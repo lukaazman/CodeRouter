@@ -142,7 +142,7 @@ VERIFICATION_SHELL_PATTERN = re.compile(r"[\x00\r\n;&|<>^`()$`]")
 LOCAL_COMMANDS = ("/status", "/model", "/permissions", "/review")
 LOCAL_COMMAND_MAX_RESULT_CHARS = 720
 LOCAL_COMMAND_MAX_ITEMS = 6
-LOCAL_COMMAND_HINT = "Ctrl+K commands · Ctrl+Enter run · Esc reject pending"
+LOCAL_COMMAND_HINT = "Ctrl+K command | Ctrl+Enter run | Esc cancel"
 MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
 MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 ACTIVITY_DIGEST_MAX_CHARS = 240
@@ -3484,7 +3484,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_model_signal = tk.StringVar(value="Free model fallback")
         self.workflow_model_disclosure_label = tk.StringVar(value="▸ MODEL / QUEUE")
         self.workflow_model_detail_text = tk.StringVar(value="")
-        self.workflow_next_action = tk.StringVar(value="Choose a project folder")
+        self.workflow_next_action = tk.StringVar(value="Choose folder")
         self._model_queue_expanded = False
         self.trust_settings_detail_text = tk.StringVar(value="")
         self._trust_settings_expanded = False
@@ -3496,7 +3496,7 @@ class CodeAgentApp(tk.Tk):
         self.apply_mode = tk.StringVar(value=configured_apply_mode)
         self.auto_apply = tk.BooleanVar(value=configured_apply_mode == APPLY_MODE_AUTO)
         self._committed_apply_mode = configured_apply_mode
-        self.permission_note = tk.StringVar(value="Proposed edits stay in review until you apply them.")
+        self.permission_note = tk.StringVar(value="Review: Apply stays explicit.")
         self.hint_text = tk.StringVar(value=LOCAL_COMMAND_HINT)
         self.local_command = tk.StringVar(value="")
         self.local_command_result = tk.StringVar(
@@ -3565,6 +3565,7 @@ class CodeAgentApp(tk.Tk):
         self._poll_after_id = None
         self._command_palette_destroyed = False
         self._disclosure_expanded = {
+            "context": False,
             "history": False,
             "verification": False,
             "activity": False,
@@ -3586,6 +3587,7 @@ class CodeAgentApp(tk.Tk):
 
         self._build_styles()
         self._build_ui()
+        self._set_local_command_disclosure(False)
         self._refresh_history_browser()
         self.set_task_state(TASK_STATE_IDLE, "Ready")
         self._schedule_poll()
@@ -3785,7 +3787,7 @@ class CodeAgentApp(tk.Tk):
             self.toolbar_logo_label.image = self._window_icon_image
         self.toolbar_logo_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Label(self.toolbar_brand, text=APP_TITLE, style="Title.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(toolbar, text="LOCAL FREE AGENT / WORKBENCH", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(toolbar, text="LOCAL / FREE / REVIEW", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 0))
         ttk.Label(toolbar, textvariable=self.hint_text, style="Muted.TLabel").grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(3, 0))
         status_frame = tk.Frame(toolbar, bg=PALETTE["canvas"])
         status_frame.grid(row=0, column=2, rowspan=2, sticky="e")
@@ -3798,7 +3800,7 @@ class CodeAgentApp(tk.Tk):
         command_bar.columnconfigure(0, weight=1)
         self.local_command_disclosure_button = self._button(
             command_bar,
-            "▸ Local command",
+            "▸ Command",
             self._toggle_local_command_disclosure,
             "Ghost.TButton",
             "Show the exact local read-only command input",
@@ -3813,7 +3815,7 @@ class CodeAgentApp(tk.Tk):
         self.local_command_detail = tk.Frame(command_bar, bg=PALETTE["canvas"])
         self.local_command_detail.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.local_command_detail.columnconfigure(1, weight=1)
-        ttk.Label(self.local_command_detail, text="LOCAL COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.local_command_detail, text="COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         self.local_command_entry = ttk.Entry(
             self.local_command_detail,
             textvariable=self.local_command,
@@ -3995,19 +3997,30 @@ class CodeAgentApp(tk.Tk):
         sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(22, weight=0)
         ttk.Label(sidebar, text="WORKSPACE", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        self.project_button = self._button(sidebar, "Open project folder", self.choose_folder, "Secondary.TButton", "Choose the folder the agent can edit")
+        self.project_button = self._button(sidebar, "Open folder", self.choose_folder, "Secondary.TButton", "Choose the folder the agent can edit")
         self.project_button.grid(row=1, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
         ttk.Label(sidebar, textvariable=self.selected_folder, style="SidebarValue.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew", pady=(0, SPACING["section"]))
-        self.context_add_button = self._button(sidebar, "Add context files", self.add_context_files, "Secondary.TButton", "Add extra files as read-only model context")
-        self.context_add_button.grid(row=3, column=0, sticky="ew", pady=(0, SPACING["control"]))
-        self.context_clear_button = self._button(sidebar, "Clear context files", self.clear_context_files, "Secondary.TButton", "Remove extra read-only context files")
-        self.context_clear_button.grid(row=4, column=0, sticky="ew", pady=(0, SPACING["control"]))
-        ttk.Label(sidebar, textvariable=self.extra_context_count, style="PanelMuted.TLabel", wraplength=235).grid(row=5, column=0, sticky="ew", pady=(0, SPACING["section"]))
+        self.context_disclosure_button = self._disclosure_button(
+            sidebar,
+            "context",
+            self._context_disclosure_label(),
+            "Show or hide optional read-only context file controls",
+        )
+        self.context_disclosure_button.grid(row=3, column=0, sticky="ew", pady=(0, SPACING["control"]))
+        context_controls = tk.Frame(sidebar, bg=PALETTE["surface"])
+        context_controls.grid(row=4, column=0, sticky="ew", pady=(0, SPACING["section"]))
+        context_controls.columnconfigure(0, weight=1)
+        self.context_controls = context_controls
+        self.context_add_button = self._button(context_controls, "+ Add files", self.add_context_files, "Secondary.TButton", "Add extra files as read-only model context")
+        self.context_add_button.grid(row=0, column=0, sticky="ew", pady=(0, SPACING["control"]))
+        self.context_clear_button = self._button(context_controls, "Clear", self.clear_context_files, "Secondary.TButton", "Remove extra read-only context files")
+        self.context_clear_button.grid(row=1, column=0, sticky="ew", pady=(0, SPACING["control"]))
+        ttk.Label(context_controls, textvariable=self.extra_context_count, style="PanelMuted.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=6, column=0, sticky="ew", pady=(2, 14))
         ttk.Label(sidebar, text="APPLY POLICY", style="Section.TLabel").grid(row=7, column=0, sticky="w")
-        self.review_mode_button = ttk.Radiobutton(sidebar, text="Review changes", variable=self.apply_mode, value=APPLY_MODE_REVIEW, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
+        self.review_mode_button = ttk.Radiobutton(sidebar, text="Review", variable=self.apply_mode, value=APPLY_MODE_REVIEW, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
         self.review_mode_button.grid(row=8, column=0, sticky="w", pady=(SPACING["section"], 3))
-        self.auto_mode_button = ttk.Radiobutton(sidebar, text="Auto-apply", variable=self.apply_mode, value=APPLY_MODE_AUTO, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
+        self.auto_mode_button = ttk.Radiobutton(sidebar, text="Auto", variable=self.apply_mode, value=APPLY_MODE_AUTO, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
         self.auto_mode_button.grid(row=9, column=0, sticky="w", pady=(0, 4))
         ttk.Label(sidebar, textvariable=self.permission_note, style="PanelMuted.TLabel", wraplength=235).grid(row=10, column=0, sticky="ew", pady=(0, SPACING["section"]))
         self.trust_settings_container = tk.Frame(sidebar, bg=PALETTE["surface"])
@@ -4048,23 +4061,36 @@ class CodeAgentApp(tk.Tk):
         self.openrouter_connect_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.openrouter_connect_button.grid_remove()
         ttk.Label(sidebar, text="ACTIONS", style="Section.TLabel").grid(row=12, column=0, sticky="w")
-        self.run_button = self._button(sidebar, "Run / continue chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
+        self.run_button = self._button(sidebar, "Run chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
         self.run_button.grid(row=13, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
-        self.scan_button = self._button(sidebar, "Scan project", self.scan_folder, "Secondary.TButton", "Rescan project files")
+        self.scan_button = self._button(sidebar, "Scan", self.scan_folder, "Secondary.TButton", "Rescan project files")
         self.scan_button.grid(row=14, column=0, sticky="ew", pady=(0, SPACING["control"]))
-        self.new_chat_button = self._button(sidebar, "Start new chat", self.reset_session, "Secondary.TButton", "Clear conversation memory")
+        self.new_chat_button = self._button(sidebar, "New chat", self.reset_session, "Secondary.TButton", "Clear conversation memory")
         self.new_chat_button.grid(row=15, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=16, column=0, sticky="ew", pady=(14, 14))
         ttk.Label(sidebar, text="SNAPSHOT", style="Section.TLabel").grid(row=17, column=0, sticky="w")
-        stats = tk.Frame(sidebar, bg=PALETTE["surface_alt"], padx=10, pady=10, highlightthickness=1, highlightbackground=PALETTE["border"])
+        stats = tk.Frame(sidebar, bg=PALETTE["surface_alt"], padx=8, pady=8, highlightthickness=1, highlightbackground=PALETTE["border"])
         stats.grid(row=18, column=0, sticky="ew", pady=(SPACING["section"], 0))
-        stats.columnconfigure(0, weight=1)
-        tk.Label(stats, textvariable=self.file_count, bg=PALETTE["surface_alt"], fg=PALETTE["text"], font=FONTS["body_bold"]).grid(row=0, column=0, sticky="w")
-        tk.Label(stats, textvariable=self.char_count, bg=PALETTE["surface_alt"], fg=PALETTE["text_muted"], font=FONTS["body"]).grid(row=1, column=0, sticky="w", pady=(3, 0))
-        tk.Label(stats, textvariable=self.pending_count, bg=PALETTE["surface_alt"], fg=PALETTE["warning"], font=FONTS["body"]).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.snapshot_stats = stats
+        self.snapshot_metric_labels = {}
+        for column in range(3):
+            stats.columnconfigure(column, weight=1)
+        for column, (label, variable, foreground) in enumerate(
+            (
+                ("FILES", self.file_count, PALETTE["text"]),
+                ("TEXT", self.char_count, PALETTE["text_muted"]),
+                ("PENDING", self.pending_count, PALETTE["warning"]),
+            )
+        ):
+            tile = tk.Frame(stats, bg=PALETTE["surface_alt"])
+            tile.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 5, 0))
+            tk.Label(tile, text=label, bg=PALETTE["surface_alt"], fg=PALETTE["text_subtle"], font=FONTS["section"], anchor="w").pack(anchor="w")
+            value_label = tk.Label(tile, textvariable=variable, bg=PALETTE["surface_alt"], fg=foreground, font=FONTS["body_bold"], anchor="w")
+            value_label.pack(anchor="w", pady=(2, 0))
+            self.snapshot_metric_labels[label] = value_label
         self.scanned_context_disclosure_button = self._button(
             stats,
-            "▸ Scanned context",
+            "▸ Scan map",
             self._toggle_scanned_context_disclosure,
             "Ghost.TButton",
             "Show bounded metadata from the latest successful scan",
@@ -4188,7 +4214,7 @@ class CodeAgentApp(tk.Tk):
         self.verification_disclosure_button = self._disclosure_button(
             sidebar,
             "verification",
-            "▸ Manual verification",
+            "▸ Verify",
             "Show or hide the explicit local verification control",
         )
         self.verification_disclosure_button.grid(row=26, column=0, sticky="ew")
@@ -4230,16 +4256,16 @@ class CodeAgentApp(tk.Tk):
         center.rowconfigure(2, weight=3)
         center.rowconfigure(5, weight=1)
         center.rowconfigure(8, weight=0)
-        ttk.Label(center, text="WORKBENCH", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(center, text="CHAT", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(center, text="Prompt", style="PanelTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(SPACING["section"], 0))
         self.instructions = scrolledtext.ScrolledText(center, height=8, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["accent"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.instructions.grid(row=2, column=0, sticky="nsew", pady=(8, 12))
-        self.instructions.insert("1.0", "Ask for the next change. This chat keeps context until New Chat.")
+        self.instructions.insert("1.0", "Describe a change for the agent.")
 
         ttk.Label(center, text="Summary", style="PanelTitle.TLabel").grid(row=3, column=0, sticky="w")
         self.summary = scrolledtext.ScrolledText(center, height=5, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["body"], bg=PALETTE["surface_raised"], fg=PALETTE["text"], insertbackground=PALETTE["text"])
         self.summary.grid(row=5, column=0, sticky="nsew", pady=(8, 12))
-        self.summary.insert("1.0", "No active change yet.")
+        self.summary.insert("1.0", "No result yet.")
         self.summary.configure(state=tk.DISABLED)
 
         self.activity_disclosure_button = self._disclosure_button(
@@ -4276,7 +4302,7 @@ class CodeAgentApp(tk.Tk):
         right = self._panel(main)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(4, weight=1)
-        ttk.Label(right, text="REVIEW INSPECTOR", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(right, text="REVIEW", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         state_row = tk.Frame(right, bg=PALETTE["surface"])
         state_row.grid(row=1, column=0, sticky="ew", pady=(SPACING["section"], 8))
         self.review_marker = tk.Label(state_row, text="●", bg=PALETTE["surface"], fg=TASK_STATE_COLORS[TASK_STATE_IDLE], font=("Segoe UI", 10))
@@ -4285,7 +4311,7 @@ class CodeAgentApp(tk.Tk):
         self.task_tools_disclosure_button = self._disclosure_button(
             right,
             "task_tools",
-            "▸ Task tools",
+            "▸ Tools",
             "Show or hide plan, inspect, verification, and overseer tools",
         )
         self.task_tools_disclosure_button.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -4372,7 +4398,7 @@ class CodeAgentApp(tk.Tk):
         inspect_panel = tk.Frame(right, bg=PALETTE["surface"])
         inspect_panel.grid(row=6, column=0, sticky="ew", pady=(0, 10))
         inspect_panel.columnconfigure(0, weight=1)
-        ttk.Label(inspect_panel, text="READ-ONLY INSPECT REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(inspect_panel, text="INSPECT REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.inspect_preview = scrolledtext.ScrolledText(
             inspect_panel,
             height=3,
@@ -4413,7 +4439,7 @@ class CodeAgentApp(tk.Tk):
         verify_panel = tk.Frame(right, bg=PALETTE["surface"])
         verify_panel.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         verify_panel.columnconfigure(0, weight=1)
-        ttk.Label(verify_panel, text="VERIFICATION REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(verify_panel, text="VERIFY REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.verification_request_preview = scrolledtext.ScrolledText(
             verify_panel,
             height=2,
@@ -4455,7 +4481,7 @@ class CodeAgentApp(tk.Tk):
         review_actions.grid(row=8, column=0, sticky="ew")
         for column in range(5):
             review_actions.columnconfigure(column, weight=1)
-        self.apply_button = self._button(review_actions, "Apply reviewed changes", self.apply_pending, "Primary.TButton", "Write the reviewed changes to disk")
+        self.apply_button = self._button(review_actions, "Apply all", self.apply_pending, "Primary.TButton", "Write the reviewed changes to disk")
         self.apply_button.configure(state=tk.DISABLED)
         self.apply_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         self.apply_selected_button = self._button(
@@ -4467,12 +4493,12 @@ class CodeAgentApp(tk.Tk):
         )
         self.apply_selected_button.configure(state=tk.DISABLED)
         self.apply_selected_button.grid(row=0, column=1, sticky="ew", padx=(5, 5))
-        self.reject_button = self._button(review_actions, "Reject changes", self.reject_pending, "Danger.TButton", "Discard pending edits")
+        self.reject_button = self._button(review_actions, "Reject", self.reject_pending, "Danger.TButton", "Discard pending edits")
         self.reject_button.configure(state=tk.DISABLED)
         self.reject_button.grid(row=0, column=2, sticky="ew", padx=(5, 5))
         self.undo_last_apply_button = self._button(
             review_actions,
-            "Undo last apply",
+            "Undo",
             self.undo_last_apply,
             "Secondary.TButton",
             "Restore the last successful Apply after explicit confirmation",
@@ -4482,7 +4508,7 @@ class CodeAgentApp(tk.Tk):
         self.undo_button = self.undo_last_apply_button
         self.export_report_button = self._button(
             review_actions,
-            "Export report",
+            "Export",
             self.export_report,
             "Secondary.TButton",
             "Export bounded redacted task metadata after explicit confirmation",
@@ -4553,6 +4579,7 @@ class CodeAgentApp(tk.Tk):
 
         self._disclosure_widgets.update(
             {
+                "context": (context_controls,),
                 "history": (
                     history_list_frame,
                     self.history_detail,
@@ -4582,7 +4609,7 @@ class CodeAgentApp(tk.Tk):
                 "task_tools": right,
             }
         )
-        for disclosure in ("history", "verification", "activity", "task_tools"):
+        for disclosure in ("context", "history", "verification", "activity", "task_tools"):
             self._set_disclosure(disclosure, False)
         self._refresh_trust_settings_surface()
         self._set_trust_settings_disclosure(False)
@@ -5072,7 +5099,7 @@ class CodeAgentApp(tk.Tk):
         else:
             self.scanned_context_detail_label.grid_remove()
         arrow = "▾" if self._scanned_context_expanded else "▸"
-        self.scanned_context_disclosure_button.configure(text=f"{arrow} Scanned context")
+        self.scanned_context_disclosure_button.configure(text=f"{arrow} Scan map")
 
     def _toggle_scanned_context_disclosure(self):
         if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
@@ -5122,10 +5149,11 @@ class CodeAgentApp(tk.Tk):
         button = self._disclosure_buttons.get(section)
         if button is not None:
             label = {
+                "context": self._context_disclosure_label(include_arrow=False),
                 "history": "History",
-                "verification": "Manual verification",
+                "verification": "Verify",
                 "activity": "Activity",
-                "task_tools": "Task tools",
+                "task_tools": "Tools",
             }.get(section, section.title())
             arrow = "▾" if expanded else "▸"
             button.configure(text=f"{arrow} {label}")
@@ -5253,6 +5281,24 @@ class CodeAgentApp(tk.Tk):
             self._redact_sensitive(detail)[:ACTIVITY_DIGEST_MAX_CHARS]
         )
 
+    def _current_run_queue_signal(self):
+        """Return the latest bounded queue signal for the displayed run only."""
+        timeline_run_id = getattr(self, "_timeline_run_id", None)
+        if not timeline_run_id:
+            return "idle · awaiting a run"
+        for entry in reversed(getattr(self, "run_timeline", ())):
+            if entry.get("run_id") != timeline_run_id:
+                continue
+            kind = str(entry.get("kind", "") or "").casefold()
+            if kind not in {"model_status", "fallback"}:
+                continue
+            text = " ".join(str(entry.get("text", "") or "").split())
+            text = " ".join(self._redact_sensitive(text).split())
+            if not text:
+                continue
+            return text[:240] + ("..." if len(text) > 240 else "")
+        return "queued · selection pending"
+
     def _model_queue_metadata_text(self):
         status = " ".join(str(self.model_status.get() or "").split())
         status = self._redact_sensitive(status) or "No model status"
@@ -5273,11 +5319,13 @@ class CodeAgentApp(tk.Tk):
             )
         )
         run_signal = "active" if run_active else "idle"
+        queue_signal = self._current_run_queue_signal()
         detail = (
             f"Status: {status}\n"
             f"Fallback queue: {fallback_queue}\n"
             f"Health: {health_signal}\n"
-            f"Run: {run_signal}"
+            f"Run: {run_signal}\n"
+            f"Current queue signal: {queue_signal}"
         )
         return self._redact_sensitive(detail)[:MODEL_QUEUE_DISCLOSURE_MAX_CHARS]
 
@@ -5308,27 +5356,27 @@ class CodeAgentApp(tk.Tk):
         if self.lifecycle.closed:
             return "Closed"
         if self._workflow_button_enabled("approve_plan_button"):
-            return "Approve, revise, or cancel plan"
+            return "Approve plan"
         if self._workflow_button_enabled("allow_inspect_button"):
-            return "Allow or deny inspect request"
+            return "Allow inspect"
         if self._workflow_button_enabled("allow_verification_button"):
-            return "Allow or deny verification request"
+            return "Allow verify"
         if self._workflow_button_enabled("apply_button"):
-            return "Review, apply, or reject changes"
+            return "Review changes"
         if self._workflow_button_enabled("run_next_step_button"):
-            return "Run prepared next step"
+            return "Run next step"
         if self._workflow_button_enabled("approve_next_step_button"):
-            return "Approve overseer next step"
+            return "Approve next step"
         if self._workflow_button_enabled("send_overseer_button"):
-            return "Send evidence to overseer"
+            return "Send evidence"
         if self._workflow_button_enabled("verification_run_button") and self.verification_command.get().strip():
             return "Run verification"
         if self._run_in_progress():
             return "Wait for active run"
         if not self.selected_folder.get().strip():
-            return "Choose a project folder"
+            return "Choose folder"
         if not self.instructions.get("1.0", tk.END).strip():
-            return "Enter a task prompt"
+            return "Enter prompt"
         return "Ready"
 
     def _refresh_workflow_rail(self):
@@ -5355,7 +5403,7 @@ class CodeAgentApp(tk.Tk):
         else:
             self.local_command_detail.grid_remove()
         arrow = "▾" if self._local_command_expanded else "▸"
-        self.local_command_disclosure_button.configure(text=f"{arrow} Local command")
+        self.local_command_disclosure_button.configure(text=f"{arrow} Command")
 
     def _toggle_local_command_disclosure(self):
         if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
@@ -5580,10 +5628,10 @@ class CodeAgentApp(tk.Tk):
         self.config_data["apply_mode"] = APPLY_MODE_AUTO if is_auto else APPLY_MODE_REVIEW
         save_local_config(self.config_data)
         if is_auto:
-            self.permission_note.set("Auto-apply writes model edits after the response; use review for safer control.")
+            self.permission_note.set("Auto: writes after model response.")
             self.log("> apply mode: auto-apply")
         else:
-            self.permission_note.set("Proposed edits stay in review until you apply them.")
+            self.permission_note.set("Review: Apply stays explicit.")
             self.log("> apply mode: review")
         self._refresh_trust_settings_surface()
 
@@ -8075,6 +8123,7 @@ class CodeAgentApp(tk.Tk):
         save_local_config(self.config_data)
         self.extra_context_count.set(self._extra_context_label())
         self._clear_scanned_context_preview("No current successful scan.")
+        self._refresh_context_disclosure()
         self.scan_folder(silent=True)
         self.log(f"> added {added} context files" + (f", skipped {skipped}" if skipped else ""))
 
@@ -8094,6 +8143,7 @@ class CodeAgentApp(tk.Tk):
         save_local_config(self.config_data)
         self.extra_context_count.set(self._extra_context_label())
         self._clear_scanned_context_preview("No current successful scan.")
+        self._refresh_context_disclosure()
         self.scan_folder(silent=True)
         self.log(f"> cleared {count} context files")
 
@@ -8103,6 +8153,17 @@ class CodeAgentApp(tk.Tk):
             return "1 extra context file"
         return f"{count} extra context files"
 
+    def _context_disclosure_label(self, include_arrow=True):
+        count = len(getattr(self, "extra_context_paths", ()) or ())
+        noun = "file" if count == 1 else "files"
+        arrow = "▾" if getattr(self, "_disclosure_expanded", {}).get("context", False) else "▸"
+        prefix = f"{arrow} " if include_arrow else ""
+        return f"{prefix}Context · {count} {noun}"
+
+    def _refresh_context_disclosure(self):
+        button = getattr(self, "context_disclosure_button", None)
+        if button is not None:
+            button.configure(text=self._context_disclosure_label())
     def log(self, text, state=None):
         state_name = state or self.task_state
         state_label = TASK_STATE_LABELS.get(state_name, TASK_STATE_LABELS[TASK_STATE_ERROR]).lower()

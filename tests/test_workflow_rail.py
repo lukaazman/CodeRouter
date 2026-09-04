@@ -55,10 +55,11 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.assertNotEqual(self.app.workflow_rail.grid_info(), {})
         self.assertEqual(self.app.workflow_phase.get(), "IDLE")
         self.assertEqual(self.app.workflow_model_signal.get(), "Free model fallback")
-        self.assertEqual(self.app.workflow_next_action.get(), "Choose a project folder")
+        self.assertEqual(self.app.workflow_next_action.get(), "Choose folder")
         self.assertEqual(
             self.app._disclosure_expanded,
             {
+                "context": False,
                 "history": False,
                 "verification": False,
                 "activity": False,
@@ -75,6 +76,15 @@ class WorkflowRailUiTests(unittest.TestCase):
             "diff",
         ):
             self.assertNotEqual(getattr(self.app, name).grid_info(), {}, name)
+
+    def test_snapshot_uses_compact_visual_metrics(self):
+        self.assertNotEqual(self.app.snapshot_stats.grid_info(), {})
+        self.assertEqual(
+            set(self.app.snapshot_metric_labels),
+            {"FILES", "TEXT", "PENDING"},
+        )
+        for label in self.app.snapshot_metric_labels.values():
+            self.assertNotEqual(label.pack_info(), {})
 
     def test_bundled_window_icon_source_and_runtime_setup(self):
         source = Path(wrapper.WINDOW_ICON_SOURCE)
@@ -127,7 +137,7 @@ class WorkflowRailUiTests(unittest.TestCase):
         snapshot = self.activate_snapshot()
         self.app.instructions.delete("1.0", tk.END)
         self.app._update_lifecycle_controls()
-        self.assertEqual(self.app.workflow_next_action.get(), "Enter a task prompt")
+        self.assertEqual(self.app.workflow_next_action.get(), "Enter prompt")
 
         self.app.instructions.insert("1.0", "Make the bounded change")
         plan = wrapper.ExecutionPlan(
@@ -137,7 +147,7 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.app.set_task_state(wrapper.TASK_STATE_PLAN, "Plan ready")
         self.app._set_pending_plan(plan, snapshot.run_id)
         self.assertEqual(self.app.workflow_phase.get(), "PLAN")
-        self.assertEqual(self.app.workflow_next_action.get(), "Approve, revise, or cancel plan")
+        self.assertEqual(self.app.workflow_next_action.get(), "Approve plan")
 
         self.app._clear_pending_plan()
         self.app.inspect_request = wrapper.InspectRequest(
@@ -148,7 +158,7 @@ class WorkflowRailUiTests(unittest.TestCase):
         )
         self.app.set_task_state(wrapper.TASK_STATE_RUNNING, "Inspect permission required")
         self.assertEqual(self.app.workflow_phase.get(), "RUNNING")
-        self.assertEqual(self.app.workflow_next_action.get(), "Allow or deny inspect request")
+        self.assertEqual(self.app.workflow_next_action.get(), "Allow inspect")
 
         self.app._clear_inspect_request()
         self.app.verification_request = wrapper.VerificationRequest(
@@ -156,7 +166,7 @@ class WorkflowRailUiTests(unittest.TestCase):
             run_id=snapshot.run_id,
         )
         self.app._update_lifecycle_controls()
-        self.assertEqual(self.app.workflow_next_action.get(), "Allow or deny verification request")
+        self.assertEqual(self.app.workflow_next_action.get(), "Allow verify")
 
         self.app._clear_verification_request()
         proposal = wrapper.create_pending_proposal(
@@ -166,7 +176,7 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.app.set_task_state(wrapper.TASK_STATE_REVIEW, "Review pending")
         self.app._set_pending_proposal(proposal)
         self.assertEqual(self.app.workflow_phase.get(), "REVIEW")
-        self.assertEqual(self.app.workflow_next_action.get(), "Review, apply, or reject changes")
+        self.assertEqual(self.app.workflow_next_action.get(), "Review changes")
 
     def test_model_status_and_health_signal_are_reflected_without_model_identity_invention(self):
         self.app.model_status.set("Free queue fallback · next candidate")
@@ -186,6 +196,73 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.app._refresh_workflow_rail()
         self.assertIn("Free model fallback", self.app.workflow_model_signal.get())
         self.assertIn("success 42ms", self.app.workflow_model_signal.get())
+
+    def test_optional_context_controls_stay_collapsed_and_keyboard_reachable(self):
+        self.assertFalse(self.app._disclosure_expanded["context"])
+        self.assertEqual(self.app.context_disclosure_button.cget("text"), "▸ Context · 0 files")
+        self.assertEqual(self.app.context_controls.grid_info(), {})
+        self.assertTrue(self.app.context_disclosure_button.bind("<Return>"))
+        self.assertTrue(self.app.context_disclosure_button.bind("<space>"))
+
+        self.app.context_disclosure_button.invoke()
+        self.assertTrue(self.app._disclosure_expanded["context"])
+        self.assertNotEqual(self.app.context_controls.grid_info(), {})
+        self.assertNotEqual(self.app.context_add_button.grid_info(), {})
+        self.assertNotEqual(self.app.context_clear_button.grid_info(), {})
+
+        self.app._toggle_disclosure("context")
+        self.assertFalse(self.app._disclosure_expanded["context"])
+        self.assertEqual(self.app.context_controls.grid_info(), {})
+
+    def test_context_disclosure_count_and_active_run_controls_remain_truthful(self):
+        self.app.extra_context_paths = ["first.py", "second.py"]
+        self.app._refresh_context_disclosure()
+        self.assertEqual(self.app.context_disclosure_button.cget("text"), "▸ Context · 2 files")
+
+        snapshot = self.activate_snapshot("context-disclosure-active")
+        self.app.set_task_state(wrapper.TASK_STATE_COLLECTING, "Collecting")
+        self.app._set_disclosure("context", True)
+        self.app._update_lifecycle_controls()
+        self.assertEqual(str(self.app.context_add_button.cget("state")), tk.DISABLED)
+        self.assertEqual(str(self.app.context_clear_button.cget("state")), tk.DISABLED)
+        self.assertEqual(self.app.context_disclosure_button.cget("text"), "▾ Context · 2 files")
+
+    def test_model_queue_disclosure_uses_current_redacted_run_signal(self):
+        snapshot = self.activate_snapshot("queue-signal-current")
+        self.app._record_timeline_event(
+            snapshot.run_id,
+            1,
+            "model_status",
+            "Selected free model: current/free-coder (context-fit)",
+        )
+        self.app.run_timeline.append(
+            {
+                "run_id": "stale-run",
+                "kind": "fallback",
+                "text": "stale free model failed; continuing",
+            }
+        )
+        self.app._refresh_model_queue_disclosure()
+        detail = self.app.workflow_model_detail_text.get()
+        self.assertIn("Current queue signal: Selected free model: current/free-coder (context-fit)", detail)
+        self.assertNotIn("stale free model", detail)
+
+    def test_model_queue_disclosure_is_bounded_and_redacted_without_run_signal(self):
+        self.app._refresh_model_queue_disclosure()
+        self.assertIn("Current queue signal: idle · awaiting a run", self.app.workflow_model_detail_text.get())
+        snapshot = self.activate_snapshot("queue-signal-redacted")
+        secret = "sk-or-v1-current-run-secret"
+        self.app._record_timeline_event(
+            snapshot.run_id,
+            1,
+            "fallback",
+            f"Free model failed; continuing with token={secret}",
+        )
+        self.app._refresh_model_queue_disclosure()
+        detail = self.app.workflow_model_detail_text.get()
+        self.assertIn("Current queue signal:", detail)
+        self.assertNotIn(secret, detail)
+        self.assertLessEqual(len(detail), wrapper.MODEL_QUEUE_DISCLOSURE_MAX_CHARS)
 
     def test_rail_refresh_has_no_execution_side_effects_and_preserves_controls(self):
         primary = {

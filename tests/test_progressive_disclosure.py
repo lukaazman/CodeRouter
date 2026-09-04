@@ -54,6 +54,7 @@ class ProgressiveDisclosureUiTests(unittest.TestCase):
         self.assertEqual(
             self.app._disclosure_expanded,
             {
+                "context": False,
                 "history": False,
                 "verification": False,
                 "activity": False,

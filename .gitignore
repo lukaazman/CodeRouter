@@ -9,3 +9,5 @@ local_config.*.json
 *.pem
 .venv/
 venv/
+design.md
+NEXT_WORK_PLAN.md

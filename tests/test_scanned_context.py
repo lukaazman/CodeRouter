@@ -43,7 +43,7 @@ class ScannedContextUiTests(unittest.TestCase):
         detail = self.app.scanned_context_detail_label
         self.assertFalse(self.app._scanned_context_expanded)
         self.assertEqual(detail.grid_info(), {})
-        self.assertEqual(button.cget("text"), "▸ Scanned context")
+        self.assertEqual(button.cget("text"), "▸ Scan map")
 
         button.invoke()
         self.assertTrue(self.app._scanned_context_expanded)
