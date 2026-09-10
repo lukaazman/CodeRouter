@@ -125,8 +125,8 @@ class WorkflowRailUiTests(unittest.TestCase):
         self.assertTrue(corner_transparent)
         self.assertFalse(center_transparent)
 
-    def test_toolbar_logo_is_visible_and_retains_bundled_icon_image(self):
-        logo = self.app.toolbar_logo_label
+    def test_rail_logo_is_visible_and_retains_bundled_icon_image(self):
+        logo = self.app.rail_logo_label
         self.assertNotEqual(logo.grid_info(), {})
         self.assertIsNotNone(self.app._window_icon_image)
         self.assertIs(logo.image, self.app._window_icon_image)

@@ -121,6 +121,36 @@ class CommandPaletteDisclosureUiTests(unittest.TestCase):
         apply.assert_not_called()
         upsert.assert_not_called()
 
+    def test_inline_recommendation_is_gray_and_explicitly_accept_or_dismiss(self):
+        self.app._set_local_command_disclosure(True)
+        self.app.local_command.set("/")
+        self.app.update_idletasks()
+        self.app._refresh_local_command_suggestion()
+
+        recommendation = self.app._local_command_recommendation
+        self.assertIsNotNone(recommendation)
+        self.assertEqual(recommendation.completion, "/review")
+        self.assertEqual(self.app.local_command_completion.get(), "review")
+        self.assertEqual(
+            self.app.local_command_completion_label.cget("fg"),
+            wrapper.PALETTE["text_subtle"],
+        )
+        self.assertIn("Tab accept", self.app.local_command_recommendation_detail.get())
+
+        with mock.patch.object(self.app, "submit_local_command") as submit:
+            self.assertEqual(self.app._on_local_command_submit(), "break")
+            submit.assert_called_once_with()
+        self.assertEqual(self.app.local_command.get(), "/")
+
+        self.assertEqual(self.app._accept_local_command_recommendation(), "break")
+        self.assertEqual(self.app.local_command.get(), "/review")
+        self.assertEqual(self.app.local_command_completion.get(), "")
+
+        self.app.local_command.set("/")
+        self.app._refresh_local_command_suggestion()
+        self.assertEqual(self.app._dismiss_local_command_recommendation(), "break")
+        self.assertEqual(self.app.local_command.get(), "/")
+        self.assertEqual(self.app.local_command_completion.get(), "")
     def test_stale_and_closed_submissions_remain_fail_closed_without_execution(self):
         self.app._set_local_command_disclosure(False)
         self.app._handoff_stale = True

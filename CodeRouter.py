@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import uuid
 import urllib.parse
 import webbrowser
@@ -26,8 +27,31 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import model_router as _model_router
+import command_suggestions as _command_suggestions
 
 APP_TITLE = "CodeRouter"
+MODEL_SELECTION_AUTO = _model_router.MODEL_SELECTION_AUTO
+MODEL_SELECTION_OVERRIDE = _model_router.MODEL_SELECTION_OVERRIDE
+MODEL_SELECTION_MODES = _model_router.MODEL_SELECTION_MODES
+MODEL_OVERRIDE_MAX_CHARS = _model_router.MODEL_OVERRIDE_MAX_CHARS
+MODEL_CATEGORY_GENERAL = _model_router.MODEL_CATEGORY_GENERAL
+MODEL_CATEGORIES = _model_router.MODEL_CATEGORIES
+MODEL_CATEGORY_PREFERENCES = _model_router.MODEL_CATEGORY_PREFERENCES
+FREE_PRICING_FIELDS = _model_router.FREE_PRICING_FIELDS
+MODEL_FAILURE_BUSY = _model_router.MODEL_FAILURE_BUSY
+MODEL_FAILURE_UNAVAILABLE = _model_router.MODEL_FAILURE_UNAVAILABLE
+MODEL_FAILURE_ERROR = _model_router.MODEL_FAILURE_ERROR
+classify_prompt_category = _model_router.classify_prompt_category
+explain_prompt_category = _model_router.explain_prompt_category
+score_prompt_categories = _model_router.score_prompt_categories
+parse_model_selection_command = _model_router.parse_model_selection_command
+load_model_selection_settings = _model_router.load_model_selection_settings
+model_selection_summary = _model_router.model_selection_summary
+normalize_model_override = _model_router.normalize_model_override
+LocalCommandRecommendation = _command_suggestions.LocalCommandRecommendation
+LOCAL_COMMAND_COMPLETIONS = _command_suggestions.LOCAL_COMMAND_COMPLETIONS
+recommend_local_command = _command_suggestions.recommend_local_command
 WINDOW_ICON_SOURCE = Path(__file__).resolve().parent / "assets" / "code-router.svg"
 WINDOW_ICON_SIZE = 32
 WINDOW_ICON_CORNER_RADIUS = 48
@@ -142,7 +166,7 @@ VERIFICATION_SHELL_PATTERN = re.compile(r"[\x00\r\n;&|<>^`()$`]")
 LOCAL_COMMANDS = ("/status", "/model", "/permissions", "/review")
 LOCAL_COMMAND_MAX_RESULT_CHARS = 720
 LOCAL_COMMAND_MAX_ITEMS = 6
-LOCAL_COMMAND_HINT = "Ctrl+K command | Ctrl+Enter run | Esc cancel"
+LOCAL_COMMAND_HINT = "Ctrl+K command | Tab accept | Esc dismiss | Ctrl+Enter run"
 MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
 MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
 ACTIVITY_DIGEST_MAX_CHARS = 240
@@ -153,7 +177,7 @@ SCANNED_CONTEXT_MAX_PATH_CHARS = 180
 SCANNED_CONTEXT_MAX_CHARS = 760
 TRUST_SETTINGS_MAX_CHARS = 960
 LOCAL_COMMAND_POLICY_TEXT = (
-    "Typed input + explicit user action only; never from model, plan, instructions, history, or startup."
+    "Typed input + explicit user action only; routing settings are local and locked during active runs."
 )
 
 TASK_STATE_IDLE = "idle"
@@ -240,16 +264,16 @@ INSPECT_MAX_TOTAL_BYTES = 64 * 1024
 INSPECT_MAX_ROUNDS = 2
 
 PALETTE = {
-    "canvas": "#101214",
-    "surface": "#171a1e",
-    "surface_alt": "#1d2126",
-    "surface_raised": "#242a31",
-    "terminal": "#0c0f12",
-    "border": "#303740",
-    "border_strong": "#46515d",
+    "canvas": "#121212",
+    "surface": "#191919",
+    "surface_alt": "#222222",
+    "surface_raised": "#2a2a2a",
+    "terminal": "#151515",
+    "border": "#292929",
+    "border_strong": "#414141",
     "text": "#e7ebef",
     "text_muted": "#9aa4af",
-    "text_subtle": "#6f7a86",
+    "text_subtle": "#929292",
     "accent": "#9dbdff",
     "accent_active": "#bdd2ff",
     "accent_ink": "#101827",
@@ -880,6 +904,8 @@ class RunSnapshot:
     extra_context_paths: tuple[Path, ...]
     session_history: tuple[tuple[str, str], ...]
     apply_mode: str
+    model_selection_mode: str = MODEL_SELECTION_AUTO
+    model_override: str = ""
     project_instructions: str = ""
     project_instructions_status: str = ""
     request_text: str = ""
@@ -3245,6 +3271,8 @@ def create_run_snapshot(
     session_id=None,
     parent_task_id="",
     parent_session_id="",
+    model_selection_mode=None,
+    model_override="",
 ):
     history = []
     for item in session_messages:
@@ -3254,6 +3282,7 @@ def create_run_snapshot(
             role, content = item
             history.append((str(role), str(content)))
     normalized_mode = apply_mode if apply_mode in {APPLY_MODE_REVIEW, APPLY_MODE_AUTO} else APPLY_MODE_REVIEW
+    normalized_model_selection_mode, normalized_model_override = _model_router.normalize_model_selection_settings(model_selection_mode, model_override)
     normalized_run_id = run_id or uuid.uuid4().hex
     try:
         normalized_inspect_round = min(max(int(inspect_round), 0), INSPECT_MAX_ROUNDS)
@@ -3297,6 +3326,8 @@ def create_run_snapshot(
         extra_context_paths=tuple(Path(path).resolve() for path in extra_context_paths),
         session_history=tuple(history),
         apply_mode=normalized_mode,
+        model_selection_mode=normalized_model_selection_mode,
+        model_override=normalized_model_override,
         project_instructions=sanitize_project_instruction_text(project_instructions),
         project_instructions_status=redact_sensitive_text(
             str(project_instructions_status or "")
@@ -3448,6 +3479,7 @@ class CodeAgentApp(tk.Tk):
         self._setup_window_icon()
 
         self.config_data = load_local_config()
+        self.model_selection_mode, self.model_override = load_model_selection_settings(self.config_data)
         self.api_key = os.environ.get("OPENROUTER_API_KEY") or self.config_data.get("openrouter_api_key", "")
         self.overseer_adapter = overseer_adapter
         self._overseer_adapter_injected = overseer_adapter is not None
@@ -3485,6 +3517,7 @@ class CodeAgentApp(tk.Tk):
         self.workflow_model_disclosure_label = tk.StringVar(value="▸ MODEL / QUEUE")
         self.workflow_model_detail_text = tk.StringVar(value="")
         self.workflow_next_action = tk.StringVar(value="Choose folder")
+        self.workflow_apply_policy = tk.StringVar(value="REVIEW")
         self._model_queue_expanded = False
         self.trust_settings_detail_text = tk.StringVar(value="")
         self._trust_settings_expanded = False
@@ -3503,6 +3536,12 @@ class CodeAgentApp(tk.Tk):
             value="Local only · /status  /model  /permissions  /review"
         )
         self._local_command_expanded = False
+        self.local_command_completion = tk.StringVar(value="")
+        self.local_command_recommendation_detail = tk.StringVar(value="")
+        self._local_command_recommendation = None
+        self._local_command_suggestion_dismissed_for = None
+        self._local_command_suggestion_context = None
+        self._local_command_last_value = ""
 
         self.work_queue = queue.Queue()
         self.lifecycle = RunLifecycle()
@@ -3564,6 +3603,9 @@ class CodeAgentApp(tk.Tk):
         self.animated_buttons = []
         self._poll_after_id = None
         self._command_palette_destroyed = False
+        self._tooltips = []
+        self._utility_drawer_view = None
+        self._review_inspector_collapsed = False
         self._disclosure_expanded = {
             "context": False,
             "history": False,
@@ -3648,6 +3690,24 @@ class CodeAgentApp(tk.Tk):
         style.map("Ghost.TButton", background=[("disabled", PALETTE["surface_alt"]), ("pressed", PALETTE["border_strong"]), ("active", PALETTE["border_strong"])], foreground=[("disabled", PALETTE["text_subtle"])])
         style.configure("Icon.TButton", background=PALETTE["surface_raised"], foreground=PALETTE["text"], font=FONTS["body_bold"], padding=(4, 5), borderwidth=0, focuscolor=PALETTE["focus"])
         style.map("Icon.TButton", background=[("disabled", PALETTE["surface_alt"]), ("pressed", PALETTE["border_strong"]), ("active", PALETTE["border_strong"])], foreground=[("disabled", PALETTE["text_subtle"])])
+
+        style.configure("Toolbar.TLabel", background=PALETTE["canvas"], foreground=PALETTE["text_muted"], font=FONTS["body"])
+        style.configure("Chip.TLabel", background=PALETTE["surface_raised"], foreground=PALETTE["text_muted"], font=FONTS["section"], padding=(8, 4))
+        style.configure("RailValue.TLabel", background=PALETTE["canvas"], foreground=PALETTE["text_subtle"], font=FONTS["section"])
+        style.configure("DrawerTitle.TLabel", background=PALETTE["surface"], foreground=PALETTE["text"], font=FONTS["body_bold"])
+        style.configure("ComposerMeta.TLabel", background=PALETTE["surface"], foreground=PALETTE["text_muted"], font=FONTS["mono_small"])
+        style.configure("IconRail.TButton", background=PALETTE["canvas"], foreground=PALETTE["text_muted"], font=("Segoe UI Symbol", 16), padding=(9, 8), borderwidth=0, focuscolor=PALETTE["focus"])
+        style.map(
+            "IconRail.TButton",
+            background=[("disabled", PALETTE["canvas"]), ("pressed", PALETTE["surface_raised"]), ("active", PALETTE["surface_raised"])],
+            foreground=[("disabled", PALETTE["text_subtle"]), ("active", PALETTE["text"])],
+        )
+        style.configure("RailAction.TButton", background=PALETTE["surface_raised"], foreground=PALETTE["text"], font=FONTS["body_bold"], padding=(10, 7), borderwidth=0, focuscolor=PALETTE["focus"])
+        style.map(
+            "RailAction.TButton",
+            background=[("disabled", PALETTE["surface_alt"]), ("pressed", PALETTE["accent_active"]), ("active", PALETTE["border_strong"])],
+            foreground=[("disabled", PALETTE["text_subtle"]), ("pressed", PALETTE["accent_ink"])],
+        )
 
     def _build_window_icon_image(self):
         """Build a tiny dependency-free raster from the bundled SVG geometry."""
@@ -3812,7 +3872,7 @@ class CodeAgentApp(tk.Tk):
                 lambda _event: (self._toggle_local_command_disclosure(), "break")[1],
             )
 
-        self.local_command_detail = tk.Frame(command_bar, bg=PALETTE["canvas"])
+        self.local_command_detail = tk.Frame(toolbar, bg=PALETTE["canvas"])
         self.local_command_detail.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.local_command_detail.columnconfigure(1, weight=1)
         ttk.Label(self.local_command_detail, text="COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
@@ -3822,6 +3882,28 @@ class CodeAgentApp(tk.Tk):
             font=FONTS["mono_small"],
         )
         self.local_command_entry.grid(row=0, column=1, sticky="ew", padx=(10, 6))
+        self.local_command_completion_label = tk.Label(
+            self.local_command_detail,
+            textvariable=self.local_command_completion,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["mono_small"],
+            anchor="w",
+            borderwidth=0,
+            padx=0,
+            pady=0,
+            takefocus=0,
+        )
+        self.local_command_completion_label.place_forget()
+        self.local_command_completion_label.bind(
+            "<Button-1>", self._on_local_command_completion_click
+        )
+        self.local_command_entry.bind(
+            "<Configure>", self._position_local_command_completion, add="+"
+        )
+        self.local_command_detail.bind(
+            "<Configure>", self._position_local_command_completion, add="+"
+        )
         self.local_command_submit_button = self._button(
             self.local_command_detail,
             "Submit",
@@ -3837,7 +3919,22 @@ class CodeAgentApp(tk.Tk):
             wraplength=720,
         )
         self.local_command_result_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.local_command_recommendation_label = ttk.Label(
+            self.local_command_detail,
+            textvariable=self.local_command_recommendation_detail,
+            style="Muted.TLabel",
+            wraplength=720,
+        )
+        self.local_command_recommendation_label.grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(2, 0)
+        )
+        self.local_command_recommendation_label.grid_remove()
         self.local_command_entry.bind("<Return>", self._on_local_command_submit)
+        self.local_command_entry.bind("<KeyRelease>", self._on_local_command_key_release, add="+")
+        self.local_command_entry.bind("<Tab>", self._accept_local_command_recommendation)
+        self.local_command_entry.bind("<Right>", self._accept_local_command_recommendation)
+        self.local_command_entry.bind("<Escape>", self._dismiss_local_command_recommendation)
+        self._local_command_trace_id = self.local_command.trace_add("write", self._on_local_command_changed)
         self.local_command_detail.grid_remove()
 
         self.workflow_rail = tk.Frame(
@@ -3993,6 +4090,7 @@ class CodeAgentApp(tk.Tk):
         shell.rowconfigure(0, weight=1)
 
         sidebar = self._panel(shell)
+        self._legacy_sidebar = sidebar
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, SPACING["gutter"]))
         sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(22, weight=0)
@@ -4154,7 +4252,7 @@ class CodeAgentApp(tk.Tk):
             wraplength=235,
         )
         self.history_filter_status_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 5))
-        self.history_list.grid(row=2, column=0, sticky="ew")
+        self.history_list.grid(in_=history_list_frame, row=2, column=0, sticky="ew")
         history_scroll = tk.Scrollbar(
             history_list_frame,
             orient=tk.VERTICAL,
@@ -4261,6 +4359,11 @@ class CodeAgentApp(tk.Tk):
         self.instructions = scrolledtext.ScrolledText(center, height=8, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["accent"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.instructions.grid(row=2, column=0, sticky="nsew", pady=(8, 12))
         self.instructions.insert("1.0", "Describe a change for the agent.")
+        self.instructions.bind("<<Modified>>", self._on_prompt_modified_for_local_command, add="+")
+        try:
+            self.instructions.edit_modified(False)
+        except (tk.TclError, RuntimeError):
+            pass
 
         ttk.Label(center, text="Summary", style="PanelTitle.TLabel").grid(row=3, column=0, sticky="w")
         self.summary = scrolledtext.ScrolledText(center, height=5, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["body"], bg=PALETTE["surface_raised"], fg=PALETTE["text"], insertbackground=PALETTE["text"])
@@ -4297,7 +4400,7 @@ class CodeAgentApp(tk.Tk):
         self.activity_model_status_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.activity = PreservingActivityLog(center, height=9, wrap=tk.WORD, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["terminal"], fg=PALETTE["text_muted"], insertbackground=PALETTE["text"], selectbackground=PALETTE["accent"], selectforeground=PALETTE["accent_ink"])
         self.activity.grid(row=8, column=0, sticky="nsew", pady=(8, 0))
-        main.add(center, weight=5)
+        main.add(center, weight=8)
 
         right = self._panel(main)
         right.columnconfigure(0, weight=1)
@@ -4609,11 +4712,13 @@ class CodeAgentApp(tk.Tk):
                 "task_tools": right,
             }
         )
+        self._sidebar_rows = {w: int(w.grid_info()["row"]) for w in sidebar.grid_slaves()}
         for disclosure in ("context", "history", "verification", "activity", "task_tools"):
             self._set_disclosure(disclosure, False)
         self._refresh_trust_settings_surface()
         self._set_trust_settings_disclosure(False)
-        main.add(right, weight=6)
+        main.add(right, weight=3)
+        self._build_modern_surface(toolbar, shell, sidebar, center, right, main)
         self._queue_workbench_scroll_sync()
 
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -4623,6 +4728,482 @@ class CodeAgentApp(tk.Tk):
         self.bind_all("<Control-Key-k>", self._on_local_command_shortcut)
         self.bind_all("<Escape>", self._on_escape_shortcut)
         self.log("CodeRouter started. API key is hidden and loaded from local config or environment.")
+
+    def _short_folder_label(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return 'No project'
+        try:
+            name = Path(raw).name
+        except (OSError, TypeError, ValueError):
+            name = raw
+        name = name or raw
+        if len(name) <= 18:
+            return name
+        return name[:15] + '…'
+
+    def _attach_tooltip(self, widget, text):
+        if not text:
+            return
+        state = {'after': None, 'window': None}
+
+        def hide(_event=None):
+            after_id = state.get('after')
+            state['after'] = None
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, RuntimeError):
+                    pass
+            window = state.get('window')
+            state['window'] = None
+            if window is not None:
+                try:
+                    window.destroy()
+                except tk.TclError:
+                    pass
+
+        def show():
+            state['after'] = None
+            if self.lifecycle.closed:
+                return
+            try:
+                if not widget.winfo_ismapped():
+                    return
+                window = tk.Toplevel(widget)
+                window.wm_overrideredirect(True)
+                window.configure(bg=PALETTE['surface_raised'])
+                label = tk.Label(
+                    window,
+                    text=text,
+                    bg=PALETTE['surface_raised'],
+                    fg=PALETTE['text'],
+                    font=FONTS['body'],
+                    padx=9,
+                    pady=6,
+                    justify=tk.LEFT,
+                )
+                label.pack()
+                window.update_idletasks()
+                x = widget.winfo_rootx() + widget.winfo_width() + 9
+                y = widget.winfo_rooty() + max(0, (widget.winfo_height() - window.winfo_height()) // 2)
+                window.geometry(f'+{x}+{y}')
+                state['window'] = window
+            except (tk.TclError, RuntimeError):
+                state['window'] = None
+
+        def schedule(_event=None):
+            hide()
+            try:
+                state['after'] = self.after(450, show)
+            except (tk.TclError, RuntimeError):
+                state['after'] = None
+
+        widget.bind('<Enter>', schedule, add='+')
+        widget.bind('<Leave>', hide, add='+')
+        widget.bind('<ButtonPress>', hide, add='+')
+        self._tooltips.append((widget, state))
+
+    def _icon_button(self, parent, icon, command, hint):
+        button = tk.Button(
+            parent,
+            text=icon,
+            command=command,
+            bg=PALETTE['canvas'],
+            fg=PALETTE['text_muted'],
+            activebackground=PALETTE['surface_raised'],
+            activeforeground=PALETTE['text'],
+            disabledforeground=PALETTE['text_subtle'],
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=PALETTE['canvas'],
+            highlightcolor=PALETTE['focus'],
+            font=('Segoe UI Symbol', 16),
+            width=3,
+            height=1,
+            padx=0,
+            pady=5,
+            takefocus=True,
+            cursor='hand2',
+        )
+        button.bind('<Enter>', lambda _event, b=button, h=hint: self._button_hover(b, True, h))
+        button.bind('<Leave>', lambda _event, b=button: self._button_hover(b, False, None))
+        for sequence in ('<Return>', '<space>'):
+            button.bind(sequence, lambda _event, b=button: (b.invoke(), 'break')[1])
+        self._attach_tooltip(button, hint)
+        return button
+
+    def _build_modern_surface(self, toolbar, shell, sidebar, center, right, main):
+        self._legacy_sidebar = sidebar
+        self._toolbar = toolbar
+        self._center_panel = center
+        self._right_panel = right
+        self._workbench_shell = shell
+
+        sidebar.configure(width=300)
+        sidebar.grid_propagate(True)
+        sidebar.grid_configure(
+            row=0,
+            column=1,
+            columnspan=1,
+            sticky='nsew',
+            padx=(0, SPACING['gutter']),
+        )
+        sidebar.grid_remove()
+
+        shell.columnconfigure(0, weight=0, minsize=64)
+        shell.columnconfigure(1, weight=0, minsize=0)
+        shell.columnconfigure(2, weight=1)
+        shell.rowconfigure(0, weight=1)
+        main.grid_configure(row=0, column=2, columnspan=1, sticky='nsew')
+
+        rail = tk.Frame(shell, bg=PALETTE['canvas'], width=64)
+        rail.grid(row=0, column=0, sticky='ns')
+        rail.grid_propagate(False)
+        rail.columnconfigure(0, weight=1)
+        rail.rowconfigure(9, weight=1)
+        self.icon_rail = rail
+
+        rail_logo = tk.Label(
+            rail,
+            image=self._window_icon_image if self._window_icon_image is not None else '',
+            bg=PALETTE['canvas'],
+            width=WINDOW_ICON_SIZE,
+            height=WINDOW_ICON_SIZE,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        if self._window_icon_image is not None:
+            rail_logo.image = self._window_icon_image
+        rail_logo.grid(row=0, column=0, pady=(2, 12))
+        self.rail_logo_label = rail_logo
+
+        tk.Frame(rail, bg=PALETTE['border'], height=1, width=28).grid(
+            row=1,
+            column=0,
+            sticky='ew',
+            pady=(0, 10),
+            padx=18,
+        )
+
+        self.rail_workspace_button = self._icon_button(
+            rail,
+            '⌂',
+            lambda: self._show_utility_view('workspace'),
+            'Workspace · folder, context, policy, and scan',
+        )
+        self.rail_workspace_button.grid(row=2, column=0, pady=2)
+
+        self.new_chat_rail_button = self._button(
+            rail,
+            '＋',
+            self.reset_session,
+            'IconRail.TButton',
+            'New chat · clear the current conversation',
+        )
+        self.new_chat_rail_button.grid(row=3, column=0, pady=2)
+        self._attach_tooltip(self.new_chat_rail_button, 'New chat · clear the current conversation')
+
+        self.rail_history_button = self._icon_button(
+            rail,
+            '◷',
+            lambda: self._show_utility_view('history'),
+            'History · inspect or retry saved task metadata',
+        )
+        self.rail_history_button.grid(row=4, column=0, pady=2)
+
+        self.rail_verify_button = self._icon_button(
+            rail,
+            '✓',
+            lambda: self._show_utility_view('verification'),
+            'Verify · run one explicit bounded local command',
+        )
+        self.rail_verify_button.grid(row=5, column=0, pady=2)
+
+        self.rail_activity_button = self._icon_button(
+            rail,
+            '≡',
+            lambda: self._show_utility_view('activity'),
+            'Activity · append-only evidence timeline',
+        )
+        self.rail_activity_button.grid(row=6, column=0, pady=2)
+
+        self.rail_review_button = self._icon_button(
+            rail,
+            '◫',
+            self._toggle_review_inspector,
+            'Review · show or hide the diff inspector',
+        )
+        self.rail_review_button.grid(row=7, column=0, pady=2)
+
+        self.rail_settings_button = self._icon_button(
+            rail,
+            '⚙',
+            lambda: self._show_utility_view('settings'),
+            'Settings · trust, OpenRouter, and apply policy',
+        )
+        self.rail_settings_button.grid(row=8, column=0, pady=2)
+
+        self.rail_state_marker = tk.Label(
+            rail,
+            text='●',
+            bg=PALETTE['canvas'],
+            fg=TASK_STATE_COLORS[TASK_STATE_IDLE],
+            font=('Segoe UI', 11),
+        )
+        self.rail_state_marker.grid(row=10, column=0, pady=(10, 2))
+        self.rail_folder_label = tk.Label(
+            rail,
+            text=self._short_folder_label(self.selected_folder.get()),
+            bg=PALETTE['canvas'],
+            fg=PALETTE['text_subtle'],
+            font=FONTS['section'],
+            wraplength=52,
+            justify=tk.CENTER,
+        )
+        self.rail_folder_label.grid(row=11, column=0, pady=(0, 8))
+
+        composer_actions = tk.Frame(center, bg=PALETTE['surface'])
+        composer_actions.grid(row=4, column=0, sticky='ew', pady=(0, 12))
+        composer_actions.columnconfigure(0, weight=1)
+        ttk.Label(
+            composer_actions,
+            text='Plan first · review before apply',
+            style='ComposerMeta.TLabel',
+        ).grid(row=0, column=0, sticky='w')
+        self.composer_run_button = self._button(
+            composer_actions,
+            'Run task  →',
+            self.run_agent,
+            'Primary.TButton',
+            'Run the task · Ctrl+Enter',
+        )
+        self.composer_run_button.grid(row=0, column=1, sticky='e')
+        self._attach_tooltip(self.composer_run_button, 'Run the task · Ctrl+Enter')
+        try:
+            self.instructions.configure(height=12, padx=14, pady=12)
+            self.summary.configure(height=6, padx=12, pady=10)
+        except tk.TclError:
+            pass
+
+        self.workflow_policy_chip = tk.Label(
+            toolbar,
+            textvariable=self.workflow_apply_policy,
+            bg=PALETTE['surface_raised'],
+            fg=PALETTE['warning'],
+            font=FONTS['section'],
+            padx=9,
+            pady=4,
+        )
+        self.workflow_policy_chip.grid(row=0, column=1, sticky='e', padx=(12, 10))
+
+        self.review_toggle_button = self._button(
+            right,
+            'Hide',
+            self._toggle_review_inspector,
+            'Ghost.TButton',
+            'Collapse the right-side Review inspector',
+        )
+        self.review_toggle_button.grid(row=0, column=0, sticky='e')
+        self._attach_tooltip(self.review_toggle_button, 'Collapse the right-side Review inspector')
+
+        self._rail_buttons = {
+            'workspace': self.rail_workspace_button,
+            'history': self.rail_history_button,
+            'verification': self.rail_verify_button,
+            'activity': self.rail_activity_button,
+            'review': self.rail_review_button,
+            'settings': self.rail_settings_button,
+        }
+        self._polish_desktop_layout(toolbar, center, right, main)
+        self._set_utility_drawer(None)
+        self._refresh_rail_selection()
+        self._refresh_workflow_rail()
+
+    def _polish_desktop_layout(self, toolbar, center, right, main):
+        """Presentation only: retain the original widgets and lifecycle handlers."""
+        toolbar.configure(pady=10)
+        self.toolbar_logo_label.grid_remove()  # The rail owns the brand mark.
+        for widget in toolbar.grid_slaves(row=1):
+            if isinstance(widget, ttk.Label):
+                widget.grid_remove()
+        command_bar = self.local_command_disclosure_button.master
+        command_bar.grid_configure(row=0, column=1, columnspan=1, sticky='w', padx=(24, 0), pady=0)
+        self.local_command_disclosure_button.configure(text='⌕  Command   Ctrl+K')
+        # Expanded command content gets a full-width row, avoiding a narrow header popover.
+        self.local_command_detail.grid_configure(in_=toolbar, row=2, column=0, columnspan=3, sticky='ew')
+        self.local_command_detail.grid_remove()
+        self.workflow_rail.configure(highlightthickness=0, pady=3)
+        self.workflow_rail.grid_configure(pady=(10, 0))
+        for widget in self.workflow_rail.winfo_children():
+            if isinstance(widget, ttk.Separator) or (isinstance(widget, tk.Label) and widget.cget('text') in ('PHASE', 'NEXT')):
+                widget.grid_remove()
+        self.workflow_model_value.configure(font=FONTS['body'])
+        self.workflow_next_action_value.configure(wraplength=280)
+        self.workflow_model_value.configure(wraplength=300)
+        for panel in (center, right, self._legacy_sidebar):
+            panel.configure(highlightthickness=0, padx=20, pady=18)
+        ttk.Style(self).configure('TPanedwindow', background=PALETTE['canvas'])
+        ttk.Style(self).configure('TEntry', fieldbackground=PALETTE['surface_alt'], foreground=PALETTE['text'], insertcolor=PALETTE['text'], borderwidth=0)
+        style = ttk.Style(self)
+        style.configure('Treeview', bordercolor=PALETTE['surface_alt'], lightcolor=PALETTE['surface_alt'], darkcolor=PALETTE['surface_alt'])
+        style.configure('Quiet.Vertical.TScrollbar', background=PALETTE['border_strong'], troughcolor=PALETTE['surface'], bordercolor=PALETTE['surface'], lightcolor=PALETTE['border_strong'], darkcolor=PALETTE['border_strong'], borderwidth=0, arrowsize=8)
+        style.layout('Quiet.Vertical.TScrollbar', [('Vertical.Scrollbar.trough', {'sticky': 'ns', 'children': [('Vertical.Scrollbar.thumb', {'expand': '1', 'sticky': 'nswe'})]})])
+        actions = (self.apply_button, self.apply_selected_button, self.reject_button, self.undo_last_apply_button, self.export_report_button)
+        for col in range(5):
+            actions[0].master.columnconfigure(col, weight=0, minsize=0)
+        for i, button in enumerate(actions):
+            button.grid_configure(row=i // 3, column=i % 3, padx=3, pady=3, sticky='ew')
+            button.master.columnconfigure(i % 3, weight=1)
+        # Conversation output leads; the prompt and its action form one lower surface.
+        for widget in center.grid_slaves():
+            if isinstance(widget, ttk.Label):
+                label = widget.cget('text')
+                if label == 'CHAT':
+                    widget.configure(text='Conversation', font=('Segoe UI', 15, 'bold'), foreground=PALETTE['text'])
+                elif label == 'Prompt':
+                    widget.grid_configure(row=3, pady=(18, 0))
+                    widget.configure(text='Your task')
+                elif label == 'Summary':
+                    widget.grid_remove()
+        center.rowconfigure(2, weight=5)
+        center.rowconfigure(5, weight=0)
+        self.summary.grid_configure(row=2, pady=(16, 4))
+        self.instructions.grid_configure(row=5, pady=(8, 0))
+        self.instructions.configure(height=5, font=('Segoe UI', 11), highlightbackground=PALETTE['surface_alt'])
+        self.summary.configure(height=9, bg=PALETTE['surface'], highlightthickness=0, font=('Segoe UI', 11), padx=2, pady=8)
+        self.composer_run_button.master.grid_configure(row=9, pady=(12, 0))
+        self.composer_run_button.configure(text='Run task  →')
+        for widget in self.composer_run_button.master.winfo_children():
+            if isinstance(widget, ttk.Label):
+                widget.configure(text='Ctrl+Enter to run', font=FONTS['body'])
+        # Detail stays a keyboard-focusable tooltip; the digest itself is unchanged.
+        self.activity_digest_label.master.grid_remove()
+        self._disclosure_widgets['activity'] += (self.activity_digest_label.master,)
+        self._attach_tooltip(self.rail_activity_button, 'Activity · expand the evidence timeline and model details')
+        self.activity_disclosure_button.grid_configure(pady=(10, 0), sticky='w')
+        for text_widget in (self.instructions, self.summary, self.activity, self.diff, self.plan_preview, self.history_detail):
+            text_widget.vbar.pack_forget()
+            scroll = ttk.Scrollbar(text_widget.frame, orient=tk.VERTICAL, command=text_widget.yview, style='Quiet.Vertical.TScrollbar')
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            def update_scroll(first, last, bar=scroll):
+                bar.set(first, last)
+                if float(first) <= 0 and float(last) >= 1:
+                    bar.pack_forget()
+                else:
+                    bar.pack(side=tk.RIGHT, fill=tk.Y)
+            text_widget.configure(yscrollcommand=update_scroll)
+            text_widget.vbar = scroll
+        self.rail_settings_button.grid_configure(row=10, pady=(8, 12))
+        self.rail_state_marker.grid_remove()
+        self.rail_folder_label.grid_remove()
+        self._attach_tooltip(self.rail_workspace_button, 'Workspace · choose a project, scan, and add context')
+        self._inspector_layout_pending = True
+        main.bind('<Configure>', self._initial_inspector_width, add='+')
+
+    def _initial_inspector_width(self, event=None):
+        width = self.workbench_main.winfo_width()
+        if (getattr(self, '_inspector_layout_pending', False) and width > 800
+                and not self.lifecycle.closed and len(self.workbench_main.panes()) == 2):
+            self._inspector_layout_pending = False
+            self.workbench_main.sashpos(0, max(450, width - 440))
+
+    def _refresh_rail_selection(self):
+        buttons = getattr(self, '_rail_buttons', {})
+        active_view = getattr(self, '_utility_drawer_view', None)
+        for name, button in buttons.items():
+            active = (name == active_view or (name == 'review' and not getattr(self, '_review_inspector_collapsed', False)) or (name == 'activity' and self._disclosure_expanded.get('activity', False)))
+            try:
+                button.configure(
+                    bg=PALETTE['surface_raised'] if active else PALETTE['canvas'],
+                    fg=PALETTE['accent'] if active else PALETTE['text_muted'],
+                    highlightbackground=PALETTE['accent'] if active else PALETTE['canvas'],
+                )
+            except tk.TclError:
+                pass
+
+    def _set_utility_drawer(self, view):
+        sidebar = getattr(self, '_legacy_sidebar', None)
+        if sidebar is None:
+            return
+        visible = bool(sidebar.grid_info())
+        if view is None or (visible and view == self._utility_drawer_view):
+            sidebar.grid_remove()
+            self._utility_drawer_view = None
+        else:
+            sidebar.grid()
+            self._utility_drawer_view = view
+            if view == 'history':
+                self._set_disclosure('history', True)
+            elif view == 'verification':
+                self._set_disclosure('verification', True)
+            elif view == 'settings':
+                self._set_trust_settings_disclosure(True)
+        if self._utility_drawer_view:
+            allowed = {'workspace': {0, 1, 2, 3, 4, 14, 18},
+                       'settings': {0, 7, 8, 9, 10, 11},
+                       'history': {0, 20, 21, 22, 23, 24},
+                       'verification': {0, 26, 27, 28, 29}}[self._utility_drawer_view]
+            for widget, row in self._sidebar_rows.items():
+                if row in allowed:
+                    if row != 4 or self._disclosure_expanded.get('context'):
+                        widget.grid()
+                else:
+                    widget.grid_remove()
+                if row == 0:
+                    widget.configure(text=self._utility_drawer_view.upper())
+            sidebar.rowconfigure(22, weight=1 if view == 'history' else 0)
+            self.workbench_canvas.yview_moveto(0)
+        self._refresh_rail_selection()
+        self._queue_workbench_scroll_sync()
+
+    def _show_utility_view(self, view):
+        if view == 'activity':
+            self._set_utility_drawer(None)
+            self._set_disclosure('activity', True)
+            try:
+                self.activity.see(tk.END)
+            except tk.TclError:
+                pass
+            self._refresh_rail_selection()
+            return
+        self._set_utility_drawer(view)
+
+    def _set_review_inspector_collapsed(self, collapsed):
+        main = getattr(self, 'workbench_main', None)
+        right = getattr(self, '_right_panel', None)
+        if main is None or right is None:
+            return
+        collapsed = bool(collapsed)
+        try:
+            panes = tuple(main.panes())
+        except tk.TclError:
+            panes = ()
+        if collapsed:
+            if str(right) in panes:
+                try:
+                    main.forget(right)
+                except tk.TclError:
+                    pass
+        elif str(right) not in panes:
+            try:
+                main.add(right, weight=3)
+            except tk.TclError:
+                return
+        self._review_inspector_collapsed = collapsed
+        if not collapsed:
+            self._inspector_layout_pending = True
+            self._initial_inspector_width()
+        if hasattr(self, 'review_toggle_button'):
+            self.review_toggle_button.configure(text='Show' if collapsed else 'Hide')
+        self._refresh_rail_selection()
+        self._queue_workbench_scroll_sync()
+
+    def _toggle_review_inspector(self):
+        if self.lifecycle.closed:
+            return
+        self._set_review_inspector_collapsed(not self._review_inspector_collapsed)
 
     def _cancel_workbench_scroll_sync(self):
         after_id = self._workbench_scroll_sync_after_id
@@ -4661,6 +5242,9 @@ class CodeAgentApp(tk.Tk):
             return
         self._workbench_scroll_syncing = True
         try:
+            if self._workbench_window_id is not None:
+                self.workbench_canvas.itemconfigure(self._workbench_window_id,
+                    height=max(self.workbench_body.winfo_reqheight(), self.workbench_canvas.winfo_height()))
             bbox = self.workbench_canvas.bbox("all")
             if not bbox:
                 self.workbench_canvas.configure(scrollregion=(0, 0, 0, 0))
@@ -4804,8 +5388,12 @@ class CodeAgentApp(tk.Tk):
             decision_text = f"{decision_count} recorded · last {last_decision}"
         else:
             decision_text = "0 recorded"
+        routing_mode = getattr(snapshot, "model_selection_mode", None) or self.model_selection_mode
+        routing_override = getattr(snapshot, "model_override", "") if snapshot is not None else self.model_override
+        routing_label = model_selection_summary(routing_mode, routing_override)
         lines = (
             f"OpenRouter: {self._openrouter_connection_label()}",
+            f"Model routing: {self._trust_safe_text(routing_label, 220)}",
             f"Apply mode: {mode_label}",
             f"Permission: {permission_note}",
             f"Project instructions: {instruction_status}",
@@ -5178,6 +5766,9 @@ class CodeAgentApp(tk.Tk):
         self._set_disclosure(section, not self._disclosure_expanded.get(section, False))
 
     def _auto_open_disclosures(self):
+        if (getattr(self, '_review_inspector_collapsed', False)
+                and (self.pending_plan or self.inspect_request or self.verification_request)):
+            self._set_review_inspector_collapsed(False)
         for section in ("task_tools", "verification", "activity"):
             if self._disclosure_is_active(section) and not self._disclosure_expanded.get(section, False):
                 self._set_disclosure(section, True)
@@ -5322,6 +5913,7 @@ class CodeAgentApp(tk.Tk):
         queue_signal = self._current_run_queue_signal()
         detail = (
             f"Status: {status}\n"
+            f"Routing: {self._redact_sensitive(model_selection_summary(self.model_selection_mode, self.model_override))}\n"
             f"Fallback queue: {fallback_queue}\n"
             f"Health: {health_signal}\n"
             f"Run: {run_signal}\n"
@@ -5386,11 +5978,25 @@ class CodeAgentApp(tk.Tk):
         state = self.task_state if self.task_state in TASK_STATE_LABELS else TASK_STATE_IDLE
         self.workflow_phase.set(TASK_STATE_LABELS[state])
         self.workflow_phase_value.configure(fg=TASK_STATE_COLORS[state])
+        self.workflow_apply_policy.set(
+            'AUTO' if self.apply_mode.get() == APPLY_MODE_AUTO else 'REVIEW'
+        )
+        if hasattr(self, 'workflow_policy_chip'):
+            self.workflow_policy_chip.configure(
+                fg=PALETTE['accent'] if self.apply_mode.get() == APPLY_MODE_REVIEW else PALETTE['warning']
+            )
+        if hasattr(self, 'rail_state_marker'):
+            self.rail_state_marker.configure(fg=TASK_STATE_COLORS[state])
+        if hasattr(self, 'rail_folder_label'):
+            self.rail_folder_label.configure(text=self._short_folder_label(self.selected_folder.get()))
         self.workflow_model_signal.set(self._workflow_model_text())
         self._refresh_model_queue_disclosure()
         self._refresh_activity_digest()
         self._refresh_trust_settings_surface()
         self.workflow_next_action.set(self._workflow_next_action_text())
+        if hasattr(self, '_rail_buttons'):
+            self._refresh_rail_selection()
+        self._refresh_local_command_suggestion()
 
     def _set_local_command_disclosure(self, expanded):
         if not hasattr(self, "local_command_detail"):
@@ -5404,6 +6010,7 @@ class CodeAgentApp(tk.Tk):
             self.local_command_detail.grid_remove()
         arrow = "▾" if self._local_command_expanded else "▸"
         self.local_command_disclosure_button.configure(text=f"{arrow} Command")
+        self._refresh_local_command_suggestion()
 
     def _toggle_local_command_disclosure(self):
         if getattr(self, "lifecycle", None) is not None and self.lifecycle.closed:
@@ -5433,11 +6040,189 @@ class CodeAgentApp(tk.Tk):
         if entry is not None:
             entry.focus_set()
             entry.selection_range(0, tk.END)
+            self._refresh_local_command_suggestion()
         return "break"
 
     def _on_local_command_submit(self, _event=None):
         self.submit_local_command()
         return "break"
+
+    def _local_command_recommendation_context(self):
+        prompt = ""
+        instructions = getattr(self, "instructions", None)
+        if instructions is not None:
+            try:
+                prompt = instructions.get("1.0", tk.END).strip()
+            except (tk.TclError, RuntimeError):
+                prompt = ""
+        pending_edits = getattr(self, "pending_edits", ())
+        try:
+            pending_edit_count = len(pending_edits)
+        except TypeError:
+            pending_edit_count = int(bool(pending_edits))
+        context = {
+            "prompt": prompt,
+            "task_state": getattr(self, "task_state", TASK_STATE_IDLE),
+            "has_pending_proposal": bool(getattr(self, "pending_proposal", None)),
+            "has_pending_plan": bool(getattr(self, "pending_plan", None)),
+            "has_inspect_request": bool(getattr(self, "inspect_request", None)),
+            "has_verification_request": bool(getattr(self, "verification_request", None)),
+            "pending_edits": pending_edit_count,
+            "model_selection_mode": getattr(self, "model_selection_mode", MODEL_SELECTION_AUTO),
+        }
+        context_key = (
+            classify_prompt_category(prompt),
+            context["task_state"],
+            context["has_pending_proposal"],
+            context["has_pending_plan"],
+            context["has_inspect_request"],
+            context["has_verification_request"],
+            context["pending_edits"],
+            context["model_selection_mode"],
+        )
+        return context, context_key
+
+    def _local_command_entry_cursor_at_end(self):
+        entry = getattr(self, "local_command_entry", None)
+        if entry is None:
+            return False
+        try:
+            if entry.focus_get() is entry:
+                if entry.selection_present():
+                    return False
+                return entry.index(tk.INSERT) == len(self.local_command.get())
+        except (tk.TclError, RuntimeError):
+            return False
+        return True
+
+    def _clear_local_command_recommendation(self):
+        self._local_command_recommendation = None
+        completion = getattr(self, "local_command_completion", None)
+        if completion is not None:
+            completion.set("")
+        detail = getattr(self, "local_command_recommendation_detail", None)
+        if detail is not None:
+            detail.set("")
+        completion_label = getattr(self, "local_command_completion_label", None)
+        if completion_label is not None:
+            try:
+                completion_label.place_forget()
+            except (tk.TclError, RuntimeError):
+                pass
+        recommendation_label = getattr(self, "local_command_recommendation_label", None)
+        if recommendation_label is not None:
+            try:
+                recommendation_label.grid_remove()
+            except (tk.TclError, RuntimeError):
+                pass
+        result_label = getattr(self, "local_command_result_label", None)
+        if result_label is not None:
+            try:
+                result_label.grid_configure(row=1)
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _position_local_command_completion(self, _event=None):
+        recommendation = getattr(self, "_local_command_recommendation", None)
+        label = getattr(self, "local_command_completion_label", None)
+        entry = getattr(self, "local_command_entry", None)
+        if recommendation is None or label is None or entry is None:
+            if label is not None:
+                try:
+                    label.place_forget()
+                except (tk.TclError, RuntimeError):
+                    pass
+            return
+        try:
+            self.local_command_detail.update_idletasks()
+            measure_font = tkfont.Font(font=FONTS["mono_small"])
+            text_width = measure_font.measure(self.local_command.get())
+            suffix_width = measure_font.measure(recommendation.suffix)
+            entry_width = entry.winfo_width()
+            if entry_width <= 1 or text_width + suffix_width > max(0, entry_width - 8):
+                label.place_forget()
+                return
+            x = entry.winfo_x() + 5 + text_width
+            y = entry.winfo_y() + max(0, (entry.winfo_height() - label.winfo_reqheight()) // 2)
+            label.place(x=x, y=y, anchor="w")
+        except (tk.TclError, RuntimeError):
+            try:
+                label.place_forget()
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _refresh_local_command_suggestion(self):
+        entry = getattr(self, "local_command_entry", None)
+        if entry is None or not hasattr(self, "local_command_completion_label"):
+            return
+        try:
+            typed = self.local_command.get()
+            context, context_key = self._local_command_recommendation_context()
+        except (tk.TclError, RuntimeError):
+            self._clear_local_command_recommendation()
+            return
+        if context_key != self._local_command_suggestion_context:
+            self._local_command_suggestion_context = context_key
+            self._local_command_suggestion_dismissed_for = None
+        if typed == self._local_command_suggestion_dismissed_for:
+            self._clear_local_command_recommendation()
+            return
+        recommendation = recommend_local_command(typed, **context)
+        if recommendation is None or not self._local_command_entry_cursor_at_end():
+            self._clear_local_command_recommendation()
+            return
+        self._local_command_recommendation = recommendation
+        self.local_command_completion.set(recommendation.suffix)
+        self.local_command_recommendation_detail.set(
+            f"Recommended · {recommendation.completion} · {recommendation.reason} · Tab accept / Esc dismiss"
+        )
+        try:
+            self.local_command_result_label.grid_configure(row=2)
+            self.local_command_recommendation_label.grid()
+        except (tk.TclError, RuntimeError):
+            pass
+        self._position_local_command_completion()
+
+    def _on_local_command_changed(self, *_args):
+        try:
+            typed = self.local_command.get()
+        except (tk.TclError, RuntimeError):
+            return
+        if typed != self._local_command_last_value:
+            self._local_command_suggestion_dismissed_for = None
+            self._local_command_last_value = typed
+        self._refresh_local_command_suggestion()
+
+    def _on_local_command_key_release(self, _event=None):
+        self._refresh_local_command_suggestion()
+
+    def _on_prompt_modified_for_local_command(self, _event=None):
+        try:
+            if self.instructions.edit_modified():
+                self.instructions.edit_modified(False)
+        except (tk.TclError, RuntimeError):
+            pass
+        self._refresh_local_command_suggestion()
+
+    def _accept_local_command_recommendation(self, _event=None):
+        recommendation = getattr(self, "_local_command_recommendation", None)
+        if recommendation is None or not self._local_command_entry_cursor_at_end():
+            return None
+        self.local_command.set(recommendation.completion)
+        self.local_command_entry.icursor(tk.END)
+        self._local_command_suggestion_dismissed_for = None
+        self._refresh_local_command_suggestion()
+        return "break"
+
+    def _dismiss_local_command_recommendation(self, _event=None):
+        if getattr(self, "_local_command_recommendation", None) is None:
+            return None
+        self._local_command_suggestion_dismissed_for = self.local_command.get()
+        self._clear_local_command_recommendation()
+        return "break"
+
+    def _on_local_command_completion_click(self, _event=None):
+        return self._accept_local_command_recommendation()
 
     def _local_command_safe_text(self, value, limit=LOCAL_COMMAND_MAX_RESULT_CHARS):
         safe = self._redact_sensitive(value)
@@ -5502,8 +6287,13 @@ class CodeAgentApp(tk.Tk):
             for model in MODEL_FALLBACKS[:LOCAL_COMMAND_MAX_ITEMS]
         )
         active = self._local_command_safe_text(selected or status or "none", 180)
+        routing_snapshot = self.lifecycle.active_snapshot
+        routing_mode = getattr(routing_snapshot, "model_selection_mode", None) or self.model_selection_mode
+        routing_override = getattr(routing_snapshot, "model_override", "") if routing_snapshot else self.model_override
+        routing = self._local_command_safe_text(model_selection_summary(routing_mode, routing_override), 180)
+        category = classify_prompt_category(getattr(routing_snapshot, "request_text", "")) if routing_snapshot else "idle"
         return (
-            f"Model · selected={active}; free_queue={queue_text}; "
+            f"Model · routing={routing}; category={category}; selected={active}; free_queue={queue_text}; "
             f"health={self._local_command_safe_text(health_text, 360)}"
         )
 
@@ -5535,6 +6325,32 @@ class CodeAgentApp(tk.Tk):
             f"pending_files={pending}; focused={target}; Apply remains explicit"
         )
 
+    def _apply_model_selection_command(self, mode, model_override):
+        if self._mode_locked_for_active_run():
+            return False, "Rejected · model routing is locked to the active run snapshot."
+        normalized_mode, normalized_override = _model_router.normalize_model_selection_settings(
+            mode,
+            model_override,
+        )
+        previous_mode = self.model_selection_mode
+        previous_override = self.model_override
+        self.model_selection_mode = normalized_mode
+        self.model_override = normalized_override
+        self.config_data["model_selection_mode"] = normalized_mode
+        self.config_data["model_override"] = normalized_override
+        try:
+            save_local_config(self.config_data)
+        except OSError as exc:
+            self.model_selection_mode = previous_mode
+            self.model_override = previous_override
+            self.config_data["model_selection_mode"] = previous_mode
+            self.config_data["model_override"] = previous_override
+            return False, f"Rejected · could not save model routing: {short_error(exc)}"
+        self._refresh_trust_settings_surface()
+        self._refresh_model_queue_disclosure()
+        self._refresh_workflow_rail()
+        return True, f"Model routing set · {model_selection_summary(normalized_mode, normalized_override)}"
+
     def submit_local_command(self, value=None):
         if self.lifecycle.closed or self._command_palette_destroyed:
             return False
@@ -5544,10 +6360,18 @@ class CodeAgentApp(tk.Tk):
             return False
         raw = self.local_command.get() if value is None else value
         try:
+            setting_mode, setting_override = parse_model_selection_command(raw)
+        except ValueError:
+            pass
+        else:
+            ok, result = self._apply_model_selection_command(setting_mode, setting_override)
+            self.local_command_result.set(self._local_command_safe_text(result))
+            return ok
+        try:
             command = parse_local_command(raw)
         except ValueError:
             self.local_command_result.set(
-                "Rejected · exact commands: /status, /model, /permissions, /review"
+                "Rejected · exact commands: /status, /model, /permissions, /review; settings: /model auto, /model reset, /model <id>:free"
             )
             return False
         if command == "/status":
@@ -5651,6 +6475,7 @@ class CodeAgentApp(tk.Tk):
         self._update_apply_controls()
         if log_message:
             self.log(log_message, state=state)
+        self._refresh_local_command_suggestion()
 
     def _update_apply_controls(self):
         self._sync_apply_mode_to_snapshot()
@@ -5812,6 +6637,10 @@ class CodeAgentApp(tk.Tk):
             "context_clear_button",
             "new_chat_button",
         ):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=control_state)
+        for name in ("composer_run_button", "new_chat_rail_button"):
             button = getattr(self, name, None)
             if button is not None:
                 button.configure(state=control_state)
@@ -6495,6 +7324,12 @@ class CodeAgentApp(tk.Tk):
             ensure_run_current(is_current)
             emit("overseer_start", "Overseer request started · metadata only")
             emit("overseer_status", "Preparing strict read-only evidence request")
+            routing_snapshot = self.lifecycle.active_snapshot
+            if (
+                not isinstance(routing_snapshot, RunSnapshot)
+                or routing_snapshot.run_id != handoff.executor_run_id
+            ):
+                routing_snapshot = getattr(self, "_handoff_snapshot", None)
             if self._overseer_adapter_injected:
                 ensure_run_current(is_current)
                 response = self.overseer_adapter(handoff)
@@ -6509,6 +7344,9 @@ class CodeAgentApp(tk.Tk):
                     event_is_current=is_current,
                     health_tracker=self.model_health,
                     resource_owner=self.run_resources,
+                    task_category="analysis",
+                    model_selection_mode=getattr(routing_snapshot, "model_selection_mode", None),
+                    model_override=getattr(routing_snapshot, "model_override", ""),
                 )
                 ensure_run_current(is_current)
             emit("overseer_final", review.to_json())
@@ -6628,6 +7466,8 @@ class CodeAgentApp(tk.Tk):
             extra_context_paths=parent_snapshot.extra_context_paths,
             session_messages=(),
             apply_mode=APPLY_MODE_REVIEW,
+            model_selection_mode=parent_snapshot.model_selection_mode,
+            model_override=parent_snapshot.model_override,
             project_instructions=parent_snapshot.project_instructions,
             project_instructions_status=parent_snapshot.project_instructions_status,
             request_text=request_text,
@@ -7944,6 +8784,8 @@ class CodeAgentApp(tk.Tk):
             extra_context_paths=snapshot.extra_context_paths,
             session_messages=snapshot.session_history,
             apply_mode=snapshot.apply_mode,
+            model_selection_mode=snapshot.model_selection_mode,
+            model_override=snapshot.model_override,
             task_id=snapshot.task_id,
             project_instructions=snapshot.project_instructions,
             project_instructions_status=snapshot.project_instructions_status,
@@ -8048,9 +8890,26 @@ class CodeAgentApp(tk.Tk):
         self._clear_pending_proposal()
         return count
 
+    def _dismiss_tooltips(self):
+        for _widget, state in tuple(getattr(self, '_tooltips', ())):
+            after_id = state.get('after')
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, RuntimeError):
+                    pass
+            window = state.get('window')
+            if window is not None:
+                try:
+                    window.destroy()
+                except tk.TclError:
+                    pass
+            state['after'] = None
+            state['window'] = None
     def on_close(self):
         if self.lifecycle.closed:
             return
+        self._dismiss_tooltips()
         self._clear_last_apply_undo()
         self._invalidate_handoff("application close")
         self._stop_verification(keep_identity=False)
@@ -8347,6 +9206,8 @@ class CodeAgentApp(tk.Tk):
             extra_context_paths=self.extra_context_paths,
             session_messages=self.session_messages,
             apply_mode=self.apply_mode.get(),
+            model_selection_mode=self.model_selection_mode,
+            model_override=self.model_override,
             project_instructions=project_instructions,
             project_instructions_status=project_instructions_status,
             request_text=instructions,
@@ -8409,6 +9270,7 @@ class CodeAgentApp(tk.Tk):
                 instructions,
                 [self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
             )
+            task_category = classify_prompt_category(safe_instructions)
             ensure_run_current(is_current)
             model_queue, discovery_note = build_free_model_queue(
                 self.api_key,
@@ -8446,6 +9308,9 @@ class CodeAgentApp(tk.Tk):
                     snapshot.session_history,
                 ),
                 resource_owner=resource_owner,
+                task_category=task_category,
+                model_selection_mode=snapshot.model_selection_mode,
+                model_override=snapshot.model_override,
             )
             ensure_run_current(is_current)
             emit("plan", plan)
@@ -8536,6 +9401,7 @@ class CodeAgentApp(tk.Tk):
                 ):
                     raise RunCancelledError("Verification continuation is stale.")
             safe_instructions = redact_sensitive_text(instructions, [self.api_key, os.environ.get("OPENROUTER_API_KEY", "")])
+            task_category = classify_prompt_category(safe_instructions)
             ensure_run_current(is_current)
             model_queue, discovery_note = build_free_model_queue(
                 self.api_key,
@@ -8582,6 +9448,9 @@ class CodeAgentApp(tk.Tk):
                 inspect_context=inspect_context,
                 strict_actions=strict_actions,
                 verification_result=verification_result,
+                task_category=task_category,
+                model_selection_mode=snapshot.model_selection_mode,
+                model_override=snapshot.model_override,
             )
             ensure_run_current(is_current)
             if isinstance(result, InspectRequest):
@@ -9897,12 +10766,10 @@ def _free_proof_source_for_model(model, source=MODEL_SOURCE_DISCOVERED):
         return None
     if is_explicitly_free_model_id(model_id):
         if isinstance(pricing, dict):
-            for key in ("prompt", "completion"):
-                value = pricing.get(key)
-                if value is not None and not _is_zero_price(value):
-                    return None
+            if not _model_router.pricing_is_zero(pricing):
+                return None
         return FREE_PROOF_STATIC if source == MODEL_SOURCE_STATIC else FREE_PROOF_ID_SUFFIX
-    if isinstance(pricing, dict) and _is_zero_price(pricing.get("prompt")) and _is_zero_price(pricing.get("completion")):
+    if isinstance(pricing, dict) and _model_router.pricing_is_zero(pricing):
         return FREE_PROOF_ZERO_PRICING
     return None
 
@@ -10206,9 +11073,36 @@ def rank_free_model_candidates(
     task_context_tokens=0,
     default_source=MODEL_SOURCE_DISCOVERED,
     health_tracker=None,
+    task_category=None,
+    model_override="",
 ):
     """Return eligible candidates in deterministic, explainable preference order."""
     candidates = _filter_free_model_queue(model_queue, default_source=default_source)
+    if task_category is not None or model_override:
+        normalized_override = _model_router.normalize_model_override(model_override) if model_override else ""
+        if normalized_override and not any(
+            candidate.model_id.casefold() == normalized_override.casefold()
+            for candidate in candidates
+        ):
+            candidates.append(
+                FreeModelCandidate(
+                    normalized_override,
+                    free_proof_source=FREE_PROOF_STATIC,
+                    source=MODEL_SOURCE_STATIC,
+                    static_order=-1,
+                )
+            )
+        return _model_router.rank_candidates(
+            candidates,
+            task_context_tokens=task_context_tokens,
+            task_category=task_category or MODEL_CATEGORY_GENERAL,
+            model_override=normalized_override,
+            health_tracker=health_tracker,
+            metadata_by_id=getattr(model_queue, "metadata_by_id", {}),
+            source_discovered=MODEL_SOURCE_DISCOVERED,
+            source_static=MODEL_SOURCE_STATIC,
+            category_preferences=MODEL_CATEGORY_PREFERENCES,
+        )
     required_context = _coerce_context_length(task_context_tokens) or 0
     if required_context:
         known_context = [candidate for candidate in candidates if candidate.context_length is not None]
@@ -10240,7 +11134,21 @@ def rank_free_model_candidates(
     return sorted(candidates, key=rank_key)
 
 
-def explain_model_selection(candidate, task_context_tokens=0, health_tracker=None):
+def explain_model_selection(
+    candidate,
+    task_context_tokens=0,
+    health_tracker=None,
+    task_category=None,
+    model_override="",
+):
+    if task_category is not None or model_override:
+        return _model_router.selection_reason(
+            candidate,
+            task_context_tokens=task_context_tokens,
+            task_category=task_category or MODEL_CATEGORY_GENERAL,
+            model_override=model_override,
+            health_tracker=health_tracker,
+        )
     if candidate is None:
         return "no eligible explicitly free candidate"
     if candidate.context_length is None:
@@ -10264,20 +11172,32 @@ def select_free_model_candidate(
     task_context_tokens=0,
     default_source=MODEL_SOURCE_DISCOVERED,
     health_tracker=None,
+    task_category=None,
+    model_override="",
 ):
     ranked = rank_free_model_candidates(
         model_queue,
         task_context_tokens=task_context_tokens,
         default_source=default_source,
         health_tracker=health_tracker,
+        task_category=task_category,
+        model_override=model_override,
     )
     if not ranked:
-        return None, explain_model_selection(None, task_context_tokens, health_tracker=health_tracker)
+        return None, explain_model_selection(
+            None,
+            task_context_tokens,
+            health_tracker=health_tracker,
+            task_category=task_category,
+            model_override=model_override,
+        )
     selected = ranked[0]
     return selected, explain_model_selection(
         selected,
         task_context_tokens,
         health_tracker=health_tracker,
+        task_category=task_category,
+        model_override=model_override,
     )
 
 
@@ -10294,6 +11214,12 @@ def estimate_task_context_tokens(instructions, files, session_messages):
         elif isinstance(item, (tuple, list)) and len(item) > 1:
             characters += len(str(item[1] or ""))
     return max(1, (characters + 3) // 4)
+
+
+def _resolve_model_routing(instructions, task_category=None, model_selection_mode=None, model_override=""):
+    normalized_mode, normalized_override = _model_router.normalize_model_selection_settings(model_selection_mode, model_override)
+    category = _model_router.normalize_task_category(task_category or classify_prompt_category(instructions))
+    return category, normalized_override if normalized_mode == MODEL_SELECTION_OVERRIDE else ""
 
 
 def call_openrouter_with_fallback(
@@ -10313,15 +11239,21 @@ def call_openrouter_with_fallback(
     inspect_context=(),
     strict_actions=False,
     verification_result=None,
+    task_category=None,
+    model_selection_mode=None,
+    model_override="",
 ):
     errors = []
     ensure_run_current(event_is_current)
     default_source = MODEL_SOURCE_STATIC if model_queue is None else MODEL_SOURCE_DISCOVERED
+    routing_category, routing_override = _resolve_model_routing(instructions, task_category, model_selection_mode, model_override)
     candidates = rank_free_model_candidates(
         MODEL_FALLBACKS if model_queue is None else model_queue,
         task_context_tokens=task_context_tokens,
         default_source=default_source,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     ensure_run_current(event_is_current)
     selected, selection_reason = select_free_model_candidate(
@@ -10329,6 +11261,8 @@ def call_openrouter_with_fallback(
         task_context_tokens=task_context_tokens,
         default_source=default_source,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     ensure_run_current(event_is_current)
     if selected is not None:
@@ -10440,7 +11374,7 @@ def call_openrouter_with_fallback(
                 log_queue,
                 run_id,
                 "fallback",
-                f"Free model {model} failed; continuing: {safe_error}",
+                f"Free model {model} {_model_router.failure_label(_model_router.classify_model_failure(exc))}; continuing: {safe_error}",
                 is_current=event_is_current,
                 secrets=[api_key, os.environ.get("OPENROUTER_API_KEY", "")],
             )
@@ -10463,15 +11397,21 @@ def call_openrouter_plan_with_fallback(
     project_instructions="",
     health_tracker=None,
     resource_owner=None,
+    task_category=None,
+    model_selection_mode=None,
+    model_override="",
 ):
     errors = []
     ensure_run_current(event_is_current)
     default_source = MODEL_SOURCE_STATIC if model_queue is None else MODEL_SOURCE_DISCOVERED
+    routing_category, routing_override = _resolve_model_routing(instructions, task_category, model_selection_mode, model_override)
     candidates = rank_free_model_candidates(
         MODEL_FALLBACKS if model_queue is None else model_queue,
         task_context_tokens=task_context_tokens,
         default_source=default_source,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     ensure_run_current(event_is_current)
     selected, selection_reason = select_free_model_candidate(
@@ -10479,6 +11419,8 @@ def call_openrouter_plan_with_fallback(
         task_context_tokens=task_context_tokens,
         default_source=default_source,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     ensure_run_current(event_is_current)
     if selected is not None:
@@ -10589,7 +11531,7 @@ def call_openrouter_plan_with_fallback(
                 log_queue,
                 run_id,
                 "fallback",
-                f"Free planning model {model} failed; continuing: {safe_error}",
+                f"Free planning model {model} {_model_router.failure_label(_model_router.classify_model_failure(exc))}; continuing: {safe_error}",
                 is_current=event_is_current,
                 secrets=[api_key, os.environ.get("OPENROUTER_API_KEY", "")],
             )
@@ -10992,6 +11934,9 @@ def call_openrouter_overseer_with_fallback(
     discovery_fn=None,
     health_tracker=None,
     resource_owner=None,
+    task_category=None,
+    model_selection_mode=None,
+    model_override="",
 ):
     """Use the existing explicitly-free queue with bounded overseer fallback."""
     if not isinstance(handoff, EvidenceHandoff):
@@ -11016,11 +11961,14 @@ def call_openrouter_overseer_with_fallback(
                 is_current=event_is_current,
                 secrets=[api_key, os.environ.get("OPENROUTER_API_KEY", "")],
             )
+    routing_category, routing_override = _resolve_model_routing("overseer evidence", task_category or "analysis", model_selection_mode, model_override)
     candidates = rank_free_model_candidates(
         model_queue,
         task_context_tokens=0,
         default_source=MODEL_SOURCE_DISCOVERED,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     if not candidates:
         raise RuntimeError("No explicitly free overseer model candidates available.")
@@ -11029,6 +11977,8 @@ def call_openrouter_overseer_with_fallback(
         task_context_tokens=0,
         default_source=MODEL_SOURCE_DISCOVERED,
         health_tracker=health_tracker,
+        task_category=routing_category,
+        model_override=routing_override,
     )
     if selected is None:
         raise RuntimeError("No eligible explicitly free overseer model available.")
@@ -11099,7 +12049,7 @@ def call_openrouter_overseer_with_fallback(
                 log_queue,
                 run_id,
                 "overseer_status",
-                f"Overseer model {candidate.model_id} failed; continuing: {safe_error}",
+                f"Overseer model {candidate.model_id} {_model_router.failure_label(_model_router.classify_model_failure(exc))}; continuing: {safe_error}",
                 is_current=event_is_current,
                 secrets=[api_key, os.environ.get("OPENROUTER_API_KEY", "")],
             )

@@ -1,5 +1,7 @@
 {
   "openrouter_api_key": "",
   "last_folder": "",
-  "extra_context_files": []
+  "extra_context_files": [],
+  "model_selection_mode": "auto",
+  "model_override": ""
 }
