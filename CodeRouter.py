@@ -28,6 +28,7 @@ from urllib.request import Request, urlopen
 
 import model_router as _model_router
 import command_suggestions as _command_suggestions
+import ui_kit
 from constants import *  # noqa: F403
 from redaction import (
     SECRET_PATTERN,
@@ -86,22 +87,22 @@ WINDOW_ICON_FOREGROUND = "#f3f3f3"
 
 
 PALETTE = {
-    "canvas": "#121212",
-    "surface": "#191919",
-    "surface_alt": "#222222",
-    "surface_raised": "#2a2a2a",
-    "terminal": "#151515",
-    "border": "#292929",
-    "border_strong": "#414141",
-    "text": "#e7ebef",
-    "text_muted": "#9aa4af",
-    "text_subtle": "#929292",
+    "canvas": "#0f0f11",
+    "surface": "#0f0f11",
+    "surface_alt": "#17171a",
+    "surface_raised": "#1f1f23",
+    "terminal": "#131316",
+    "border": "#232327",
+    "border_strong": "#34343a",
+    "text": "#ececf0",
+    "text_muted": "#a0a0aa",
+    "text_subtle": "#71717b",
     "accent": "#9dbdff",
     "accent_active": "#bdd2ff",
-    "accent_ink": "#101827",
-    "success": "#82c99d",
-    "warning": "#e4bb78",
-    "danger": "#e58d96",
+    "accent_ink": "#0f1726",
+    "success": "#7fcf9c",
+    "warning": "#e6bd75",
+    "danger": "#ec8b95",
     "focus": "#9dbdff",
 }
 
@@ -124,6 +125,15 @@ FONTS = {
     "body_bold": ("Segoe UI", 10, "bold"),
     "mono": ("Consolas", 10),
     "mono_small": ("Consolas", 9),
+    "display": ("Segoe UI", 20, "bold"),
+    "small": ("Segoe UI", 9),
+}
+
+# Preferred faces when installed; Segoe UI / Consolas stay the fallback.
+FONT_PREFERENCES = {
+    "sans": ("Segoe UI Variable Text", "Segoe UI"),
+    "display": ("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI"),
+    "mono": ("Cascadia Mono", "Consolas"),
 }
 
 SPACING = {
@@ -2360,11 +2370,18 @@ class CodeAgentApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.title(APP_TITLE)
         self.geometry("1440x900")
-        self.minsize(1180, 720)
+        self.minsize(820, 580)
         self.configure(bg=PALETTE["canvas"])
+        self._configure_typography()
+        self._ui_scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        self.animator = ui_kit.Animator(self)
+        self.icons = ui_kit.IconFactory(self, self._ui_scale)
+        self._ui_heartbeat_after_id = None
         self._setup_window_icon()
 
         self.config_data = load_local_config()
+        self.animator.reduce = ui_kit.reduced_motion(self.config_data.get("motion", "full"))
+        self.reduce_motion = tk.BooleanVar(master=self, value=self.animator.reduce)
         self.model_selection_mode, self.model_override = load_model_selection_settings(self.config_data)
         self.api_key = os.environ.get("OPENROUTER_API_KEY") or self.config_data.get("openrouter_api_key", "")
         self.overseer_adapter = overseer_adapter
@@ -2595,9 +2612,34 @@ class CodeAgentApp(tk.Tk):
             foreground=[("disabled", PALETTE["text_subtle"]), ("pressed", PALETTE["accent_ink"])],
         )
 
-    def _build_window_icon_image(self):
+    def _configure_typography(self):
+        try:
+            families = set(tkfont.families(self))
+        except tk.TclError:
+            return
+
+        def pick(role):
+            for family in FONT_PREFERENCES[role]:
+                if family in families:
+                    return family
+            return FONT_PREFERENCES[role][-1]
+
+        sans, display, mono = pick("sans"), pick("display"), pick("mono")
+        FONTS.update(
+            {
+                "title": (display, 17, "bold"),
+                "section": (sans, 9, "bold"),
+                "body": (sans, 10),
+                "body_bold": (sans, 10, "bold"),
+                "mono": (mono, 10),
+                "mono_small": (mono, 9),
+                "display": (display, 20, "bold"),
+                "small": (sans, 9),
+            }
+        )
+
+    def _build_window_icon_image(self, size=WINDOW_ICON_SIZE):
         """Build a tiny dependency-free raster from the bundled SVG geometry."""
-        size = WINDOW_ICON_SIZE
         image = tk.PhotoImage(master=self, width=size, height=size)
         image.put(WINDOW_ICON_BACKGROUND, to=(0, 0, size - 1, size - 1))
         scale = size / 256.0
@@ -3903,6 +3945,7 @@ class CodeAgentApp(tk.Tk):
             'settings': self.rail_settings_button,
         }
         self._polish_desktop_layout(toolbar, center, right, main)
+        self._apply_visual_overhaul(toolbar, center, right, main)
         self._set_utility_drawer(None)
         self._refresh_rail_selection()
         self._refresh_workflow_rail()
@@ -3988,6 +4031,1157 @@ class CodeAgentApp(tk.Tk):
         self._inspector_layout_pending = True
         main.bind('<Configure>', self._initial_inspector_width, add='+')
 
+    # --- Visual layer ---------------------------------------------------------
+    # Presentation only. Every widget, variable, and handler built above keeps
+    # its identity and grid ownership; this layer restyles, regroups, and adds
+    # motion around them.
+
+    EMPTY_SUMMARY_TEXTS = ("No result yet.", "New chat started. Previous model context cleared.")
+    PHASE_STEPS = ("Plan", "Run", "Review", "Apply")
+    PHASE_DISPLAY = {
+        TASK_STATE_IDLE: (-1, "idle", "Idle"),
+        TASK_STATE_COLLECTING: (0, "active", "Collecting"),
+        TASK_STATE_PLANNING: (0, "active", "Planning"),
+        TASK_STATE_PLAN: (0, "wait", "Plan ready"),
+        TASK_STATE_RUNNING: (1, "active", "Running"),
+        TASK_STATE_REVIEW: (2, "wait", "Review"),
+        TASK_STATE_APPLIED: (3, "done", "Applied"),
+        TASK_STATE_REJECTED: (2, "danger", "Rejected"),
+        TASK_STATE_ERROR: (None, "danger", "Error"),
+    }
+    PROMPT_STARTERS = (
+        ("bug", "Fix a bug", "Fix the bug where "),
+        ("flask", "Add tests", "Add tests for "),
+        ("branch", "Refactor", "Refactor "),
+        ("doc", "Explain", "Explain how "),
+    )
+
+    def _px(self, value):
+        return int(round(value * getattr(self, "_ui_scale", 1.0)))
+
+    def _icon(self, name, size=18, color=None, background=None, stroke=1.7):
+        return self.icons.get(
+            name,
+            size,
+            color or PALETTE["text_muted"],
+            background or PALETTE["canvas"],
+            stroke,
+        )
+
+    def _set_button_icon(self, button, name, size, color, background, active_background=None,
+                         disabled_color=None, disabled_background=None, compound="left"):
+        normal = self._icon(name, size, color, background)
+        spec = [normal]
+        spec += ["disabled", self._icon(name, size, disabled_color or PALETTE["text_subtle"], disabled_background or background)]
+        if active_background:
+            active = self._icon(name, size, color, active_background)
+            spec += ["pressed", active, "active", active]
+        button.configure(image=tuple(spec), compound=compound)
+
+    def _apply_visual_overhaul(self, toolbar, center, right, main):
+        self._breakpoint = None
+        self._inspector_auto_collapsed = False
+        self._ui_busy = False
+        self._stepper_state = None
+        self._stepper_progress = -1.0
+        self._stepper_pulse = 0.0
+        self._rail_indicator_y = None
+        self._rail_hover_name = None
+        self._build_overhaul_styles()
+        self._overhaul_toolbar(toolbar)
+        self._overhaul_rail()
+        self._overhaul_center(center)
+        self._overhaul_inspector(right)
+        self._overhaul_drawer()
+        self._overhaul_text_surfaces()
+        self.bind("<Configure>", self._on_window_configure, add="+")
+        self._overhaul_ready = True
+        self._sync_chrome()
+        self._sync_empty_state()
+        self._start_ui_heartbeat()
+
+    def _build_overhaul_styles(self):
+        c = PALETTE
+        style = ttk.Style(self)
+        flat = {"borderwidth": 0, "relief": "flat", "focuscolor": c["focus"]}
+        style.configure("Primary.TButton", background=c["accent"], foreground=c["accent_ink"], padding=(14, 7), **flat)
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", c["surface_alt"]), ("pressed", c["accent_active"]), ("active", c["accent_active"])],
+            foreground=[("disabled", c["text_subtle"])],
+        )
+        for name, foreground in (("Secondary.TButton", c["text"]), ("Danger.TButton", c["danger"])):
+            style.configure(name, background=c["surface_alt"], foreground=foreground, padding=(12, 7), **flat)
+            style.map(
+                name,
+                background=[("disabled", c["surface_alt"]), ("pressed", c["border_strong"]), ("active", c["surface_raised"])],
+                foreground=[("disabled", c["text_subtle"])],
+            )
+        style.configure("Ghost.TButton", background=c["canvas"], foreground=c["text_muted"], font=FONTS["small"], padding=(8, 5), **flat)
+        style.map(
+            "Ghost.TButton",
+            background=[("pressed", c["border_strong"]), ("active", c["surface_raised"])],
+            foreground=[("disabled", c["text_subtle"]), ("active", c["text"])],
+        )
+        style.configure("Link.TButton", background=c["canvas"], foreground=c["text_muted"], font=FONTS["small"], padding=(2, 4), anchor="w", **flat)
+        style.map("Link.TButton", background=[("active", c["canvas"])], foreground=[("disabled", c["text_subtle"]), ("active", c["text"])])
+        style.configure("Pill.TButton", background=c["surface_alt"], foreground=c["text_muted"], font=FONTS["small"], padding=(10, 5), **flat)
+        style.map("Pill.TButton", background=[("pressed", c["border_strong"]), ("active", c["surface_raised"])], foreground=[("active", c["text"])])
+        style.configure("Stop.TButton", background=c["surface_alt"], foreground=c["danger"], font=FONTS["small"], padding=(10, 5), **flat)
+        style.map("Stop.TButton", background=[("disabled", c["canvas"]), ("pressed", c["border_strong"]), ("active", c["surface_raised"])], foreground=[("disabled", c["text_subtle"])])
+        style.configure("Send.TButton", background=c["accent"], padding=(8, 7), **flat)
+        style.map("Send.TButton", background=[("disabled", c["surface_raised"]), ("pressed", c["accent_active"]), ("active", c["accent_active"])])
+        style.configure("Quiet.TButton", background=c["surface_alt"], foreground=c["text_muted"], font=FONTS["small"], padding=(6, 5), **flat)
+        style.map(
+            "Quiet.TButton",
+            background=[("disabled", c["surface_alt"]), ("pressed", c["border_strong"]), ("active", c["surface_raised"])],
+            foreground=[("disabled", c["text_subtle"]), ("active", c["text"])],
+        )
+        style.configure("IconRail.TButton", background=c["canvas"], padding=(9, 8), **flat)
+        style.map("IconRail.TButton", background=[("disabled", c["canvas"]), ("pressed", c["surface_raised"]), ("active", c["surface_raised"])])
+        style.configure("Sash", sashthickness=1, gripcount=0, background=c["border"], lightcolor=c["border"], bordercolor=c["border"])
+        style.configure("TPanedwindow", background=c["border"])
+        style.configure("Treeview", background=c["canvas"], fieldbackground=c["canvas"], foreground=c["text"], rowheight=self._px(28), font=FONTS["mono_small"], borderwidth=0, bordercolor=c["canvas"], lightcolor=c["canvas"], darkcolor=c["canvas"])
+        style.map("Treeview", background=[("selected", c["surface_raised"])], foreground=[("selected", c["text"])])
+        style.configure("Treeview.Heading", background=c["canvas"], foreground=c["text_subtle"], font=FONTS["section"], borderwidth=0, relief="flat", padding=(4, 6))
+        style.map("Treeview.Heading", background=[("active", c["canvas"])])
+        style.configure("TEntry", fieldbackground=c["surface_alt"], foreground=c["text"], insertcolor=c["text"], bordercolor=c["border"], lightcolor=c["surface_alt"], darkcolor=c["surface_alt"], padding=(8, 6))
+        style.map("TEntry", bordercolor=[("focus", c["border_strong"])], lightcolor=[("focus", c["surface_alt"])])
+        style.configure("Mode.TRadiobutton", background=c["canvas"], foreground=c["text"], font=FONTS["body"], indicatorbackground=c["surface_raised"], indicatorforeground=c["accent_ink"], upperbordercolor=c["border_strong"], lowerbordercolor=c["border_strong"])
+        style.map(
+            "Mode.TRadiobutton",
+            background=[("active", c["canvas"])],
+            indicatorbackground=[("selected", c["accent"])],
+            foreground=[("disabled", c["text_subtle"]), ("selected", c["text"])],
+        )
+        style.configure("Mode.TCheckbutton", background=c["canvas"], foreground=c["text_muted"], font=FONTS["small"], indicatorbackground=c["surface_raised"], indicatorforeground=c["accent_ink"], upperbordercolor=c["border_strong"], lowerbordercolor=c["border_strong"], focuscolor=c["focus"])
+        style.map("Mode.TCheckbutton", background=[("active", c["canvas"])], indicatorbackground=[("selected", c["accent"])], foreground=[("active", c["text"])])
+        style.configure("Quiet.Vertical.TScrollbar", background=c["border_strong"], troughcolor=c["canvas"], bordercolor=c["canvas"], lightcolor=c["border_strong"], darkcolor=c["border_strong"], arrowsize=self._px(6))
+        style.map("Quiet.Vertical.TScrollbar", background=[("active", c["text_subtle"])])
+        style.configure("PanelTitle.TLabel", background=c["canvas"], foreground=c["text_subtle"], font=FONTS["section"])
+        style.configure("Section.TLabel", background=c["canvas"], foreground=c["text_subtle"], font=FONTS["section"])
+        style.configure("InspectorTitle.TLabel", background=c["canvas"], foreground=c["text"], font=(FONTS["body_bold"][0], 11, "bold"))
+        style.configure("DrawerTitle.TLabel", background=c["canvas"], foreground=c["text"], font=(FONTS["display"][0], 13, "bold"))
+        style.configure("ComposerHint.TLabel", background=c["surface_alt"], foreground=c["text_subtle"], font=FONTS["small"])
+        style.configure("PanelMuted.TLabel", background=c["canvas"], foreground=c["text_muted"], font=FONTS["small"])
+
+    def _pointer_inside(self, widget):
+        try:
+            hovered = self.winfo_containing(*self.winfo_pointerxy())
+        except (tk.TclError, KeyError):
+            return False
+        while hovered is not None:
+            if hovered is widget:
+                return True
+            hovered = getattr(hovered, "master", None)
+        return False
+
+    def _tween_color(self, key, widget, option, target, duration=0.14):
+        try:
+            start = str(widget.cget(option))
+        except tk.TclError:
+            return
+        if not start.startswith("#") or len(start) != 7 or start == target:
+            try:
+                widget.configure(**{option: target})
+            except tk.TclError:
+                pass
+            return
+        self.animator.tween(
+            key,
+            duration,
+            lambda t: widget.configure(**{option: ui_kit.mix(start, target, t)}),
+        )
+
+    def _make_clickable(self, widget, command, icon_labels=(), hint=None, border=True):
+        c = PALETTE
+        widget.configure(cursor="hand2", takefocus=1, highlightthickness=1 if border else 0,
+                         highlightbackground=c["border"], highlightcolor=c["focus"])
+
+        def hover(active):
+            if border:
+                self._tween_color(("hover", str(widget)), widget, "highlightbackground",
+                                  c["border_strong"] if active else c["border"])
+            for label, (name, size, color) in icon_labels:
+                label.configure(image=self._icon(name, size, c["accent"] if active else color, label.cget("bg")))
+
+        def enter(_event=None):
+            hover(True)
+
+        def leave(_event=None):
+            if not self._pointer_inside(widget):
+                hover(False)
+
+        def click(_event=None):
+            if not self.lifecycle.closed:
+                command()
+            return "break"
+
+        targets = [widget]
+        index = 0
+        while index < len(targets):
+            targets.extend(targets[index].winfo_children())
+            index += 1
+        for target in targets:
+            target.bind("<Enter>", enter, add="+")
+            target.bind("<Leave>", leave, add="+")
+            target.bind("<ButtonRelease-1>", click, add="+")
+            if target is not widget:
+                target.configure(cursor="hand2")
+        widget.bind("<Return>", click, add="+")
+        widget.bind("<space>", click, add="+")
+        if hint:
+            self._attach_tooltip(widget, hint)
+
+    # Top bar ---------------------------------------------------------------
+
+    def _overhaul_toolbar(self, toolbar):
+        c = PALETTE
+        toolbar.configure(padx=self._px(14), pady=self._px(9))
+        for column in range(6):
+            toolbar.columnconfigure(column, weight=0)
+        toolbar.columnconfigure(1, weight=1)
+        for child in self.toolbar_brand.winfo_children():
+            if child is not self.toolbar_logo_label:
+                child.grid_remove()
+
+        chip = tk.Frame(self.toolbar_brand, bg=c["canvas"], padx=self._px(9), pady=self._px(5))
+        chip.grid(row=0, column=2, sticky="w")
+        self.project_chip = chip
+        self.project_chip_icon = tk.Label(chip, image=self._icon("folder", 16), bg=c["canvas"])
+        self.project_chip_icon.pack(side=tk.LEFT, padx=(0, self._px(7)))
+        self.project_chip_label = tk.Label(chip, text="", bg=c["canvas"], fg=c["text"], font=FONTS["body_bold"])
+        self.project_chip_label.pack(side=tk.LEFT)
+        chevron = tk.Label(chip, image=self._icon("chevron_down", 14, c["text_subtle"]), bg=c["canvas"])
+        chevron.pack(side=tk.LEFT, padx=(self._px(6), 0))
+        self._make_clickable(
+            chip,
+            self.choose_folder,
+            icon_labels=((self.project_chip_icon, ("folder", 16, c["text_muted"])),),
+            hint="Open a project folder",
+        )
+
+        rail = self.workflow_rail
+        rail.configure(bg=c["canvas"], padx=0, pady=0, highlightthickness=0)
+        rail.grid_configure(row=0, column=1, columnspan=1, sticky="ew", padx=(self._px(16), self._px(8)), pady=0)
+        for child in rail.winfo_children():
+            if isinstance(child, (tk.Label, tk.Button)):
+                child.configure(bg=c["canvas"])
+        for column in range(9):
+            rail.columnconfigure(column, weight=0)
+        rail.columnconfigure(4, weight=1)
+        self.workflow_phase_value.grid_remove()
+        self.phase_stepper = tk.Canvas(rail, bg=c["canvas"], highlightthickness=0, height=self._px(22), width=self._px(160))
+        self.phase_stepper.grid(row=0, column=1, sticky="w", padx=(0, self._px(16)))
+        self._attach_tooltip(self.phase_stepper, "Plan → Run → Review → Apply")
+
+        model_button = self.workflow_model_disclosure_button
+        model_button.configure(
+            image=self._icon("chip", 16),
+            compound="none",
+            activebackground=c["surface_raised"],
+            highlightbackground=c["canvas"],
+            width=self._px(26),
+            height=self._px(24),
+            cursor="hand2",
+        )
+        self._attach_tooltip(model_button, "Model queue · free models ranked for this prompt")
+        self.workflow_model_value.configure(fg=c["text_muted"], font=FONTS["mono_small"], wraplength=0, cursor="hand2")
+        self.workflow_model_value.grid_configure(padx=(self._px(4), self._px(12)))
+        self.workflow_model_value.bind("<ButtonRelease-1>", lambda _event: self._toggle_model_queue_disclosure(), add="+")
+        self.workflow_model_detail.configure(fg=c["text_muted"])
+
+        next_value = self.workflow_next_action_value
+        next_value.configure(
+            fg=c["accent"],
+            font=FONTS["small"],
+            wraplength=0,
+            cursor="hand2",
+            image=self._icon("chevron_right", 14, c["accent"]),
+            compound="right",
+            padx=self._px(4),
+        )
+        next_value.grid_configure(column=7, sticky="e", padx=(0, self._px(4)))
+        next_value.bind("<ButtonRelease-1>", lambda _event: self._follow_next_action(), add="+")
+        self._attach_tooltip(next_value, "Next step · click to jump there")
+
+        self.stop_button.configure(text="Stop", style="Stop.TButton")
+        self._set_button_icon(self.stop_button, "stop", 12, c["danger"], c["surface_alt"], c["surface_raised"], disabled_background=c["canvas"])
+        self.stop_button.grid_configure(padx=(self._px(8), 0))
+
+        command_bar = self.local_command_disclosure_button.master
+        command_bar.configure(bg=c["canvas"])
+        command_bar.grid_configure(row=0, column=2, columnspan=1, sticky="e", padx=(0, self._px(8)), pady=0)
+        self.local_command_disclosure_button.configure(style="Pill.TButton")
+        self._set_button_icon(self.local_command_disclosure_button, "search", 14, c["text_muted"], c["surface_alt"], c["surface_raised"])
+        self._attach_tooltip(self.local_command_disclosure_button, "Local commands · /status /model /permissions /review")
+
+        chip = self.workflow_policy_chip
+        chip.configure(bg=c["canvas"], highlightthickness=1, highlightbackground=c["border"], padx=self._px(8), pady=self._px(3), cursor="hand2", font=FONTS["section"])
+        chip.grid_configure(row=0, column=3, sticky="e", padx=(0, self._px(12)))
+        chip.bind("<ButtonRelease-1>", lambda _event: self._show_utility_view("settings"), add="+")
+        self._attach_tooltip(chip, "Apply policy · open settings")
+
+        status_frame = self.state_marker.master
+        status_frame.grid_configure(row=0, column=4, rowspan=1, sticky="e")
+        for child in status_frame.winfo_children():
+            if isinstance(child, ttk.Label):
+                child.pack_forget()
+        self.state_marker.configure(font=(FONTS["body"][0], 9))
+        self.status_detail_label = tk.Label(status_frame, text="", bg=c["canvas"], fg=c["text_muted"], font=FONTS["small"])
+        self.status_detail_label.pack(side=tk.LEFT)
+
+        self.local_command_detail.grid_configure(row=2, column=0, columnspan=5, pady=(self._px(10), 0))
+        if not self._local_command_expanded:
+            self.local_command_detail.grid_remove()
+        for child in self.local_command_detail.grid_slaves(row=0, column=0):
+            child.grid_remove()
+
+        self.progress_line = tk.Canvas(self, height=2, bg=c["canvas"], highlightthickness=0, borderwidth=0)
+        self.progress_line.place(in_=toolbar, relx=0, rely=1.0, y=-2, relwidth=1, height=2)
+        self._progress_hairline = self.progress_line.create_rectangle(0, 1, 0, 2, fill=c["border"], width=0)
+        self._progress_segment = self.progress_line.create_rectangle(0, 0, 0, 2, fill=c["accent"], width=0, state="hidden")
+        self.progress_line.bind("<Configure>", self._on_progress_configure)
+
+    def _on_progress_configure(self, event):
+        self.progress_line.coords(self._progress_hairline, 0, 1, event.width, 2)
+
+    def _progress_step(self, elapsed):
+        if not self._ui_busy or self.lifecycle.closed:
+            self.progress_line.itemconfigure(self._progress_segment, state="hidden")
+            return False
+        width = max(1, self.progress_line.winfo_width())
+        segment = max(self._px(80), width * 0.22)
+        travel = ui_kit.ease_in_out((elapsed % 1.5) / 1.5)
+        x0 = -segment + (width + segment) * travel
+        self.progress_line.coords(self._progress_segment, x0, 0, x0 + segment, 2)
+        self.progress_line.itemconfigure(self._progress_segment, state="normal")
+        return None
+
+    def _stepper_dot(self, kind, color):
+        primitives = {
+            "fill": [("dot", 6, 6, 3.2)],
+            "current": [("dot", 6, 6, 4.6)],
+            "ring": [("ring", 6, 6, 3.6)],
+        }[kind]
+        return self.icons.custom(kind, primitives, 12, color, PALETTE["canvas"], stroke=1.3, grid=12.0)
+
+    def _draw_stepper(self):
+        canvas = getattr(self, "phase_stepper", None)
+        if canvas is None:
+            return
+        c = PALETTE
+        state = self.task_state if self.task_state in self.PHASE_DISPLAY else TASK_STATE_IDLE
+        index, tone, label = self.PHASE_DISPLAY[state]
+        if index is None:
+            index = max(0, int(round(self._stepper_progress)))
+        canvas.delete("all")
+        gap = self._px(20)
+        x0 = self._px(7)
+        mid = self._px(11)
+        last = x0 + gap * (len(self.PHASE_STEPS) - 1)
+        canvas.create_rectangle(x0, mid, last, mid + 1, fill=c["border_strong"], width=0)
+        progress = max(0.0, self._stepper_progress)
+        if self._stepper_progress >= 0:
+            canvas.create_rectangle(x0, mid, x0 + gap * progress, mid + 1, fill=c["text_muted"], width=0)
+        accent = c["danger"] if tone == "danger" else c["accent"]
+        if tone == "done":
+            accent = c["success"]
+        for step in range(len(self.PHASE_STEPS)):
+            x = x0 + gap * step
+            if index >= 0 and step == index:
+                color = accent
+                if tone == "active" and self._ui_busy:
+                    color = ui_kit.mix(accent, c["canvas"], 0.55 * self._stepper_pulse)
+                image = self._stepper_dot("current", color)
+            elif index >= 0 and step < index:
+                image = self._stepper_dot("fill", c["text_muted"])
+            else:
+                image = self._stepper_dot("ring", c["text_subtle"])
+            canvas.create_image(x, mid, image=image)
+        text_color = TASK_STATE_COLORS.get(state, c["text_muted"])
+        text_x = last + self._px(14)
+        canvas.create_text(text_x, mid, text=label, anchor="w", fill=text_color, font=FONTS["body_bold"])
+        width = text_x + tkfont.Font(font=FONTS["body_bold"]).measure(label) + self._px(4)
+        if int(canvas.cget("width")) != width:
+            canvas.configure(width=width)
+
+    def _sync_stepper(self):
+        state = self.task_state if self.task_state in self.PHASE_DISPLAY else TASK_STATE_IDLE
+        if state == self._stepper_state:
+            return
+        self._stepper_state = state
+        index = self.PHASE_DISPLAY[state][0]
+        target = float(index) if index is not None else self._stepper_progress
+        start = self._stepper_progress
+
+        def apply(t):
+            self._stepper_progress = start + (target - start) * t
+            self._draw_stepper()
+
+        self.animator.tween("stepper", 0.32, apply)
+
+    def _pulse_step(self, elapsed):
+        if not self._ui_busy or self.lifecycle.closed:
+            self._stepper_pulse = 0.0
+            self._draw_stepper()
+            self._paint_state_marker(0.0)
+            return False
+        self._stepper_pulse = ui_kit.pulse(elapsed, 1.6)
+        self._draw_stepper()
+        self._paint_state_marker(self._stepper_pulse)
+        return None
+
+    def _paint_state_marker(self, amount):
+        color = TASK_STATE_COLORS.get(self.task_state, PALETTE["text_muted"])
+        self.state_marker.configure(fg=ui_kit.mix(color, PALETTE["canvas"], 0.6 * amount))
+
+    def _follow_next_action(self):
+        if self.lifecycle.closed:
+            return
+        action = self.workflow_next_action.get()
+        if action == "Choose folder":
+            self.choose_folder()
+            return
+        if action in {"Enter prompt", "Ready"}:
+            self.instructions.focus_set()
+            return
+        if action == "Run verification":
+            self._show_utility_view("verification")
+            return
+        targets = {
+            "Approve plan": "approve_plan_button",
+            "Allow inspect": "allow_inspect_button",
+            "Allow verify": "allow_verification_button",
+            "Review changes": "apply_button",
+            "Run next step": "run_next_step_button",
+            "Approve next step": "approve_next_step_button",
+            "Send evidence": "send_overseer_button",
+        }
+        target = getattr(self, targets.get(action, ""), None)
+        if target is None:
+            return
+        self._set_review_inspector_collapsed(False)
+        if action != "Review changes" and not self._disclosure_expanded.get("task_tools"):
+            self._set_disclosure("task_tools", True)
+        try:
+            target.focus_set()
+        except tk.TclError:
+            pass
+
+    # Rail --------------------------------------------------------------------
+
+    def _overhaul_rail(self):
+        c = PALETTE
+        rail = self.icon_rail
+        width = self._px(56)
+        rail.configure(width=width)
+        self._workbench_shell.configure(padx=0, pady=0)
+        self._workbench_shell.columnconfigure(0, minsize=width)
+        self.rail_logo_label.grid_configure(pady=(self._px(14), self._px(14)))
+        tk.Frame(rail, bg=c["border"], width=1).place(relx=1.0, x=-1, rely=0, relheight=1)
+        self._rail_icon_names = {
+            "workspace": "folder",
+            "history": "history",
+            "verification": "verify",
+            "activity": "activity",
+            "review": "review",
+            "settings": "settings",
+        }
+        for name, button in self._rail_buttons.items():
+            button.configure(
+                text="",
+                compound="none",
+                width=self._px(40),
+                height=self._px(36),
+                highlightthickness=0,
+                activebackground=c["canvas"],
+                bg=c["canvas"],
+            )
+            button.bind("<Enter>", lambda _event, n=name: self._rail_hover(n, True), add="+")
+            button.bind("<Leave>", lambda _event, n=name: self._rail_hover(n, False), add="+")
+        self.new_chat_rail_button.configure(text="")
+        self._set_button_icon(
+            self.new_chat_rail_button, "plus", 20, c["text_muted"], c["canvas"], c["surface_raised"],
+            disabled_background=c["canvas"], compound="image",
+        )
+        self.rail_indicator = tk.Frame(rail, bg=c["accent"], width=2, height=self._px(18))
+        rail.bind("<Configure>", lambda _event: self._move_rail_indicator(animate=False), add="+")
+        self._restyle_rail_icons()
+
+    def _rail_hover(self, name, active):
+        self._rail_hover_name = name if active else None
+        self._restyle_rail_icons()
+
+    def _restyle_rail_icons(self):
+        names = getattr(self, "_rail_icon_names", None)
+        if not names:
+            return
+        c = PALETTE
+        for name, button in self._rail_buttons.items():
+            try:
+                active = str(button.cget("fg")) == c["accent"]
+                hovered = name == self._rail_hover_name
+                background = c["surface_raised"] if hovered else c["canvas"]
+                color = c["accent"] if active else (c["text"] if hovered else c["text_muted"])
+                button.configure(
+                    image=self._icon(names[name], 20, color, background),
+                    bg=background,
+                    activebackground=background,
+                    highlightbackground=c["canvas"],
+                    highlightthickness=0,
+                )
+            except tk.TclError:
+                pass
+        if getattr(self, "_rail_indicator_after_id", None) is None and not self.lifecycle.closed:
+            try:
+                self._rail_indicator_after_id = self.after_idle(self._run_rail_indicator_move)
+            except tk.TclError:
+                self._rail_indicator_after_id = None
+
+    def _run_rail_indicator_move(self):
+        self._rail_indicator_after_id = None
+        self._move_rail_indicator()
+
+    def _move_rail_indicator(self, animate=True):
+        indicator = getattr(self, "rail_indicator", None)
+        if indicator is None or self.lifecycle.closed:
+            return
+        button = self._rail_buttons.get(self._utility_drawer_view)
+        try:
+            if button is None or not button.winfo_ismapped():
+                indicator.place_forget()
+                self._rail_indicator_y = None
+                return
+            height = self._px(18)
+            target = button.winfo_y() + (button.winfo_height() - height) // 2
+        except tk.TclError:
+            return
+        start = self._rail_indicator_y
+        if start is None or not animate or start == target:
+            self.animator.stop("rail-indicator")
+            indicator.place(x=0, y=target, width=2, height=height)
+            self._rail_indicator_y = target
+            return
+
+        def apply(t):
+            y = int(round(start + (target - start) * t))
+            indicator.place(x=0, y=y, width=2, height=height)
+            self._rail_indicator_y = y
+
+        self.animator.tween("rail-indicator", 0.2, apply)
+
+    def _animate_drawer_open(self):
+        sidebar = getattr(self, "_legacy_sidebar", None)
+        if sidebar is None or self.animator.reduce or self.lifecycle.closed:
+            return
+        try:
+            padding = int(str(sidebar.cget("padx")))
+            content = max((child.winfo_reqwidth() for child in sidebar.grid_slaves()), default=0)
+            target = max(1, content + 2 * padding)
+            sidebar.grid_propagate(False)
+            sidebar.configure(width=1, height=max(1, self._workbench_shell.winfo_height()))
+        except tk.TclError:
+            return
+
+        def apply(t):
+            sidebar.configure(width=max(1, int(target * t)))
+
+        def done():
+            sidebar.grid_propagate(True)
+            self._queue_workbench_scroll_sync()
+
+        self.animator.tween("drawer", 0.2, apply, done=done)
+
+    # Conversation + composer ---------------------------------------------------
+
+    def _overhaul_center(self, center):
+        c = PALETTE
+        sans = FONTS["body"][0]
+        center.configure(padx=self._px(28), pady=self._px(18))
+        for widget in center.grid_slaves():
+            if isinstance(widget, ttk.Label) and widget.cget("text") in ("Conversation", "Your task"):
+                widget.grid_remove()
+
+        self.summary.configure(font=(sans, 11), bg=c["canvas"], fg=c["text"], padx=self._px(4), pady=self._px(6), spacing1=2, spacing3=4)
+        self.summary.frame.configure(bg=c["canvas"])
+        self.summary.grid_configure(row=2, pady=(0, self._px(8)))
+        self.activity_digest_label.master.grid_configure(row=7)
+        self.activity.grid_configure(row=8, pady=(self._px(4), self._px(12)))
+
+        composer_actions = self.composer_run_button.master
+        center.rowconfigure(5, weight=0)
+        center.rowconfigure(10, weight=0)
+        self.instructions.grid_configure(row=10, padx=1, pady=(1, 0))
+        composer_actions.grid_configure(row=11, padx=1, pady=(0, 1))
+        card = tk.Frame(center, bg=c["surface_alt"], highlightthickness=1, highlightbackground=c["border"], highlightcolor=c["border"])
+        card.grid(row=10, column=0, rowspan=2, sticky="nsew")
+        card.lower()
+        self.composer_card = card
+
+        if self.instructions.get("1.0", "end-1c").strip() == "Describe a change for the agent.":
+            self.instructions.delete("1.0", tk.END)
+            try:
+                self.instructions.edit_modified(False)
+            except tk.TclError:
+                pass
+        self.instructions.configure(
+            font=(sans, 11), bg=c["surface_alt"], fg=c["text"], insertbackground=c["text"],
+            highlightthickness=0, padx=self._px(16), pady=self._px(14), height=3,
+            selectbackground=c["border_strong"], selectforeground=c["text"],
+        )
+        self.instructions.frame.configure(bg=c["surface_alt"])
+        self.prompt_placeholder = tk.Label(
+            self.instructions.frame, text="Describe a change…", bg=c["surface_alt"],
+            fg=c["text_subtle"], font=(sans, 11), cursor="xterm",
+        )
+        self.prompt_placeholder.bind("<Button-1>", lambda _event: self.instructions.focus_set())
+        for sequence in ("<KeyRelease>", "<<Modified>>", "<FocusIn>", "<FocusOut>"):
+            self.instructions.bind(sequence, lambda _event: self._sync_prompt_placeholder(), add="+")
+        self.instructions.bind("<FocusIn>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border_strong"]), add="+")
+        self.instructions.bind("<FocusOut>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border"]), add="+")
+
+        composer_actions.configure(bg=c["surface_alt"], padx=self._px(8), pady=self._px(8))
+        for column in range(8):
+            composer_actions.columnconfigure(column, weight=0)
+        composer_actions.columnconfigure(5, weight=1)
+        for widget in composer_actions.winfo_children():
+            if isinstance(widget, ttk.Label):
+                widget.configure(text="Ctrl ↵", style="ComposerHint.TLabel")
+                widget.grid_configure(column=6, padx=(0, self._px(10)))
+        run = self.composer_run_button
+        run.configure(text="", style="Send.TButton")
+        self._set_button_icon(run, "send", 16, c["accent_ink"], c["accent"], c["accent_active"], disabled_background=c["surface_raised"], compound="image")
+        run.grid_configure(column=7, sticky="e")
+        self.composer_quick_buttons = []
+        quick = (
+            ("folder", self.choose_folder, "Open project folder"),
+            ("file_plus", self.add_context_files, "Add read-only context files"),
+            ("refresh", self.scan_folder, "Rescan project"),
+        )
+        for column, (icon, command, hint) in enumerate(quick):
+            button = ttk.Button(composer_actions, command=command, style="Quiet.TButton", takefocus=True)
+            self._set_button_icon(button, icon, 16, c["text_muted"], c["surface_alt"], c["surface_raised"], compound="image")
+            button.grid(row=0, column=column, padx=(0, self._px(2)))
+            self._attach_tooltip(button, hint)
+            self.composer_quick_buttons.append(button)
+        activity = self.activity_disclosure_button
+        activity.grid_configure(in_=composer_actions, row=0, column=3, padx=(self._px(4), 0), pady=0, sticky="w")
+        activity.configure(style="Quiet.TButton")
+        self._set_button_icon(activity, "terminal", 16, c["text_muted"], c["surface_alt"], c["surface_raised"])
+        activity.lift()
+        self._attach_tooltip(activity, "Activity · evidence timeline")
+
+        self._build_empty_state(center)
+        self._sync_prompt_placeholder()
+        # grid_configure re-maps removed widgets; restore the disclosure state.
+        self._set_disclosure("activity", self._disclosure_expanded.get("activity", False))
+
+    def _sync_prompt_placeholder(self):
+        placeholder = getattr(self, "prompt_placeholder", None)
+        if placeholder is None:
+            return
+        try:
+            empty = not self.instructions.get("1.0", "end-1c")
+            if empty and not placeholder.winfo_manager():
+                placeholder.place(in_=self.instructions, x=self._px(16), y=self._px(13))
+            elif not empty and placeholder.winfo_manager():
+                placeholder.place_forget()
+        except tk.TclError:
+            pass
+
+    def _prefill_prompt(self, prefix):
+        if self.lifecycle.closed:
+            return
+        if not self.instructions.get("1.0", "end-1c").strip():
+            self.instructions.delete("1.0", tk.END)
+            self.instructions.insert("1.0", prefix)
+        self.instructions.mark_set(tk.INSERT, tk.END)
+        self.instructions.focus_set()
+        self._sync_prompt_placeholder()
+        self._update_lifecycle_controls()
+
+    def _build_empty_state(self, center):
+        c = PALETTE
+        hero = tk.Frame(center, bg=c["canvas"])
+        self.empty_state = hero
+        inner = tk.Frame(hero, bg=c["canvas"])
+        inner.place(relx=0.5, rely=0.46, anchor="center")
+        self.router_canvas = tk.Canvas(inner, width=self._px(340), height=self._px(116), bg=c["canvas"], highlightthickness=0)
+        self.router_canvas.pack()
+        self._draw_router_graphic()
+        tk.Label(inner, text="What should we build?", bg=c["canvas"], fg=c["text"], font=FONTS["display"]).pack(pady=(self._px(20), self._px(6)))
+
+        project = tk.Frame(inner, bg=c["canvas"], padx=self._px(8), pady=self._px(3))
+        project.pack()
+        self.empty_project_icon = tk.Label(project, image=self._icon("folder", 14, c["text_subtle"]), bg=c["canvas"])
+        self.empty_project_icon.pack(side=tk.LEFT, padx=(0, self._px(6)))
+        self.empty_project_label = tk.Label(project, text="", bg=c["canvas"], fg=c["text_muted"], font=FONTS["small"])
+        self.empty_project_label.pack(side=tk.LEFT)
+        self._make_clickable(
+            project, self.choose_folder,
+            icon_labels=((self.empty_project_icon, ("folder", 14, c["text_subtle"])),),
+            border=False,
+        )
+
+        tiles = tk.Frame(inner, bg=c["canvas"])
+        tiles.pack(pady=(self._px(22), 0))
+        self.empty_tiles_frame = tiles
+        self._empty_tiles = []
+        for icon, label, prefix in self.PROMPT_STARTERS:
+            tile = tk.Frame(tiles, bg=c["canvas"], padx=self._px(14), pady=self._px(12))
+            icon_label = tk.Label(tile, image=self._icon(icon, 18, c["text_muted"]), bg=c["canvas"])
+            icon_label.pack(anchor="w")
+            tk.Label(tile, text=label, bg=c["canvas"], fg=c["text"], font=FONTS["body"]).pack(anchor="w", pady=(self._px(10), 0))
+            self._make_clickable(
+                tile, lambda value=prefix: self._prefill_prompt(value),
+                icon_labels=((icon_label, (icon, 18, c["text_muted"])),),
+            )
+            self._empty_tiles.append(tile)
+        self._empty_tile_columns = None
+        self._layout_empty_tiles(4)
+        hero.bind("<Configure>", self._on_empty_state_configure, add="+")
+
+    def _layout_empty_tiles(self, columns):
+        if columns == self._empty_tile_columns:
+            return
+        self._empty_tile_columns = columns
+        frame = self.empty_tiles_frame
+        for column in range(4):
+            frame.columnconfigure(column, weight=0, uniform="", minsize=0)
+        for column in range(columns):
+            frame.columnconfigure(column, weight=1, uniform="tile", minsize=self._px(128))
+        for index, tile in enumerate(self._empty_tiles):
+            tile.grid(row=index // columns, column=index % columns, padx=self._px(5), pady=self._px(5), sticky="nsew")
+
+    def _on_empty_state_configure(self, event):
+        self._layout_empty_tiles(4 if event.width >= self._px(620) else 2)
+
+    def _router_paths(self):
+        s = self._px
+        mid = s(58)
+        outs = []
+        for y in (s(22), s(58), s(94)):
+            outs.append([(s(192), mid), (s(240), mid), (s(240), y), (s(291), y)])
+        return [(s(53), mid), (s(147), mid)], outs
+
+    def _draw_router_graphic(self):
+        c = PALETTE
+        canvas = self.router_canvas
+        s = self._px
+        mid = s(58)
+        path_in, outs = self._router_paths()
+        canvas.create_line(*[v for p in path_in for v in p], fill=c["border_strong"], width=1)
+        for path in outs:
+            canvas.create_line(*[v for p in path for v in p], fill=c["border_strong"], width=1)
+        canvas.create_rectangle(s(16), mid - s(18), s(52), mid + s(18), outline=c["border_strong"], fill=c["surface_alt"], width=1, tags=("node-in",))
+        canvas.create_image(s(34), mid, image=self.icons.get("doc", 18, c["text_muted"], c["surface_alt"]))
+        self._router_out_nodes = []
+        for index, y in enumerate((s(22), s(58), s(94))):
+            node = canvas.create_rectangle(s(292), y - s(15), s(322), y + s(15), outline=c["border_strong"], fill=c["surface_alt"], width=1)
+            canvas.create_image(s(307), y, image=self.icons.get("chip", 16, c["text_muted"], c["surface_alt"]))
+            self._router_out_nodes.append(node)
+        try:
+            self._router_hub_image = self._build_window_icon_image(s(44))
+            canvas.create_image(s(170), mid, image=self._router_hub_image)
+        except (tk.TclError, ValueError):
+            canvas.create_rectangle(s(148), mid - s(22), s(192), mid + s(22), outline=c["border_strong"])
+        self._router_comet = canvas.create_line(0, 0, 0, 0, fill=c["accent"], width=2, state="hidden", capstyle=tk.BUTT)
+
+    def _router_step(self, elapsed):
+        hero = getattr(self, "empty_state", None)
+        if hero is None or self.lifecycle.closed or not hero.winfo_viewable():
+            return False
+        c = PALETTE
+        canvas = self.router_canvas
+        period = 2.8
+        cycle = int(elapsed // period)
+        t = (elapsed % period) / period
+        path_in, outs = self._router_paths()
+        target = (1, 0, 2)[cycle % 3]
+        tail = self._px(26)
+        points = []
+        if t < 0.34:
+            length = ui_kit.path_length(path_in)
+            head = ui_kit.ease_in_out(t / 0.34) * (length + tail)
+            points = ui_kit.path_slice(path_in, head - tail, head)
+        elif 0.4 <= t < 0.78:
+            path = outs[target]
+            length = ui_kit.path_length(path)
+            head = ui_kit.ease_in_out((t - 0.4) / 0.38) * (length + tail)
+            points = ui_kit.path_slice(path, head - tail, head)
+        if len(points) >= 2:
+            canvas.coords(self._router_comet, *[v for p in points for v in p])
+            canvas.itemconfigure(self._router_comet, state="normal")
+        else:
+            canvas.itemconfigure(self._router_comet, state="hidden")
+        for index, node in enumerate(self._router_out_nodes):
+            glow = 0.0
+            if index == target and t >= 0.76:
+                glow = 1.0 - min(1.0, (t - 0.76) / 0.24)
+            canvas.itemconfigure(node, outline=ui_kit.mix(c["border_strong"], c["accent"], glow))
+        return None
+
+    def _sync_empty_state(self):
+        hero = getattr(self, "empty_state", None)
+        if hero is None:
+            return
+        try:
+            text = self.summary.get("1.0", "end-1c").strip()
+            empty = text in self.EMPTY_SUMMARY_TEXTS and not self.pending_plan and not self._run_in_progress()
+            if empty and not hero.winfo_manager():
+                hero.place(in_=self.summary.frame, relx=0, rely=0, relwidth=1, relheight=1)
+            elif not empty and hero.winfo_manager():
+                hero.place_forget()
+                self.animator.stop("router")
+            if empty and not self.animator.reduce and hero.winfo_viewable():
+                self.animator.loop("router", self._router_step)
+        except tk.TclError:
+            pass
+
+    # Review inspector ----------------------------------------------------------
+
+    def _overhaul_inspector(self, right):
+        c = PALETTE
+        right.configure(padx=self._px(20), pady=self._px(16))
+        for widget in right.grid_slaves(row=0):
+            if isinstance(widget, ttk.Label) and widget.cget("text") == "REVIEW":
+                widget.grid_remove()
+        header = tk.Frame(right, bg=c["canvas"])
+        header.grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Changes", style="InspectorTitle.TLabel").pack(side=tk.LEFT)
+        self.inspector_badge = tk.Label(header, text="0", bg=c["surface_raised"], fg=c["text_muted"], font=FONTS["section"], padx=self._px(6), pady=0)
+        self.inspector_badge.pack(side=tk.LEFT, padx=(self._px(8), 0))
+        self.review_marker.master.grid_remove()
+        self._style_review_toggle()
+        self.task_tools_disclosure_button.configure(style="Link.TButton")
+        self.edited_files.heading("status", anchor="w")
+        self.edited_files.column("status", anchor="w")
+        # Smaller requested heights; the panes still stretch to fill the window.
+        self.edited_files.configure(height=6)
+        self.diff.configure(height=12)
+        self.plan_preview.configure(height=4)
+        self.handoff_preview.configure(height=3)
+        self.task_tools_disclosure_button.grid_configure(sticky="w", pady=(self._px(10), self._px(8)))
+
+        illustration = [
+            ("line", [(8, 6), (8, 2.5), (17, 2.5), (21, 6.5), (21, 18), (17.5, 18)], {"color": "dim"}),
+            ("line", [(4, 6), (13, 6), (17, 10), (17, 21.5), (4, 21.5), (4, 6)]),
+            ("line", [(13, 6), (13, 10), (17, 10)]),
+            ("line", [(7, 13), (11, 13)], {"color": "add"}),
+            ("line", [(7, 16), (14, 16)], {"color": "del"}),
+            ("line", [(7, 19), (12, 19)]),
+        ]
+        self._review_empty_image = self.icons.custom(
+            "review-empty", illustration, 64, c["text_subtle"], c["canvas"], stroke=1.1,
+            tones={"dim": c["border_strong"], "add": c["success"], "del": c["danger"]},
+        )
+        self.review_empty_state.configure(image=self._review_empty_image, compound="top", text="No changes yet", foreground=c["text_subtle"], font=FONTS["small"])
+
+        icon_buttons = (
+            (self.apply_button, "check", c["accent_ink"], c["accent"], c["accent_active"], c["surface_alt"], "Apply all", "Write every reviewed change to disk"),
+            (self.apply_selected_button, "check_list", c["text"], c["surface_alt"], c["surface_raised"], c["surface_alt"], "Selected", "Apply only the selected files"),
+            (self.reject_button, "close", c["danger"], c["surface_alt"], c["surface_raised"], c["surface_alt"], "Reject", "Discard pending edits"),
+            (self.undo_last_apply_button, "undo", c["text"], c["surface_alt"], c["surface_raised"], c["surface_alt"], "Undo", "Restore the last Apply"),
+            (self.export_report_button, "export", c["text"], c["surface_alt"], c["surface_raised"], c["surface_alt"], "Export", "Export a redacted task report"),
+            (self.approve_plan_button, "check", c["accent_ink"], c["accent"], c["accent_active"], c["surface_alt"], None, None),
+            (self.allow_inspect_button, "check", c["accent_ink"], c["accent"], c["accent_active"], c["surface_alt"], None, None),
+            (self.allow_verification_button, "check", c["accent_ink"], c["accent"], c["accent_active"], c["surface_alt"], None, None),
+            (self.deny_inspect_button, "close", c["danger"], c["surface_alt"], c["surface_raised"], c["surface_alt"], None, None),
+            (self.deny_verification_button, "close", c["danger"], c["surface_alt"], c["surface_raised"], c["surface_alt"], None, None),
+            (self.send_overseer_button, "export", c["text"], c["surface_alt"], c["surface_raised"], c["surface_alt"], None, None),
+            (self.cancel_overseer_button, "close", c["danger"], c["surface_alt"], c["surface_raised"], c["surface_alt"], None, None),
+        )
+        for button, icon, color, background, active, disabled_bg, label, hint in icon_buttons:
+            self._set_button_icon(button, icon, 14, color, background, active, disabled_background=disabled_bg)
+            if label:
+                button.configure(text=label)
+            if hint:
+                self._attach_tooltip(button, hint)
+        for button in (self.apply_button, self.apply_selected_button, self.reject_button, self.undo_last_apply_button, self.export_report_button):
+            button.grid_configure(padx=self._px(3), pady=self._px(3))
+
+    def _style_review_toggle(self):
+        button = getattr(self, "review_toggle_button", None)
+        if button is None or not hasattr(self, "_rail_icon_names"):
+            return
+        c = PALETTE
+        button.configure(style="Ghost.TButton")
+        self._set_button_icon(button, "panel_close", 18, c["text_muted"], c["canvas"], c["surface_raised"], compound="image")
+
+    # Drawer --------------------------------------------------------------------
+
+    def _overhaul_drawer(self):
+        c = PALETTE
+        sidebar = self._legacy_sidebar
+        sidebar.configure(padx=self._px(18), pady=self._px(16))
+        for widget in sidebar.grid_slaves(row=0):
+            if isinstance(widget, ttk.Label):
+                widget.configure(style="DrawerTitle.TLabel")
+                widget.grid_configure(pady=(0, self._px(12)))
+        close = ttk.Button(sidebar, command=lambda: self._set_utility_drawer(None), style="Ghost.TButton", takefocus=True)
+        self._set_button_icon(close, "close", 16, c["text_muted"], c["canvas"], c["surface_raised"], compound="image")
+        close.grid(row=0, column=0, sticky="e")
+        self._attach_tooltip(close, "Close panel · Esc")
+        self.drawer_close_button = close
+        hairline = tk.Frame(sidebar, bg=c["border"], width=1)
+        # place() measures from inside the frame padding; reach the true edge.
+        pad_x, pad_y = self._px(18), self._px(16)
+        hairline.place(relx=1.0, x=pad_x - 1, y=-pad_y, relheight=1, height=2 * pad_y, width=1)
+        hairline.lift()
+        for button, icon in (
+            (self.project_button, "folder"),
+            (self.scan_button, "refresh"),
+            (self.new_chat_button, "plus"),
+            (self.context_add_button, "file_plus"),
+        ):
+            self._set_button_icon(button, icon, 14, c["text"], c["surface_alt"], c["surface_raised"], disabled_background=c["surface_alt"])
+        self._set_button_icon(self.run_button, "send", 14, c["accent_ink"], c["accent"], c["accent_active"], disabled_background=c["surface_alt"])
+        for button in (self.context_disclosure_button, self.history_disclosure_button, self.verification_disclosure_button, self.trust_settings_button):
+            button.configure(style="Link.TButton")
+        stats = self.snapshot_stats
+        stats.configure(bg=c["surface_alt"], highlightthickness=0, padx=self._px(12), pady=self._px(10))
+        for tile in stats.winfo_children():
+            if isinstance(tile, tk.Frame):
+                tile.configure(bg=c["surface_alt"])
+        self.history_list.configure(
+            bg=c["surface_alt"], highlightthickness=0, selectbackground=c["surface_raised"],
+            selectforeground=c["text"], activestyle="none",
+        )
+        self.history_search_entry.configure(font=FONTS["small"])
+        self.history_detail.configure(width=34)
+        self.history_list.configure(width=34)
+        for child in self.history_search_entry.master.grid_slaves():
+            if isinstance(child, tk.Scrollbar):
+                child.grid_remove()
+                scroll = ttk.Scrollbar(child.master, orient=tk.VERTICAL, command=self.history_list.yview, style="Quiet.Vertical.TScrollbar")
+                scroll.grid(row=2, column=1, sticky="ns")
+                self.history_list.configure(yscrollcommand=scroll.set)
+        self._attach_entry_placeholder(self.history_search_entry, "Search tasks")
+        self._attach_entry_placeholder(self.verification_command_entry, "e.g. python -m unittest")
+        self._attach_entry_placeholder(self.local_command_entry, "/status  /model  /permissions  /review")
+        self.reduce_motion_button = ttk.Checkbutton(
+            self.trust_settings_container,
+            text="Reduce motion",
+            variable=self.reduce_motion,
+            command=self._on_reduce_motion_changed,
+            style="Mode.TCheckbutton",
+            takefocus=True,
+        )
+        self.reduce_motion_button.grid(row=3, column=0, sticky="w", pady=(self._px(10), 0))
+
+    def _attach_entry_placeholder(self, entry, text):
+        label = tk.Label(entry.master, text=text, bg=PALETTE["surface_alt"], fg=PALETTE["text_subtle"], font=FONTS["small"], cursor="xterm")
+        label.bind("<Button-1>", lambda _event: entry.focus_set())
+
+        def sync(_event=None):
+            try:
+                if entry.get() or not entry.winfo_ismapped():
+                    label.place_forget()
+                else:
+                    label.place(in_=entry, x=self._px(9), rely=0.5, anchor="w")
+            except tk.TclError:
+                pass
+
+        for sequence in ("<KeyRelease>", "<FocusIn>", "<FocusOut>", "<Map>", "<Unmap>"):
+            entry.bind(sequence, sync, add="+")
+        variable = entry.cget("textvariable")
+        if variable:
+            try:
+                self.tk.call("trace", "add", "variable", variable, "write", self.register(lambda *_args: sync()))
+            except tk.TclError:
+                pass
+        sync()
+
+    def _on_reduce_motion_changed(self):
+        reduce = bool(self.reduce_motion.get())
+        self.animator.reduce = reduce
+        if reduce:
+            for key in ("router", "progress", "pulse"):
+                self.animator.stop(key)
+            self._stepper_pulse = 0.0
+            self.router_canvas.itemconfigure(self._router_comet, state="hidden")
+        self.config_data["motion"] = "reduced" if reduce else "full"
+        try:
+            save_local_config(self.config_data)
+        except OSError:
+            pass
+        self._sync_chrome()
+        self._sync_empty_state()
+
+    def _overhaul_text_surfaces(self):
+        c = PALETTE
+        for widget, background in (
+            (self.plan_preview, c["surface_alt"]),
+            (self.inspect_preview, c["surface_alt"]),
+            (self.verification_request_preview, c["surface_alt"]),
+            (self.handoff_preview, c["terminal"]),
+            (self.history_detail, c["terminal"]),
+            (self.diff, c["surface_alt"]),
+            (self.activity, c["terminal"]),
+        ):
+            try:
+                widget.configure(highlightthickness=0, bg=background, padx=self._px(10), pady=self._px(8), relief="flat")
+                widget.frame.configure(bg=background)
+            except (tk.TclError, AttributeError):
+                pass
+        for widget in (self.inspect_preview, self.verification_request_preview, self.handoff_preview):
+            self._quiet_text_scrollbar(widget)
+        handoff_actions = self.send_overseer_button.master
+        for column in range(4):
+            handoff_actions.columnconfigure(column, weight=0, uniform="")
+        for column in range(2):
+            handoff_actions.columnconfigure(column, weight=1, uniform="handoff")
+        for index, button in enumerate((self.send_overseer_button, self.approve_next_step_button, self.run_next_step_button, self.cancel_overseer_button)):
+            button.grid_configure(row=index // 2, column=index % 2, padx=self._px(3), pady=self._px(3), sticky="ew")
+        for button in (self.approve_plan_button, self.revise_plan_button, self.cancel_plan_button,
+                       self.allow_inspect_button, self.deny_inspect_button,
+                       self.allow_verification_button, self.deny_verification_button):
+            button.grid_configure(padx=self._px(3), pady=self._px(3))
+
+    def _quiet_text_scrollbar(self, text_widget):
+        try:
+            text_widget.vbar.pack_forget()
+        except (tk.TclError, AttributeError):
+            return
+        scroll = ttk.Scrollbar(text_widget.frame, orient=tk.VERTICAL, command=text_widget.yview, style="Quiet.Vertical.TScrollbar")
+
+        def update_scroll(first, last, bar=scroll):
+            bar.set(first, last)
+            if float(first) <= 0 and float(last) >= 1:
+                bar.pack_forget()
+            else:
+                bar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        text_widget.configure(yscrollcommand=update_scroll)
+        text_widget.vbar = scroll
+
+    # Chrome sync, responsiveness, heartbeat --------------------------------------
+
+    def _sync_chrome(self):
+        if not getattr(self, "_overhaul_ready", False) or self.lifecycle.closed:
+            return
+        c = PALETTE
+        try:
+            folder = self.selected_folder.get().strip()
+            name = self._short_folder_label(folder) if folder else "Open project"
+            self.project_chip_label.configure(text=name, fg=c["text"] if folder else c["text_muted"])
+            self.empty_project_label.configure(text=folder or "No project open · choose a folder")
+            detail = self.status.get().split(" · ", 1)
+            self.status_detail_label.configure(text=detail[1] if len(detail) > 1 else detail[0].title())
+            self._sync_stepper()
+            if self._stepper_state is not None and not self.animator.running("stepper"):
+                self._draw_stepper()
+            pending = len(self.edited_files.get_children())
+            self.inspector_badge.configure(
+                text=str(pending),
+                fg=c["accent_ink"] if pending else c["text_muted"],
+                bg=c["accent"] if pending else c["surface_raised"],
+            )
+            busy = self._run_in_progress()
+            for button in getattr(self, "composer_quick_buttons", ()):
+                button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+            if str(self.stop_button.cget("state")) == tk.DISABLED:
+                self.stop_button.grid_remove()
+            else:
+                self.stop_button.grid()
+            self._sync_prompt_placeholder()
+            self._sync_motion()
+            self._sync_empty_state()
+        except tk.TclError:
+            pass
+
+    def _sync_motion(self):
+        working = {TASK_STATE_COLLECTING, TASK_STATE_PLANNING, TASK_STATE_RUNNING}
+        busy = bool(
+            self.task_state in working
+            or self._verification_is_active()
+            or self._overseer_is_active()
+        )
+        if busy != self._ui_busy:
+            self._ui_busy = busy
+            if not busy:
+                self._paint_state_marker(0.0)
+        if busy and not self.animator.reduce:
+            self.animator.loop("progress", self._progress_step)
+            self.animator.loop("pulse", self._pulse_step)
+        elif busy:
+            self.progress_line.coords(self._progress_segment, 0, 0, self.progress_line.winfo_width(), 2)
+            self.progress_line.itemconfigure(self._progress_segment, state="normal")
+        else:
+            self.progress_line.itemconfigure(self._progress_segment, state="hidden")
+
+    def _on_window_configure(self, event):
+        # Cheap: _apply_breakpoints only reflows when the breakpoint changes.
+        if event.widget is self and not self.animator.closed:
+            self._apply_breakpoints()
+
+    def _apply_breakpoints(self):
+        if self.lifecycle.closed or not self.winfo_ismapped():
+            return
+        width = self.winfo_width()
+        if width >= 1180:
+            breakpoint = "wide"
+        elif width >= 980:
+            breakpoint = "medium"
+        else:
+            breakpoint = "narrow"
+        if breakpoint != self._breakpoint:
+            self._breakpoint = breakpoint
+            compact = breakpoint == "narrow"
+            if breakpoint == "wide":
+                self.workflow_model_value.grid()
+            else:
+                self.workflow_model_value.grid_remove()
+            self.local_command_disclosure_button.configure(compound="image" if compact else "left")
+            if compact:
+                self.workflow_policy_chip.grid_remove()
+                self.status_detail_label.pack_forget()
+            else:
+                self.workflow_policy_chip.grid()
+                if not self.status_detail_label.winfo_manager():
+                    self.status_detail_label.pack(side=tk.LEFT)
+            inspector_needed = bool(self.pending_plan or self.inspect_request or self.verification_request or self.edited_files.get_children())
+            if compact and not self._review_inspector_collapsed and not inspector_needed:
+                self._set_review_inspector_collapsed(True)
+                self._inspector_auto_collapsed = True
+            elif not compact and self._inspector_auto_collapsed:
+                self._inspector_auto_collapsed = False
+                if self._review_inspector_collapsed:
+                    self._set_review_inspector_collapsed(False)
+        self._move_rail_indicator(animate=False)
+
+    def _start_ui_heartbeat(self):
+        try:
+            self._ui_heartbeat_after_id = self.after(250, self._ui_heartbeat)
+        except tk.TclError:
+            self._ui_heartbeat_after_id = None
+
+    def _ui_heartbeat(self):
+        self._ui_heartbeat_after_id = None
+        if self.lifecycle.closed:
+            return
+        try:
+            self._sync_motion()
+            self._sync_prompt_placeholder()
+            self._sync_empty_state()
+        except tk.TclError:
+            return
+        self._start_ui_heartbeat()
+
+    def _stop_ui_heartbeat(self):
+        animator = getattr(self, "animator", None)
+        if animator is not None:
+            animator.close()
+        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id"):
+            after_id = getattr(self, name, None)
+            setattr(self, name, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, RuntimeError):
+                    pass
+
     def _initial_inspector_width(self, event=None):
         width = self.workbench_main.winfo_width()
         if (getattr(self, '_inspector_layout_pending', False) and width > 800
@@ -4008,16 +5202,19 @@ class CodeAgentApp(tk.Tk):
                 )
             except tk.TclError:
                 pass
+        self._restyle_rail_icons()
 
     def _set_utility_drawer(self, view):
         sidebar = getattr(self, '_legacy_sidebar', None)
         if sidebar is None:
             return
         visible = bool(sidebar.grid_info())
+        opening = False
         if view is None or (visible and view == self._utility_drawer_view):
             sidebar.grid_remove()
             self._utility_drawer_view = None
         else:
+            opening = not visible
             sidebar.grid()
             self._utility_drawer_view = view
             if view == 'history':
@@ -4029,8 +5226,8 @@ class CodeAgentApp(tk.Tk):
         if self._utility_drawer_view:
             allowed = {'workspace': {0, 1, 2, 3, 4, 14, 18},
                        'settings': {0, 7, 8, 9, 10, 11},
-                       'history': {0, 20, 21, 22, 23, 24},
-                       'verification': {0, 26, 27, 28, 29}}[self._utility_drawer_view]
+                       'history': {0, 21, 22, 23, 24},
+                       'verification': {0, 27, 28, 29}}[self._utility_drawer_view]
             for widget, row in self._sidebar_rows.items():
                 if row in allowed:
                     if row != 4 or self._disclosure_expanded.get('context'):
@@ -4038,9 +5235,11 @@ class CodeAgentApp(tk.Tk):
                 else:
                     widget.grid_remove()
                 if row == 0:
-                    widget.configure(text=self._utility_drawer_view.upper())
+                    widget.configure(text=self._utility_drawer_view.title())
             sidebar.rowconfigure(22, weight=1 if view == 'history' else 0)
             self.workbench_canvas.yview_moveto(0)
+            if opening:
+                self._animate_drawer_open()
         self._refresh_rail_selection()
         self._queue_workbench_scroll_sync()
 
@@ -4083,6 +5282,7 @@ class CodeAgentApp(tk.Tk):
             self._initial_inspector_width()
         if hasattr(self, 'review_toggle_button'):
             self.review_toggle_button.configure(text='Show' if collapsed else 'Hide')
+            self._style_review_toggle()
         self._refresh_rail_selection()
         self._queue_workbench_scroll_sync()
 
@@ -4883,6 +6083,7 @@ class CodeAgentApp(tk.Tk):
         if hasattr(self, '_rail_buttons'):
             self._refresh_rail_selection()
         self._refresh_local_command_suggestion()
+        self._sync_chrome()
 
     def _set_local_command_disclosure(self, expanded):
         if not hasattr(self, "local_command_detail"):
@@ -4894,8 +6095,9 @@ class CodeAgentApp(tk.Tk):
             self.local_command_detail.grid()
         else:
             self.local_command_detail.grid_remove()
-        arrow = "▾" if self._local_command_expanded else "▸"
-        self.local_command_disclosure_button.configure(text=f"{arrow} Command")
+        self.local_command_disclosure_button.configure(
+            text="Close  Esc" if self._local_command_expanded else "Command  Ctrl K"
+        )
         self._refresh_local_command_suggestion()
 
     def _toggle_local_command_disclosure(self):
@@ -5284,6 +6486,10 @@ class CodeAgentApp(tk.Tk):
             self.cancel_overseer()
         elif self._run_in_progress():
             self.cancel_active_run()
+        elif self._local_command_expanded:
+            self._set_local_command_disclosure(False)
+        elif self._utility_drawer_view:
+            self._set_utility_drawer(None)
         return "break"
 
     def _run_in_progress(self):
@@ -8012,6 +9218,7 @@ class CodeAgentApp(tk.Tk):
         self.summary.delete("1.0", tk.END)
         self.summary.insert("1.0", self._redact_sensitive(text).strip() or "No summary returned.")
         self.summary.configure(state=tk.DISABLED)
+        self._sync_empty_state()
 
     def reset_session(self):
         self._clear_last_apply_undo()
@@ -8816,6 +10023,7 @@ class CodeAgentApp(tk.Tk):
 
     def destroy(self):
         self._command_palette_destroyed = True
+        self._stop_ui_heartbeat()
         self._cancel_poll_timer()
         self._cancel_workbench_scroll_sync()
         return super().destroy()
@@ -11654,7 +12862,21 @@ def one_line(text):
     return compact[:160] + ("..." if len(compact) > 160 else "")
 
 
+def _enable_dpi_awareness():
+    """Render crisp on scaled Windows displays instead of bitmap-stretching."""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
 def main():
+    _enable_dpi_awareness()
     app = CodeAgentApp()
     app.deiconify()
     app.mainloop()
