@@ -1,6 +1,31 @@
 # CodeRouter
 Desktop code agent wrapper similar to Codex and Claude Code, but using only Free AI models via OpenRouter.
 
+## Setup
+
+Requires Python 3.10+ with Tkinter (included in the python.org installers on Windows and macOS; on Linux install `python3-tk`). There are no other dependencies.
+
+Run it:
+
+- Windows: double-click `Run CodeRouter.bat`
+- macOS / Linux: `./run.sh`
+
+Sign in with OpenRouter from the app, or set `OPENROUTER_API_KEY`. Settings are saved to `local_config.json` next to the script (see `local_config.example.json`); it is gitignored.
+
+Run the tests:
+
+```
+python -m unittest discover -s tests
+```
+
+## Layout
+
+- `CodeRouter.py` - app window and run orchestration
+- `model_router.py` - prompt classification and free model ranking
+- `command_suggestions.py` - inline `/command` completions
+- `history.py`, `permissions.py`, `model_health.py` - local history, permission ledger, model health
+- `constants.py`, `run_types.py`, `redaction.py` - shared limits, data types, secret redaction
+
 ## Features
 
 - Free-model fallback through OpenRouter
