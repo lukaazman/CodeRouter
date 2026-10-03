@@ -23,6 +23,7 @@ python -m unittest discover -s tests
 - `CodeRouter.py` - app window and run orchestration
 - `model_router.py` - prompt classification and free model ranking
 - `command_suggestions.py` - inline `/command` completions
+- `ui_kit.py` - anti-aliased vector icons, tween animator, motion preference
 - `history.py`, `permissions.py`, `model_health.py` - local history, permission ledger, model health
 - `constants.py`, `run_types.py`, `redaction.py` - shared limits, data types, secret redaction
 
@@ -35,6 +36,10 @@ python -m unittest discover -s tests
 - Apply, reject, and undo file changes
 - Bounded inspect and explicit local verification
 - Local history and redacted task reports
+
+## Interface
+
+Flat dark workbench: icon rail, a top bar with project, phase stepper (Plan → Run → Review → Apply), model queue and next step, the conversation with a composer, and a collapsible Changes inspector. An empty conversation shows a small routing animation and prompt starters. Motion is subtle (progress line, phase pulse, sliding rail indicator, drawer slide) and can be turned off with **Reduce motion** in Settings (`"motion": "reduced"` in `local_config.json`, `"system"` to follow Windows animation settings). Below ~980 px the idle inspector folds away and the top bar compacts.
 
 ## Prompt-aware free routing
 
