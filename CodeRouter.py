@@ -20,7 +20,6 @@ import webbrowser
 import http.server
 import secrets as secrets_module
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PureWindowsPath
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -29,8 +28,35 @@ from urllib.request import Request, urlopen
 
 import model_router as _model_router
 import command_suggestions as _command_suggestions
+from constants import *  # noqa: F403
+from redaction import (
+    SECRET_PATTERN,
+    redact_sensitive_text,
+)
+from run_types import (
+    SourceFile,
+    PlanStep,
+    ExecutionPlan,
+    RunSnapshot,
+)
+from permissions import (
+    PermissionDecision,
+    PermissionDecisionLedger,
+)
+from history import (
+    _history_timestamp,
+    _history_bound_text,
+    _history_lineage_id,
+    HistoryRecord,
+    HistoryStore,
+    history_record_label,
+    format_history_record,
+)
+from model_health import (
+    _health_bound_text,
+    ModelHealthTracker,
+)
 
-APP_TITLE = "CodeRouter"
 MODEL_SELECTION_AUTO = _model_router.MODEL_SELECTION_AUTO
 MODEL_SELECTION_OVERRIDE = _model_router.MODEL_SELECTION_OVERRIDE
 MODEL_SELECTION_MODES = _model_router.MODEL_SELECTION_MODES
@@ -57,211 +83,7 @@ WINDOW_ICON_SIZE = 32
 WINDOW_ICON_CORNER_RADIUS = 48
 WINDOW_ICON_BACKGROUND = "#080808"
 WINDOW_ICON_FOREGROUND = "#f3f3f3"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
-OPENROUTER_AUTH_KEYS_URL = "https://openrouter.ai/api/v1/auth/keys"
-OPENROUTER_OAUTH_CALLBACK_PATH = "/oauth/callback"
-OPENROUTER_OAUTH_HOST = "127.0.0.1"
-OPENROUTER_OAUTH_TIMEOUT_SECONDS = 180
-OPENROUTER_OAUTH_KEY_LABEL = "CodeRouter"
-MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
-CONFIG_PATH = Path(__file__).with_name("local_config.json")
-EXTERNAL_CONTEXT_PREFIX = "__external_context__"
-PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md"
-PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024
-PROJECT_INSTRUCTIONS_ENCODING = "utf-8"
-PROJECT_INSTRUCTIONS_MAX_DEPTH = 3
-PROJECT_INSTRUCTIONS_MAX_FILES = 6
-PROJECT_INSTRUCTIONS_MAX_TOTAL_BYTES = 64 * 1024
-PROJECT_INSTRUCTIONS_MAX_STATUS_ITEMS = 8
-VERIFICATION_COMMAND_MAX_CHARS = 240
-VERIFICATION_REQUEST_MAX_CHARS = 240
-VERIFICATION_TIMEOUT_SECONDS = 60
-VERIFICATION_MAX_OUTPUT_BYTES = 128 * 1024
-VERIFICATION_RESULT_MAX_OUTPUT_BYTES = 16 * 1024
-VERIFICATION_STREAM_CHUNK_BYTES = 4096
-VERIFICATION_STREAM_QUEUE_SIZE = 1
-VERIFICATION_TERMINATE_GRACE_SECONDS = 0.5
-VERIFICATION_POLL_INTERVAL_SECONDS = 0.1
-VERIFICATION_BLOCKED_EXECUTABLES = frozenset(
-    {
-        "cmd",
-        "cmd.exe",
-        "command.com",
-        "powershell",
-        "powershell.exe",
-        "pwsh",
-        "pwsh.exe",
-        "sh",
-        "sh.exe",
-        "bash",
-        "bash.exe",
-        "zsh",
-        "zsh.exe",
-        "wsl",
-        "wsl.exe",
-        "npm.cmd",
-        "pnpm.cmd",
-    }
-)
-VERIFICATION_ALLOWED_EXECUTABLES = frozenset(
-    {
-        "python",
-        "python.exe",
-        "python3",
-        "python3.exe",
-        "py",
-        "py.exe",
-        "node",
-        "node.exe",
-        "npm",
-        "pnpm",
-        "pytest",
-        "pytest.exe",
-        "cargo",
-        "cargo.exe",
-        "dotnet",
-        "dotnet.exe",
-        "git",
-        "git.exe",
-    }
-)
-VERIFICATION_ENV_ALLOWED_KEYS = frozenset(
-    {
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "SYSTEMDRIVE",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "USERPROFILE",
-        "HOME",
-        "LOCALAPPDATA",
-        "APPDATA",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "COMMONPROGRAMFILES",
-        "COMMONPROGRAMFILES(X86)",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "LANG",
-        "LC_ALL",
-        "NUMBER_OF_PROCESSORS",
-    }
-)
-VERIFICATION_ENV_MAX_ITEMS = 32
-VERIFICATION_ENV_MAX_VALUE_CHARS = 4096
-VERIFICATION_ENV_MAX_TOTAL_CHARS = 16 * 1024
-VERIFICATION_SENSITIVE_ENV_KEY_PATTERN = re.compile(
-    r"(?i)(?:api[_-]?key|token|secret|authorization|bearer|password|credential|cookie|private[_-]?key)"
-)
-VERIFICATION_SENSITIVE_ENV_VALUE_PATTERN = re.compile(
-    r"(?i)(?:\b(?:api[_-]?key|token|secret|authorization|bearer)\b|bearer\s+\S+|authorization\s*[:=]\s*\S+|(?:api[_-]?key|token|secret)\s*[:=]\s*\S+|\bsk-(?:or-v1|proj)?-[A-Za-z0-9._-]{8,})"
-)
-VERIFICATION_SHELL_PATTERN = re.compile(r"[\x00\r\n;&|<>^`()$`]")
 
-LOCAL_COMMANDS = ("/status", "/model", "/permissions", "/review")
-LOCAL_COMMAND_MAX_RESULT_CHARS = 720
-LOCAL_COMMAND_MAX_ITEMS = 6
-LOCAL_COMMAND_HINT = "Ctrl+K command | Tab accept | Esc dismiss | Ctrl+Enter run"
-MODEL_QUEUE_DISCLOSURE_MAX_RECORDS = 4
-MODEL_QUEUE_DISCLOSURE_MAX_CHARS = 1200
-ACTIVITY_DIGEST_MAX_CHARS = 240
-ACTIVITY_DIGEST_LAST_LABEL_MAX_CHARS = 72
-REVIEW_SELECTION_META_MAX_CHARS = 240
-SCANNED_CONTEXT_MAX_PATHS = 6
-SCANNED_CONTEXT_MAX_PATH_CHARS = 180
-SCANNED_CONTEXT_MAX_CHARS = 760
-TRUST_SETTINGS_MAX_CHARS = 960
-LOCAL_COMMAND_POLICY_TEXT = (
-    "Typed input + explicit user action only; routing settings are local and locked during active runs."
-)
-
-TASK_STATE_IDLE = "idle"
-TASK_STATE_COLLECTING = "collecting"
-TASK_STATE_PLANNING = "planning"
-TASK_STATE_PLAN = "plan"
-TASK_STATE_RUNNING = "running"
-TASK_STATE_REVIEW = "review"
-TASK_STATE_APPLIED = "applied"
-TASK_STATE_REJECTED = "rejected"
-TASK_STATE_ERROR = "error"
-
-TASK_STATE_LABELS = {
-    TASK_STATE_IDLE: "IDLE",
-    TASK_STATE_COLLECTING: "COLLECTING",
-    TASK_STATE_PLANNING: "PLAN",
-    TASK_STATE_PLAN: "PLAN",
-    TASK_STATE_RUNNING: "RUNNING",
-    TASK_STATE_REVIEW: "REVIEW",
-    TASK_STATE_APPLIED: "APPLIED",
-    TASK_STATE_REJECTED: "REJECTED",
-    TASK_STATE_ERROR: "ERROR",
-}
-
-APPLY_MODE_REVIEW = "review"
-APPLY_MODE_AUTO = "auto"
-PLAN_MAX_STEPS = 12
-PLAN_MAX_FIELD_CHARS = 600
-HISTORY_MAX_RECORDS = 50
-HISTORY_MAX_BYTES = 512 * 1024
-HISTORY_MAX_TEXT_CHARS = 240
-HISTORY_MAX_PATH_CHARS = 1024
-HISTORY_MAX_REASONS = 40
-HISTORY_MAX_TRANSITIONS = 80
-HISTORY_SEARCH_MAX_CHARS = 96
-HISTORY_SEARCH_STATUS_MAX_CHARS = 160
-HISTORY_BROWSER_MAX_STEPS = 8
-HISTORY_BROWSER_MAX_TRANSITIONS = 8
-HISTORY_BROWSER_MAX_REASONS = 8
-SESSION_ID_MAX_CHARS = 96
-SESSION_PARENT_MAX_CHARS = 128
-HANDOFF_MAX_TEXT_CHARS = 240
-HANDOFF_MAX_ITEMS = 24
-HANDOFF_MAX_PATHS = 64
-HANDOFF_MAX_BYTES = 64 * 1024
-HANDOFF_MAX_COUNT = 100_000
-UNDO_MAX_FILES = 64
-UNDO_MAX_TOTAL_BYTES = 512 * 1024
-REPORT_MAX_BYTES = 48 * 1024
-REPORT_MAX_LINES = 160
-REPORT_MAX_RECORDS = 40
-REPORT_MAX_TEXT_CHARS = 240
-REPORT_PROTECTED_NAMES = frozenset({".git", ".env", "local_config.json"})
-REPORT_PROTECTED_SUFFIXES = (".key", ".pem")
-PERMISSION_LEDGER_MAX_RECORDS = 64
-PERMISSION_LEDGER_MAX_BYTES = 12 * 1024
-PERMISSION_LEDGER_MAX_FIELD_CHARS = 96
-PERMISSION_DECISION_ALLOW = "allow"
-PERMISSION_DECISION_DENY = "deny"
-PERMISSION_DECISION_CANCEL = "cancel"
-PERMISSION_DECISIONS = frozenset(
-    {
-        PERMISSION_DECISION_ALLOW,
-        PERMISSION_DECISION_DENY,
-        PERMISSION_DECISION_CANCEL,
-    }
-)
-PERMISSION_CATEGORIES = frozenset(
-    {"inspect", "verify", "verify_policy", "apply", "undo"}
-)
-PERMISSION_POLICY_OUTCOMES = frozenset(
-    {"preset", "unknown", "blocked", "not_applicable"}
-)
-WORKER_SHUTDOWN_JOIN_SECONDS = 0.15
-PROVIDER_REQUEST_TIMEOUT_SECONDS = 120
-MODEL_RESPONSE_MAX_SUMMARY_CHARS = 600
-MODEL_RESPONSE_MAX_FILES = 64
-MODEL_RESPONSE_MAX_CONTENT_BYTES = 512 * 1024
-INSPECT_MAX_PATHS = 8
-INSPECT_MAX_PATH_CHARS = 240
-INSPECT_MAX_FILES = 8
-INSPECT_MAX_FILE_BYTES = 16 * 1024
-INSPECT_MAX_TOTAL_BYTES = 64 * 1024
-INSPECT_MAX_ROUNDS = 2
 
 PALETTE = {
     "canvas": "#121212",
@@ -311,100 +133,6 @@ SPACING = {
     "section": 10,
     "control": 7,
     "button": (12, 8),
-}
-
-MODEL_FALLBACKS = [
-    "qwen/qwen3-coder:free",
-    "deepseek/deepseek-chat-v3.1:free",
-    "z-ai/glm-4.5-air:free",
-    "moonshotai/kimi-k2:free",
-    "openrouter/free",
-]
-
-MODEL_SOURCE_DISCOVERED = "discovered"
-MODEL_SOURCE_STATIC = "static"
-FREE_PROOF_ID_SUFFIX = "id_suffix"
-FREE_PROOF_ZERO_PRICING = "zero_pricing"
-FREE_PROOF_STATIC = "static_known_free"
-
-MODEL_HEALTH_SUCCESS = "success"
-MODEL_HEALTH_FAILURE = "failure"
-MODEL_HEALTH_CANCELLED = "cancelled"
-MODEL_HEALTH_STATUSES = {
-    MODEL_HEALTH_SUCCESS,
-    MODEL_HEALTH_FAILURE,
-    MODEL_HEALTH_CANCELLED,
-}
-MODEL_HEALTH_DISCOVERY_ID = "__discovery__"
-MODEL_HEALTH_MAX_RECORDS = 256
-MODEL_HEALTH_MAX_LATENCY_MS = 120_000
-MODEL_HEALTH_MAX_REASON_CHARS = 180
-
-DEFAULT_IGNORE_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".idea",
-    ".vscode",
-    "__pycache__",
-    "node_modules",
-    "dist",
-    "build",
-    "target",
-    ".gradle",
-    ".next",
-    ".nuxt",
-    ".venv",
-    "venv",
-    "env",
-}
-
-DEFAULT_IGNORE_EXTENSIONS = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".ico",
-    ".pdf",
-    ".zip",
-    ".7z",
-    ".rar",
-    ".exe",
-    ".dll",
-    ".so",
-    ".dylib",
-    ".class",
-    ".jar",
-    ".pyc",
-    ".mp3",
-    ".mp4",
-    ".mov",
-    ".avi",
-    ".sqlite",
-    ".db",
-}
-
-DEFAULT_IGNORE_FILE_NAMES = {
-    ".env",
-    "local_config.json",
-}
-
-DEFAULT_IGNORE_SECRET_EXTENSIONS = {
-    ".key",
-    ".pem",
-}
-
-PROTECTED_EDIT_PATH_NAMES = {
-    ".git",
-    ".env",
-    "local_config.json",
-    "agents.md",
-}
-
-PROTECTED_EDIT_SUFFIXES = {
-    ".key",
-    ".pem",
 }
 
 
@@ -546,26 +274,6 @@ class _OpenRouterCallbackHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-@dataclass
-class SourceFile:
-    path: Path
-    relative_path: str
-    content: str
-
-
-@dataclass(frozen=True)
-class PlanStep:
-    id: str
-    title: str
-    detail: str
-
-
-@dataclass(frozen=True)
-class ExecutionPlan:
-    summary: str
-    steps: tuple[PlanStep, ...]
-
-
 @dataclass(frozen=True)
 class InspectRequest:
     """A bounded, read-only file request awaiting explicit user permission."""
@@ -630,7 +338,7 @@ class VerificationRequest:
         command = str(self.command or "").strip()
         if not command or len(command) > VERIFICATION_REQUEST_MAX_CHARS:
             raise ValueError("Verification request command is missing or too long.")
-        if redact_sensitive_text(command) != command or _HANDOFF_SECRET_PATTERN.search(command):
+        if redact_sensitive_text(command) != command or SECRET_PATTERN.search(command):
             raise ValueError("Verification request contains credential-shaped content.")
         argv = parse_verification_command(command)
         if verification_command_policy(argv) == "blocked":
@@ -777,9 +485,6 @@ class VerificationLineage:
         )
 
 
-_HANDOFF_SECRET_PATTERN = re.compile(
-    r"(?i)(?:api[_-]?key|x-api-key|authorization|bearer|token|secret|credential|password)\s*[:=]?\s*\S+|\b(?:sk-or-v1|sk-proj|sk)-[A-Za-z0-9._-]+"
-)
 _HANDOFF_FORBIDDEN_RESPONSE_PATTERN = re.compile(
     r"(?i)(?:\b(?:edit|modify|write|delete|patch|apply|save|create\s+file|terminal|shell|subprocess|command|execute|run|launch|invoke)\b|auto[- ]?(?:run|apply)|\b(?:admin|administrator|sudo|elevat|chmod|icacls|permission)\b|&&|[;&|<>])"
 )
@@ -793,7 +498,7 @@ _HANDOFF_ABSOLUTE_OR_TRAVERSAL_PATTERN = re.compile(
 
 def _handoff_safe_text(value, limit=HANDOFF_MAX_TEXT_CHARS):
     safe = redact_sensitive_text(str(value or ""))
-    if _HANDOFF_SECRET_PATTERN.search(safe):
+    if SECRET_PATTERN.search(safe):
         safe = "[redacted]"
     if _HANDOFF_MATERIAL_PATTERN.search(safe):
         safe = "[redacted evidence]"
@@ -895,275 +600,6 @@ class HandoffPathMetadata:
             "additions": self.additions,
             "deletions": self.deletions,
         }
-
-
-@dataclass(frozen=True)
-class RunSnapshot:
-    run_id: str
-    project_root: Path
-    extra_context_paths: tuple[Path, ...]
-    session_history: tuple[tuple[str, str], ...]
-    apply_mode: str
-    model_selection_mode: str = MODEL_SELECTION_AUTO
-    model_override: str = ""
-    project_instructions: str = ""
-    project_instructions_status: str = ""
-    request_text: str = ""
-    approved_plan: ExecutionPlan | None = None
-    task_id: str = ""
-    inspect_round: int = 0
-    inspect_parent_run_id: str = ""
-    verification_round: int = 0
-    session_id: str = ""
-    parent_task_id: str = ""
-    parent_session_id: str = ""
-
-
-def _permission_safe_field(value, limit=PERMISSION_LEDGER_MAX_FIELD_CHARS):
-    safe = redact_sensitive_text(str(value or ""))
-    if _HANDOFF_SECRET_PATTERN.search(safe):
-        return ""
-    safe = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", safe)
-    safe = " ".join(safe.split())
-    encoded = safe.encode("utf-8", errors="replace")[:limit]
-    return encoded.decode("utf-8", errors="ignore")
-
-
-def _permission_safe_identifier(value, allow_empty=True):
-    safe = _permission_safe_field(value, PERMISSION_LEDGER_MAX_FIELD_CHARS)
-    if not safe and allow_empty:
-        return ""
-    if not safe or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}", safe):
-        return ""
-    return safe
-
-
-@dataclass(frozen=True)
-class PermissionDecision:
-    """Immutable metadata for one explicit, user-visible permission decision."""
-
-    category: str
-    decision: str
-    run_id: str
-    task_id: str = ""
-    session_id: str = ""
-    timestamp: str = ""
-    sequence: int = 0
-    policy_outcome: str = "not_applicable"
-
-    def __post_init__(self):
-        category = str(self.category or "").casefold().strip()
-        decision = str(self.decision or "").casefold().strip()
-        policy_outcome = str(self.policy_outcome or "not_applicable").casefold().strip()
-        if category not in PERMISSION_CATEGORIES:
-            raise ValueError("Unsupported permission decision category.")
-        if decision not in PERMISSION_DECISIONS:
-            raise ValueError("Unsupported permission decision label.")
-        if policy_outcome not in PERMISSION_POLICY_OUTCOMES:
-            raise ValueError("Unsupported permission policy outcome.")
-        run_id = _permission_safe_identifier(self.run_id, allow_empty=False)
-        task_id = _permission_safe_identifier(self.task_id)
-        session_id = _permission_safe_identifier(self.session_id)
-        if not run_id or (
-            str(self.run_id or "").strip() != run_id
-            or (self.task_id and str(self.task_id).strip() != task_id)
-            or (self.session_id and str(self.session_id).strip() != session_id)
-        ):
-            raise ValueError("Permission decision identity is unsafe.")
-        timestamp = _permission_safe_field(self.timestamp, 64) or "unknown"
-        if self.timestamp and str(self.timestamp).strip() != timestamp:
-            raise ValueError("Permission decision timestamp is unsafe.")
-        try:
-            sequence = min(max(int(self.sequence), 0), HANDOFF_MAX_COUNT)
-        except (TypeError, ValueError, OverflowError):
-            sequence = 0
-        object.__setattr__(self, "category", category)
-        object.__setattr__(self, "decision", decision)
-        object.__setattr__(self, "policy_outcome", policy_outcome)
-        object.__setattr__(self, "run_id", run_id)
-        object.__setattr__(self, "task_id", task_id)
-        object.__setattr__(self, "session_id", session_id)
-        object.__setattr__(self, "timestamp", timestamp)
-        object.__setattr__(self, "sequence", sequence)
-
-    def to_dict(self):
-        return {
-            "category": self.category,
-            "decision": self.decision,
-            "run_id": self.run_id,
-            "task_id": self.task_id,
-            "session_id": self.session_id,
-            "timestamp": self.timestamp,
-            "sequence": self.sequence,
-            "policy_outcome": self.policy_outcome,
-        }
-
-    def summary_text(self):
-        policy = "" if self.policy_outcome == "not_applicable" else f"/{self.policy_outcome}"
-        return _permission_safe_field(
-            f"{self.category}:{self.decision}{policy}#{self.sequence}",
-            PERMISSION_LEDGER_MAX_FIELD_CHARS,
-        )
-
-    def timeline_text(self):
-        return _permission_safe_field(
-            "permission decision: "
-            f"category={self.category}; decision={self.decision}; "
-            f"policy={self.policy_outcome}; task={self.task_id or '(none)'}; "
-            f"session={self.session_id or '(none)'}; timestamp={self.timestamp}; "
-            f"sequence={self.sequence}",
-            HANDOFF_MAX_TEXT_CHARS,
-        )
-
-
-class PermissionDecisionLedger:
-    """Bounded in-memory ledger; no command or material fields are accepted."""
-
-    def __init__(self, max_records=PERMISSION_LEDGER_MAX_RECORDS, max_bytes=PERMISSION_LEDGER_MAX_BYTES):
-        self.max_records = max(1, int(max_records))
-        self.max_bytes = max(256, int(max_bytes))
-        self._records = []
-        self._active_run_id = None
-        self._active_task_id = ""
-        self._active_session_id = ""
-        self._closed = False
-        self._lock = threading.RLock()
-
-    @property
-    def records(self):
-        with self._lock:
-            return tuple(self._records)
-
-    @property
-    def active_run_id(self):
-        return self._active_run_id
-
-    @property
-    def active_task_id(self):
-        return self._active_task_id
-
-    @property
-    def active_session_id(self):
-        return self._active_session_id
-
-    @property
-    def closed(self):
-        return self._closed
-
-    def bind_snapshot(self, snapshot, preserve=False):
-        if not isinstance(snapshot, RunSnapshot):
-            self.detach()
-            return False
-        try:
-            run_id = _permission_safe_identifier(snapshot.run_id, allow_empty=False)
-            task_id = _permission_safe_identifier(snapshot.task_id)
-            session_id = _permission_safe_identifier(snapshot.session_id)
-        except (TypeError, ValueError):
-            self.detach()
-            return False
-        if not run_id:
-            self.detach()
-            return False
-        with self._lock:
-            preserve_records = bool(
-                preserve
-                and not self._closed
-                and self._active_task_id
-                and self._active_task_id == task_id
-                and self._active_session_id == session_id
-            )
-            if not preserve_records:
-                self._records = []
-            self._active_run_id = run_id
-            self._active_task_id = task_id
-            self._active_session_id = session_id
-            self._closed = False
-        return True
-
-    def detach(self):
-        with self._lock:
-            self._records = []
-            self._active_run_id = None
-            self._active_task_id = ""
-            self._active_session_id = ""
-            self._closed = False
-
-    def close(self):
-        with self._lock:
-            self._records = []
-            self._active_run_id = None
-            self._active_task_id = ""
-            self._active_session_id = ""
-            self._closed = True
-
-    clear = detach
-
-    def append(self, record, is_current=None):
-        if not isinstance(record, PermissionDecision):
-            return None
-        if is_current is not None:
-            try:
-                if not is_current():
-                    return None
-            except Exception:
-                return None
-        with self._lock:
-            if self._closed or not self._active_run_id:
-                return None
-            if record.run_id != self._active_run_id:
-                return None
-            if self._active_task_id and record.task_id and record.task_id != self._active_task_id:
-                return None
-            if self._active_session_id and record.session_id and record.session_id != self._active_session_id:
-                return None
-            candidate = list(self._records) + [record]
-            while len(candidate) > self.max_records:
-                candidate.pop(0)
-            while candidate:
-                encoded = json.dumps(
-                    [item.to_dict() for item in candidate],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-                if len(encoded) <= self.max_bytes:
-                    break
-                if len(candidate) == 1:
-                    return None
-                candidate.pop(0)
-            self._records = candidate
-            return record
-
-    def records_for(self, run_id=None):
-        with self._lock:
-            if run_id is None:
-                return tuple(self._records)
-            return tuple(item for item in self._records if item.run_id == str(run_id))
-
-    def records_for_task(self, task_id=None):
-        target = str(task_id or "")
-        with self._lock:
-            if not target:
-                return tuple(self._records)
-            return tuple(item for item in self._records if item.task_id == target)
-
-    def summary_text(self, run_id=None):
-        items = self.records_for(run_id)
-        if not items:
-            return "none"
-        return _permission_safe_field(
-            " | ".join(item.summary_text() for item in items[-6:]),
-            LOCAL_COMMAND_MAX_RESULT_CHARS,
-        )
-
-    def to_json(self, run_id=None):
-        encoded = json.dumps(
-            [item.to_dict() for item in self.records_for(run_id)],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        if len(encoded) > self.max_bytes:
-            raise ValueError("Permission decision ledger exceeds its bound.")
-        return encoded
 
 
 @dataclass(frozen=True)
@@ -1361,7 +797,7 @@ _REPORT_MATERIAL_PATTERN = re.compile(
 
 def _report_safe_text(value, limit=REPORT_MAX_TEXT_CHARS):
     safe = redact_sensitive_text(str(value or ""))
-    if _HANDOFF_SECRET_PATTERN.search(safe) or _REPORT_MATERIAL_PATTERN.search(safe):
+    if SECRET_PATTERN.search(safe) or _REPORT_MATERIAL_PATTERN.search(safe):
         return "[redacted]"
     safe = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", safe)
     safe = " ".join(safe.split())
@@ -1774,7 +1210,7 @@ def _validate_overseer_text(value, label):
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > HANDOFF_MAX_TEXT_CHARS:
         raise ValueError(f"Overseer {label} is missing or too long.")
     raw = value.strip()
-    if redact_sensitive_text(raw) != raw or _HANDOFF_SECRET_PATTERN.search(raw):
+    if redact_sensitive_text(raw) != raw or SECRET_PATTERN.search(raw):
         raise ValueError("Overseer response contains credential-shaped text.")
     if _HANDOFF_FORBIDDEN_RESPONSE_PATTERN.search(raw):
         raise ValueError("Overseer response contains a write, command, or permission instruction.")
@@ -1821,7 +1257,7 @@ def parse_overseer_response(response):
         payload = response
     else:
         raise ValueError("Overseer response must be JSON text or an object.")
-    if redact_sensitive_text(raw_response) != raw_response or _HANDOFF_SECRET_PATTERN.search(raw_response):
+    if redact_sensitive_text(raw_response) != raw_response or SECRET_PATTERN.search(raw_response):
         raise ValueError("Overseer response contains credential-shaped text.")
     if not isinstance(payload, dict) or set(payload) != {"status", "summary", "next_step"}:
         raise ValueError("Overseer response must contain exactly status, summary, and next_step.")
@@ -1872,399 +1308,6 @@ def local_overseer_adapter(handoff):
             requires_user_confirmation=True,
         ),
     ).to_json()
-
-
-def _history_timestamp():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def default_history_path():
-    """Return the user-local history path, never a path inside the repository."""
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / APP_TITLE / "history.json"
-
-
-HISTORY_PATH = default_history_path()
-
-
-def _history_bound_text(value, limit=HISTORY_MAX_TEXT_CHARS):
-    redacted = redact_sensitive_text(str(value or ""))
-    compact = " ".join(redacted.split())
-    return compact[:limit] + ("..." if len(compact) > limit else "")
-
-
-_HISTORY_LINEAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")
-
-
-def _history_lineage_id(value, *, fallback="", allow_empty=False, limit=SESSION_ID_MAX_CHARS):
-    raw = str(value or "").strip()
-    if not raw:
-        if allow_empty:
-            return ""
-        raw = str(fallback or "").strip()
-    if not raw:
-        return None
-    if len(raw) > limit or redact_sensitive_text(raw) != raw:
-        return None
-    if _HANDOFF_SECRET_PATTERN.search(raw) or not _HISTORY_LINEAGE_ID_PATTERN.fullmatch(raw):
-        return None
-    return raw
-
-
-@dataclass(frozen=True)
-class HistoryRecord:
-    """Bounded, redacted metadata for one task; never a file/proposal snapshot."""
-
-    task_id: str
-    project_root: str
-    request_summary: str
-    plan_summary: str = ""
-    plan_steps: tuple[PlanStep, ...] = ()
-    selected_model: str = ""
-    state_transitions: tuple[tuple[str, str, str], ...] = ()
-    reasons: tuple[str, ...] = ()
-    outcome: str = ""
-    created_at: str = ""
-    updated_at: str = ""
-    session_id: str = ""
-    parent_task_id: str = ""
-    parent_session_id: str = ""
-
-    @classmethod
-    def start(cls, snapshot, initial_state=TASK_STATE_PLANNING, detail=""):
-        now = _history_timestamp()
-        task_id = str(snapshot.task_id or snapshot.run_id)
-        return cls(
-            task_id=task_id,
-            project_root=str(snapshot.project_root),
-            request_summary=_history_bound_text(snapshot.request_text),
-            state_transitions=((
-                _history_bound_text(initial_state, 64),
-                _history_bound_text(detail),
-                now,
-            ),),
-            outcome=_history_bound_text(initial_state, 64),
-            created_at=now,
-            updated_at=now,
-            session_id=snapshot.session_id or task_id,
-            parent_task_id=snapshot.parent_task_id,
-            parent_session_id=snapshot.parent_session_id,
-        ).sanitized()
-
-    @property
-    def plan(self):
-        if not self.plan_summary and not self.plan_steps:
-            return None
-        return ExecutionPlan(self.plan_summary, self.plan_steps)
-
-    def sanitized(self):
-        safe_task_id = _history_bound_text(self.task_id, 128)
-        safe_session_id = _history_lineage_id(self.session_id, fallback=safe_task_id)
-        if safe_session_id is None:
-            safe_session_id = _history_lineage_id(safe_task_id, allow_empty=True) or "legacy-session"
-        safe_parent_task_id = _history_lineage_id(
-            self.parent_task_id,
-            allow_empty=True,
-            limit=SESSION_PARENT_MAX_CHARS,
-        )
-        safe_parent_session_id = _history_lineage_id(
-            self.parent_session_id,
-            allow_empty=True,
-            limit=SESSION_PARENT_MAX_CHARS,
-        )
-        if safe_parent_task_id is None or safe_parent_session_id is None or bool(safe_parent_task_id) != bool(safe_parent_session_id):
-            safe_parent_task_id = ""
-            safe_parent_session_id = ""
-        steps = []
-        for step in self.plan_steps[:PLAN_MAX_STEPS]:
-            if isinstance(step, PlanStep):
-                steps.append(
-                    PlanStep(
-                        _history_bound_text(step.id, 64),
-                        _history_bound_text(step.title, PLAN_MAX_FIELD_CHARS),
-                        _history_bound_text(step.detail, PLAN_MAX_FIELD_CHARS),
-                    )
-                )
-        transitions = []
-        for transition in self.state_transitions[-HISTORY_MAX_TRANSITIONS:]:
-            if isinstance(transition, (tuple, list)) and len(transition) >= 3:
-                transitions.append(
-                    (
-                        _history_bound_text(transition[0], 64),
-                        _history_bound_text(transition[1]),
-                        _history_bound_text(transition[2], 80),
-                    )
-                )
-        reasons = []
-        for reason in self.reasons[-HISTORY_MAX_REASONS:]:
-            safe_reason = _history_bound_text(reason)
-            if safe_reason and safe_reason not in reasons:
-                reasons.append(safe_reason)
-        return replace(
-            self,
-            task_id=safe_task_id,
-            project_root=_history_bound_text(self.project_root, HISTORY_MAX_PATH_CHARS),
-            request_summary=_history_bound_text(self.request_summary),
-            plan_summary=_history_bound_text(self.plan_summary, PLAN_MAX_FIELD_CHARS),
-            plan_steps=tuple(steps),
-            selected_model=_history_bound_text(self.selected_model, 240),
-            state_transitions=tuple(transitions),
-            reasons=tuple(reasons),
-            outcome=_history_bound_text(self.outcome, 64),
-            created_at=_history_bound_text(self.created_at, 80),
-            updated_at=_history_bound_text(self.updated_at, 80),
-            session_id=safe_session_id,
-            parent_task_id=safe_parent_task_id,
-            parent_session_id=safe_parent_session_id,
-        )
-
-    def to_dict(self):
-        record = self.sanitized()
-        return {
-            "task_id": record.task_id,
-            "session_id": record.session_id,
-            "parent_task_id": record.parent_task_id,
-            "parent_session_id": record.parent_session_id,
-            "project_root": record.project_root,
-            "request_summary": record.request_summary,
-            "plan_summary": record.plan_summary,
-            "plan_steps": [
-                {"id": step.id, "title": step.title, "detail": step.detail}
-                for step in record.plan_steps
-            ],
-            "selected_model": record.selected_model,
-            "state_transitions": [
-                {"state": state, "detail": detail, "timestamp": timestamp}
-                for state, detail, timestamp in record.state_transitions
-            ],
-            "reasons": list(record.reasons),
-            "outcome": record.outcome,
-            "created_at": record.created_at,
-            "updated_at": record.updated_at,
-        }
-
-    @classmethod
-    def from_dict(cls, value):
-        if not isinstance(value, dict):
-            return None
-        task_id = str(value.get("task_id", "") or "").strip()
-        project_root = str(value.get("project_root", "") or "").strip()
-        if not task_id or not project_root:
-            return None
-        raw_session_id = value.get("session_id")
-        session_id = _history_lineage_id(
-            task_id if raw_session_id is None else raw_session_id,
-            fallback=task_id,
-        )
-        parent_task_id = _history_lineage_id(
-            value.get("parent_task_id", ""),
-            allow_empty=True,
-            limit=SESSION_PARENT_MAX_CHARS,
-        )
-        parent_session_id = _history_lineage_id(
-            value.get("parent_session_id", ""),
-            allow_empty=True,
-            limit=SESSION_PARENT_MAX_CHARS,
-        )
-        if session_id is None or parent_task_id is None or parent_session_id is None:
-            return None
-        if bool(parent_task_id) != bool(parent_session_id):
-            return None
-        raw_steps = value.get("plan_steps", ())
-        steps = []
-        if isinstance(raw_steps, list):
-            for item in raw_steps[:PLAN_MAX_STEPS]:
-                if not isinstance(item, dict):
-                    continue
-                step_id = str(item.get("id", "") or "").strip()
-                title = str(item.get("title", "") or "").strip()
-                detail = str(item.get("detail", "") or "").strip()
-                if step_id and title and detail:
-                    steps.append(PlanStep(step_id, title, detail))
-        raw_transitions = value.get("state_transitions", ())
-        transitions = []
-        if isinstance(raw_transitions, list):
-            for item in raw_transitions[-HISTORY_MAX_TRANSITIONS:]:
-                if not isinstance(item, dict):
-                    continue
-                state = str(item.get("state", "") or "").strip()
-                detail = str(item.get("detail", "") or "").strip()
-                timestamp = str(item.get("timestamp", "") or "").strip()
-                if state and timestamp:
-                    transitions.append((state, detail, timestamp))
-        raw_reasons = value.get("reasons", ())
-        reasons = []
-        if isinstance(raw_reasons, list):
-            reasons = [str(item) for item in raw_reasons[-HISTORY_MAX_REASONS:] if item]
-        return cls(
-            task_id=task_id,
-            project_root=project_root,
-            request_summary=str(value.get("request_summary", "") or ""),
-            plan_summary=str(value.get("plan_summary", "") or ""),
-            plan_steps=tuple(steps),
-            selected_model=str(value.get("selected_model", "") or ""),
-            state_transitions=tuple(transitions),
-            reasons=tuple(reasons),
-            outcome=str(value.get("outcome", "") or ""),
-            created_at=str(value.get("created_at", "") or ""),
-            updated_at=str(value.get("updated_at", "") or ""),
-            session_id=session_id,
-            parent_task_id=parent_task_id,
-            parent_session_id=parent_session_id,
-        ).sanitized()
-
-
-class HistoryStore:
-    """Fail-closed, bounded, atomic JSON storage for safe task metadata."""
-
-    def __init__(self, path=None, max_records=HISTORY_MAX_RECORDS, max_bytes=HISTORY_MAX_BYTES):
-        self.path = Path(path) if path is not None else default_history_path()
-        self.max_records = max(1, int(max_records))
-        self.max_bytes = max(1, int(max_bytes))
-
-    def load(self):
-        try:
-            if not self.path.exists() or not self.path.is_file():
-                return []
-            if self.path.stat().st_size > self.max_bytes:
-                return []
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            raw_records = payload.get("records") if isinstance(payload, dict) else None
-            if not isinstance(raw_records, list):
-                return []
-            records = []
-            for item in raw_records:
-                record = HistoryRecord.from_dict(item)
-                if record is not None:
-                    records.append(record)
-            return records[-self.max_records:]
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return []
-
-    def _encoded(self, records):
-        payload = {
-            "version": 1,
-            "records": [record.sanitized().to_dict() for record in records],
-        }
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-    def save(self, records):
-        normalized = [record.sanitized() for record in records if isinstance(record, HistoryRecord)]
-        normalized = normalized[-self.max_records:]
-        while normalized:
-            encoded = self._encoded(normalized)
-            if len(encoded) <= self.max_bytes:
-                break
-            normalized.pop(0)
-        else:
-            encoded = self._encoded([])
-            if len(encoded) > self.max_bytes:
-                return False
-        temporary_path = None
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary_name = tempfile.mkstemp(
-                prefix=f".{self.path.name}.",
-                suffix=".tmp",
-                dir=str(self.path.parent),
-            )
-            temporary_path = Path(temporary_name)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(str(temporary_path), str(self.path))
-            temporary_path = None
-            return True
-        except (OSError, ValueError, TypeError):
-            return False
-        finally:
-            if temporary_path is not None:
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    def append(self, record):
-        if not isinstance(record, HistoryRecord):
-            return False
-        return self.save(self.load() + [record])
-
-    def upsert(self, record):
-        if not isinstance(record, HistoryRecord):
-            return False
-        records = [item for item in self.load() if item.task_id != record.task_id]
-        records.append(record)
-        return self.save(records)
-
-    def get(self, task_id):
-        target = str(task_id or "")
-        for record in self.load():
-            if record.task_id == target:
-                return record
-        return None
-
-
-def history_project_root_status(record):
-    """Return only filesystem availability for a historical project root."""
-    if not isinstance(record, HistoryRecord) or not record.project_root:
-        return "unavailable"
-    try:
-        return "available" if Path(record.project_root).is_dir() else "unavailable"
-    except OSError:
-        return "unavailable"
-
-
-def history_record_label(record):
-    """Build a short newest-first list label from safe metadata only."""
-    if not isinstance(record, HistoryRecord):
-        return "Unavailable history record"
-    safe = record.sanitized()
-    timestamp = (safe.updated_at or safe.created_at or "unknown")[:19].replace("T", " ")
-    outcome = safe.outcome or "in progress"
-    task_id = safe.task_id[:24]
-    return f"{timestamp}  {outcome}  {task_id}"
-
-
-def format_history_record(record):
-    """Format a bounded, metadata-only history inspection view."""
-    if not isinstance(record, HistoryRecord):
-        return "No history record selected."
-    safe = record.sanitized()
-    lines = [
-        f"Task id: {safe.task_id}",
-        f"Session id: {safe.session_id}",
-        f"Parent task: {safe.parent_task_id or '(none)'}",
-        f"Parent session: {safe.parent_session_id or '(none)'}",
-        f"Updated: {safe.updated_at or safe.created_at or 'unknown'}",
-        f"Project root: {safe.project_root}",
-        f"Root status: {history_project_root_status(safe)}",
-        f"Request: {safe.request_summary or '(none)'}",
-        f"Plan: {safe.plan_summary or '(none)'}",
-    ]
-    if safe.plan_steps:
-        lines.append("Plan steps:")
-        for step in safe.plan_steps[:HISTORY_BROWSER_MAX_STEPS]:
-            lines.append(f"  {step.id}. {step.title} — {step.detail}")
-    else:
-        lines.append("Plan steps: (none)")
-    lines.append(f"Selected model: {safe.selected_model or '(none)'}")
-    lines.append(f"Outcome: {safe.outcome or '(in progress)'}")
-    lines.append("Transitions:")
-    if safe.state_transitions:
-        for state, detail, timestamp in safe.state_transitions[-HISTORY_BROWSER_MAX_TRANSITIONS:]:
-            suffix = f" — {detail}" if detail else ""
-            lines.append(f"  {timestamp}  {state}{suffix}")
-    else:
-        lines.append("  (none)")
-    lines.append("Reasons:")
-    if safe.reasons:
-        for reason in safe.reasons[-HISTORY_BROWSER_MAX_REASONS:]:
-            lines.append(f"  - {reason}")
-    else:
-        lines.append("  (none)")
-    return redact_sensitive_text("\n".join(lines))
 
 
 @dataclass(frozen=True)
@@ -2334,163 +1377,6 @@ class UndoTransaction:
 
 class RunCancelledError(RuntimeError):
     """Cooperative cancellation marker for provider and apply paths."""
-
-
-def _health_bound_text(value, limit=MODEL_HEALTH_MAX_REASON_CHARS, secrets=None):
-    redaction_secrets = list(secrets or ())
-    redaction_secrets.append(os.environ.get("OPENROUTER_API_KEY", ""))
-    safe = redact_sensitive_text(str(value or ""), redaction_secrets)
-    compact = " ".join(safe.split())
-    return compact[:limit] + ("..." if len(compact) > limit else "")
-
-
-@dataclass(frozen=True)
-class ModelHealthRecord:
-    """In-memory metadata for one discovery or explicitly free-model attempt."""
-
-    model_id: str
-    latency_ms: int
-    status: str
-    reason: str
-
-    def status_text(self):
-        return f"{self.model_id}: {self.status} {self.latency_ms}ms ({self.reason})"
-
-
-class ModelHealthTracker:
-    """Thread-safe, bounded health telemetry with no persistence boundary."""
-
-    def __init__(self, clock=None, max_records=MODEL_HEALTH_MAX_RECORDS):
-        self._clock = clock or time.monotonic
-        self.max_records = max(1, int(max_records))
-        self._lock = threading.RLock()
-        self._records = []
-
-    @property
-    def records(self):
-        with self._lock:
-            return tuple(self._records)
-
-    @property
-    def history(self):
-        return self.records
-
-    def now(self):
-        return self._clock()
-
-    def begin(self):
-        return self.now()
-
-    def begin_attempt(self):
-        return self.begin()
-
-    def _bounded_latency(self, latency_ms):
-        try:
-            value = float(latency_ms)
-        except (TypeError, ValueError):
-            value = 0.0
-        return max(0, min(int(round(value)), MODEL_HEALTH_MAX_LATENCY_MS))
-
-    def record(
-        self,
-        model_id,
-        latency_ms,
-        status,
-        reason="",
-        is_current=None,
-        secrets=None,
-    ):
-        if is_current is not None and not is_current():
-            return None
-        normalized_status = str(status or "").casefold()
-        if normalized_status not in MODEL_HEALTH_STATUSES:
-            normalized_status = MODEL_HEALTH_FAILURE
-        safe_model_id = _health_bound_text(model_id, 240, secrets=secrets)
-        if not safe_model_id:
-            safe_model_id = MODEL_HEALTH_DISCOVERY_ID
-        record = ModelHealthRecord(
-            model_id=safe_model_id,
-            latency_ms=self._bounded_latency(latency_ms),
-            status=normalized_status,
-            reason=_health_bound_text(reason, secrets=secrets) or "unspecified",
-        )
-        with self._lock:
-            if is_current is not None and not is_current():
-                return None
-            self._records.append(record)
-            del self._records[:-self.max_records]
-        return record
-
-    def finish(
-        self,
-        model_id,
-        started_at,
-        status,
-        reason="",
-        is_current=None,
-        secrets=None,
-    ):
-        if is_current is not None and not is_current():
-            return None
-        try:
-            elapsed_ms = max(0.0, (self.now() - started_at) * 1000.0)
-        except (TypeError, ValueError):
-            elapsed_ms = 0.0
-        return self.record(
-            model_id=model_id,
-            latency_ms=elapsed_ms,
-            status=status,
-            reason=reason,
-            is_current=is_current,
-            secrets=secrets,
-        )
-
-    def finish_attempt(self, model_id, started_at, status, reason="", is_current=None, secrets=None):
-        return self.finish(model_id, started_at, status, reason, is_current, secrets)
-
-    def record_attempt(self, model_id, started_at, status, reason="", is_current=None, secrets=None):
-        return self.finish_attempt(model_id, started_at, status, reason, is_current, secrets)
-
-    def record_discovery(self, started_at, status, reason="", is_current=None, secrets=None):
-        return self.finish(
-            MODEL_HEALTH_DISCOVERY_ID,
-            started_at,
-            status,
-            reason,
-            is_current=is_current,
-            secrets=secrets,
-        )
-
-    def latest(self, model_id):
-        target = str(model_id or "").casefold()
-        with self._lock:
-            for record in reversed(self._records):
-                if record.model_id.casefold() == target:
-                    return record
-        return None
-
-    def preference_key(self, model_id):
-        record = self.latest(model_id)
-        if record is None:
-            return (1, MODEL_HEALTH_MAX_LATENCY_MS + 1)
-        status_rank = {
-            MODEL_HEALTH_SUCCESS: 0,
-            MODEL_HEALTH_CANCELLED: 1,
-            MODEL_HEALTH_FAILURE: 2,
-        }.get(record.status, 1)
-        latency = record.latency_ms if record.status == MODEL_HEALTH_SUCCESS else MODEL_HEALTH_MAX_LATENCY_MS + 1
-        return status_rank, latency
-
-    def selection_reason(self, model_id):
-        record = self.latest(model_id)
-        if record is None:
-            return "health-unknown"
-        return f"health-{record.status}-{record.latency_ms}ms"
-
-
-# Short aliases keep the small telemetry layer discoverable for callers/tests.
-HealthRecord = ModelHealthRecord
-HealthTracker = ModelHealthTracker
 
 
 def format_execution_plan(plan):
@@ -12238,7 +11124,7 @@ def parse_executor_response(response_text, secrets=None):
         raise ValueError("Executor response must be non-empty JSON text.")
     raw_text = response_text.strip()
     event_secrets = list(secrets or ()) + [os.environ.get("OPENROUTER_API_KEY", "")]
-    if redact_sensitive_text(raw_text, event_secrets) != raw_text or _HANDOFF_SECRET_PATTERN.search(raw_text):
+    if redact_sensitive_text(raw_text, event_secrets) != raw_text or SECRET_PATTERN.search(raw_text):
         raise ValueError("Executor response contained credential-shaped content and was rejected.")
     try:
         data = json.loads(raw_text)
@@ -12748,34 +11634,9 @@ def apply_edits(root, edits):
     )
 
 
-def redact_sensitive_text(text, secrets=None):
-    """Remove API keys and common credential-shaped values from UI/log text."""
-    redacted = str(text or "")
-    candidates = [str(secret) for secret in (secrets or []) if secret and len(str(secret)) >= 8]
-    for secret in sorted(set(candidates), key=len, reverse=True):
-        redacted = redacted.replace(secret, "[redacted]")
-    paired_patterns = (
-        r"(?i)(api[_-]?key\s*[:=]\s*)([^\s,;]+)",
-        r"(?i)(x-api-key\s*[:=]\s*)([^\s,;]+)",
-        r"(?i)(authorization\s*:\s*bearer\s+)([^\s,;]+)",
-        r"(?i)(authorization\s*[:=]\s*)([^\s,;]+(?:\s+[^\s,;]+)?)",
-        r"(?i)(bearer\s+)([^\s,;]+)",
-        r"(?i)(\b(?:token|secret|credential|password|private[_-]?key)\s*[:=]\s*)([^\s,;]+)",
-    )
-    for pattern in paired_patterns:
-        redacted = re.sub(pattern, lambda match: match.group(1) + "[redacted]", redacted)
-    redacted = re.sub(r"(?i)\b(?:sk-or-v1|sk-proj|sk)-[A-Za-z0-9._-]+", "[redacted]", redacted)
-    redacted = re.sub(
-        r"(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
-        "[redacted private key]",
-        redacted,
-    )
-    return redacted
-
-
 def _inspect_contains_credential(value):
     raw = str(value or "")
-    return redact_sensitive_text(raw) != raw or bool(_HANDOFF_SECRET_PATTERN.search(raw))
+    return redact_sensitive_text(raw) != raw or bool(SECRET_PATTERN.search(raw))
 
 
 def _inspect_redacted_text(value, secrets=None):
