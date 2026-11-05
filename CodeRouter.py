@@ -12176,6 +12176,10 @@ class CodeAgentApp(tk.Tk):
         note = "Files the user mentioned (prioritise them): " + ", ".join(mentions)
         folder = self.selected_folder.get().strip()
         for path, start, end in _mentions.extract_ranges(prompt):
+            try:
+                path = normalize_inspect_path(path)  # same guard as model reads: no secrets or protected files
+            except ValueError:
+                continue
             snippet = _mentions.read_range(folder, path, start, end) if folder else None
             if snippet:
                 note += f"\n\nLines {start}-{end} of {path}:\n{self._redact_sensitive(snippet)}"

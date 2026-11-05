@@ -475,6 +475,13 @@ class ParityAppTests(unittest.TestCase):
             self.assertTrue(self._pump(lambda: start.called, 3))
         self.assertEqual(start.call_args[0][0].request_text, "make it faster")
 
+    def test_range_mentions_skip_secret_files(self):
+        Path(self.project.name, ".env").write_text("TOKEN=abc123secret\n", encoding="utf-8")
+        Path(self.project.name, "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+        note = self.app._mention_context("check @.env:1-1 and @a.py:2")
+        self.assertNotIn("abc123secret", note)
+        self.assertIn("y = 2", note)
+
 
 if __name__ == "__main__":
     unittest.main()
