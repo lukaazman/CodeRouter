@@ -78,7 +78,12 @@ python CodeRouter.py exec -a full-auto --json "fix the failing test" > result.js
 python CodeRouter.py exec --agent tester "cover the new parser"
 python CodeRouter.py exec /review-pr 42
 python CodeRouter.py commands
+python CodeRouter.py ask "where is the config loaded?"
+python CodeRouter.py -C ~/projects/api --resume
+python CodeRouter.py "add a health check endpoint"
 ```
+
+Without a subcommand, arguments open the window: `-C <folder>` opens a project, `--resume` restores its latest conversation, and any text is put in the composer.
 
 Suggest mode prints the diff and exits with code 3 when changes are not applied; `--yes` or `--approval auto-edit` writes them. It needs Tkinter installed but no display.
 

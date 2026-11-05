@@ -514,6 +514,29 @@ class ExecCliTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(json.loads(out)["summary"], "Found it")
 
+    def test_ask_subcommand(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.py").write_text("x = 1\n", encoding="utf-8")
+            code, out, _err = self.run_cli(["ask", "-C", root, "what", "is", "x"], ["x is 1 in a.py"])
+            self.assertEqual(code, 0)
+            self.assertIn("x is 1", out)
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display unavailable")
+    def test_open_subcommand_prefills_window(self):
+        seen = {}
+
+        def fake_mainloop(app, *_a):
+            seen["prompt"] = app.instructions.get("1.0", "end-1c")
+            seen["folder"] = app.selected_folder.get()
+            app.on_close()
+
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(self.core, "save_local_config"), \
+                mock.patch.object(self.core.CodeAgentApp, "mainloop", fake_mainloop):
+            self.assertEqual(cli.main(["open", "-C", root, "fix", "it"], self.core), 0)
+        self.assertEqual(seen["prompt"], "fix it")
+        self.assertEqual(seen["folder"], str(Path(root).resolve()))
+
     def test_exec_requires_key_and_prompt(self):
         with tempfile.TemporaryDirectory() as root:
             code, _out, err = self.run_cli(["exec", "-C", root], [], env_key="")

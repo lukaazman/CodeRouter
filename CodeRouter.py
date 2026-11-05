@@ -15577,14 +15577,34 @@ def main(argv=None):
     import sys
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in {"exec", "commands", "-h", "--help"}:
+    if argv and argv[0] in {"exec", "commands", "ask", "open", "-h", "--help"}:
         import cli
 
         raise SystemExit(cli.main(argv, sys.modules[__name__]))
+    if argv:
+        import cli
+
+        raise SystemExit(cli.main(["open", *argv], sys.modules[__name__]))
+    launch_window()
+
+
+def launch_window(folder="", resume=False, prompt=""):
     _enable_dpi_awareness()
     app = CodeAgentApp()
+    if folder:
+        path = Path(folder).expanduser().resolve()
+        if path.is_dir():
+            app.selected_folder.set(str(path))
+            app.config_data["last_folder"] = str(path)
+            app.scan_folder(silent=True)
+            app._on_project_changed(str(path))
+    if resume:
+        app.after(300, lambda: app._show_command_result(app.run_slash_command("/resume")))
+    if prompt:
+        app._set_prompt_text(prompt)
     app.deiconify()
     app.mainloop()
+    return 0
 
 
 if __name__ == "__main__":

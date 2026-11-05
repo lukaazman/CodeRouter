@@ -42,7 +42,44 @@ def build_parser():
     run.add_argument("--json", action="store_true", help="Print a JSON result instead of text")
     run.add_argument("-q", "--quiet", action="store_true", help="Do not stream model output to stderr")
     sub.add_parser("commands", help="List slash commands, including custom ones").add_argument("-C", "--cwd", default=".")
+    ask = sub.add_parser("ask", help="Answer a question about the project (no edits)")
+    ask.add_argument("question", nargs="+")
+    ask.add_argument("-C", "--cwd", default=".")
+    gui = sub.add_parser("open", help="Open the window (optionally in a folder, resuming, or with a prompt)")
+    gui.add_argument("prompt", nargs="*")
+    gui.add_argument("-C", "--cwd", default="")
+    gui.add_argument("--resume", action="store_true", help="Restore the latest conversation for the folder")
     return parser
+
+
+def run_ask(args, core):
+    root = Path(args.cwd).resolve()
+    config = core.load_local_config()
+    api_key = os.environ.get("OPENROUTER_API_KEY") or config.get("openrouter_api_key", "")
+    if not api_key:
+        print("Set OPENROUTER_API_KEY or sign in once from the window.", file=sys.stderr)
+        return 2
+    question = " ".join(args.question)
+    instructions, _status = core.load_project_instructions(root, secrets=[api_key])
+    max_files, max_file_kb = core.choose_context_limits(root)
+    files = core.collect_files(root, max_files=max_files, max_file_kb=max_file_kb)
+    parts, used = [], 0
+    for source in files:
+        block = f"--- FILE: {source.relative_path} ---\n{source.content}"
+        if used + len(block) > 120_000:
+            continue
+        parts.append(block)
+        used += len(block)
+    prompt = core.redact_sensitive_text(
+        (f"Project instructions:\n{instructions}\n\n" if instructions else "")
+        + "Project files:\n" + "\n\n".join(parts) + "\n\nQuestion: " + question, [api_key])
+    try:
+        answer, _model = core.complete_text(api_key, prompt, system="You answer questions about a codebase. Be precise, cite file paths, keep it short.")
+    except Exception as exc:
+        print(core.short_error(exc), file=sys.stderr)
+        return 1
+    print(answer)
+    return 0
 
 
 def _read_prompt(parts):
@@ -233,5 +270,9 @@ def main(argv, core):
         return run_exec(args, core)
     if args.command == "commands":
         return list_commands(args)
+    if args.command == "ask":
+        return run_ask(args, core)
+    if args.command == "open":
+        return core.launch_window(folder=args.cwd, resume=args.resume, prompt=" ".join(args.prompt))
     parser.print_help()
     return 2
