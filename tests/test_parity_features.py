@@ -261,6 +261,12 @@ class GitToolsTests(unittest.TestCase):
             self.assertIn("main ±1", git_tools.git_status(root).label())
             self.assertFalse(git_tools.is_git_repo(tempfile.gettempdir() + "/definitely-missing"))
         self.assertEqual(git_tools.suggest_commit_message(["a.py"], ""), "Update a.py")
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(git_tools.detect_test_command(root), "")
+            Path(root, "package.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(git_tools.detect_test_command(root), "npm test")
+            Path(root, "pyproject.toml").write_text("[tool.pytest.ini_options]", encoding="utf-8")
+            self.assertEqual(git_tools.detect_test_command(root), "python -m pytest -q")
         self.assertEqual(git_tools.suggest_commit_message([], "Fix parser. Also tests."), "Fix parser")
 
 

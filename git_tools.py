@@ -148,6 +148,42 @@ REVIEW_PROMPT = (
 )
 
 
+SECURITY_REVIEW_PROMPT = (
+    "Do a security review of this diff. Look for injection (SQL, shell, path traversal), unsafe deserialisation, "
+    "secrets in code, missing auth or access checks, SSRF, XSS, weak crypto, unsafe file permissions and "
+    "dependency risks. For each finding: file:line, severity, exploit scenario in one sentence, fix in one "
+    "sentence. Report only findings you are confident about. If none, say 'No security issues found.'\n\n"
+)
+PR_PROMPT = (
+    "Write a pull request for this diff. First line: a title under 70 characters, imperative mood. Then a blank "
+    "line and a body with a short summary paragraph and a bullet list of the notable changes and how to test "
+    "them. Plain Markdown, no filler, do not mention who or what wrote it.\n\n"
+)
+
+
+def detect_test_command(root):
+    """Best-guess test command for common project layouts, or ''."""
+    root = Path(root)
+    if (root / "pyproject.toml").exists() or (root / "pytest.ini").exists() or (root / "setup.cfg").exists():
+        text = ""
+        for name in ("pyproject.toml", "pytest.ini", "setup.cfg"):
+            try:
+                text += (root / name).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                pass
+        if "pytest" in text or (root / "pytest.ini").exists():
+            return "python -m pytest -q"
+    if (root / "package.json").exists():
+        return "npm test"
+    if (root / "Cargo.toml").exists():
+        return "cargo test"
+    if any(root.glob("*.sln")) or any(root.glob("*.csproj")):
+        return "dotnet test"
+    if (root / "tests").is_dir() or any(root.glob("test_*.py")):
+        return "python -m unittest discover -s tests" if (root / "tests").is_dir() else "python -m unittest"
+    return ""
+
+
 def git_commit(root, message, paths=None):
     """Stage paths (or all tracked + new changes) and commit. Returns (ok, text)."""
     message = (message or "").strip()

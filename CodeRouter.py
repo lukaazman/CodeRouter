@@ -11079,35 +11079,65 @@ class CodeAgentApp(tk.Tk):
         return self.attach_image()
 
     def _cmd_code_review(self, args):
+        return self._diff_task("code-review", args, _git.REVIEW_PROMPT, "You are a precise code reviewer.", "Reviewing")
+
+    def _cmd_security_review(self, args):
+        return self._diff_task("security-review", args, _git.SECURITY_REVIEW_PROMPT, "You are an application security engineer.", "Security review of")
+
+    def _cmd_pr_description(self, args):
+        return self._diff_task("pr-description", args, _git.PR_PROMPT, "You write clear pull request descriptions.", "Drafting a PR for")
+
+    def _cmd_test(self, _args):
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        command = _git.detect_test_command(folder)
+        if not command:
+            return False, "No test setup detected · use /verify <command>"
+        self.verification_command.set(command)
+        self._show_utility_view("verification")
+        return f"Test command ready: {command} · press Run in Verify"
+
+    def _cmd_restart(self, _args):
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        import sys as _sys
+
+        self._save_config_quietly()
+        self.on_close()
+        os.execv(_sys.executable, [_sys.executable, str(Path(__file__).resolve())])
+        return "Restarting"
+
+    def _diff_task(self, name, args, header, system, verb):
         folder = self._validate_folder(show_error=False)
         if not folder or not _git.is_git_repo(folder):
-            return False, "Code review needs a git repository."
+            return False, f"/{name} needs a git repository."
         if not self.api_key:
             return False, "Connect OpenRouter first."
         diff = _git.git_review_diff(folder, args.strip())
         if not diff.strip() or diff.startswith("("):
             return False, diff.strip() or "No changes to review."
-        prompt = _git.REVIEW_PROMPT + self._redact_sensitive(diff)
+        prompt = header + self._redact_sensitive(diff)
         api_key = self.api_key
         target = args.strip() or "working tree"
-        self._transcript_add("user", f"/code-review {target}")
-        self.set_summary(f"Reviewing {target} with a free model…")
+        self._transcript_add("user", f"/{name} {target}")
+        self.set_summary(f"{verb} {target} with a free model…")
 
         def work():
             try:
-                text, model = complete_text(api_key, prompt, system="You are a precise code reviewer.")
+                text, model = complete_text(api_key, prompt, system=system)
             except Exception as exc:
                 text, model = f"Review failed: {short_error(exc)}", ""
             self._parity_queue.put(("review", (text, model)))
 
         threading.Thread(target=work, daemon=True).start()
-        return f"Reviewing {target}"
+        return f"{verb} {target}"
 
     def _finish_review(self, payload):
         text, model = payload
         body = self._redact_sensitive(text)
         self._transcript_add("agent", body + (f"\n\n(reviewed by {model})" if model else ""))
-        self.set_summary("Review done. Ask for fixes in the composer.")
+        self.set_summary("Done. Ask for follow-up changes in the composer.")
 
     def _cmd_mention(self, args):
         path = args.strip().lstrip("@")
@@ -11962,7 +11992,7 @@ class CodeAgentApp(tk.Tk):
                   lambda v: self.set_reasoning_effort(v))
         heading("Theme")
         segmented(self.theme_var, (("dark", "Dark"), ("light", "Light"), ("system", "System")),
-                  lambda v: self.set_theme(v) and self._toast("Theme applies on next start"))
+                  self._on_theme_choice)
 
         toggle = ttk.Checkbutton(frame, text="Approve each plan (plan gate)", variable=self.plan_gate_var,
                                  command=lambda: self.set_plan_gate(self.plan_gate_var.get()), style="Mode.TCheckbutton", takefocus=True)
@@ -11974,6 +12004,15 @@ class CodeAgentApp(tk.Tk):
         open_config.grid(row=row, column=0, sticky="w", pady=(self._px(10), 0))
         self._attach_tooltip(open_config, "Rules, hooks, temperature and more · /allow /deny /hooks /temperature")
         self._sidebar_rows[frame] = 12
+
+    def _on_theme_choice(self, value):
+        self.set_theme(value)
+        if _theme.resolve_theme(value) == self.theme_name:
+            return
+        if not self._run_in_progress() and messagebox.askyesno(APP_TITLE, "Restart now to apply the theme?", parent=self):
+            self.run_slash_command("/restart")
+        else:
+            self._toast("Theme applies on next start")
 
     def _open_config_file(self):
         if not CONFIG_PATH.exists():
