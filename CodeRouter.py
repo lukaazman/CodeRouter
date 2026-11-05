@@ -6615,7 +6615,10 @@ class CodeAgentApp(tk.Tk):
     def set_task_state(self, state, detail="", log_message=None):
         if state not in TASK_STATE_LABELS:
             raise ValueError(f"Unknown task state: {state}")
+        previous_state = getattr(self, "task_state", None)
         self.task_state = state
+        if previous_state != state and state in STOP_HOOK_STATES:
+            self._run_stop_hooks(state, detail)
         label = TASK_STATE_LABELS[state]
         visible = f"{label} · {detail}" if detail else label
         self.status.set(visible)
@@ -10386,6 +10389,8 @@ class CodeAgentApp(tk.Tk):
                 self._finish_compact(payload)
             elif kind == "usage":
                 self._record_usage(payload)
+            elif kind == "log":
+                self.log(payload)
             elif kind == "git":
                 self.git_state = payload
                 self.git_text.set(payload.label())
@@ -10921,6 +10926,22 @@ class CodeAgentApp(tk.Tk):
         if event == "PostApply" and any(code for _a, code, _o in results):
             self._toast("A PostApply hook reported a failure", "warning")
         return True
+
+    def _run_stop_hooks(self, state, detail):
+        if not getattr(self, "_parity_ready", False) or not self.hooks_config.get("Stop"):
+            return
+        folder = self.selected_folder.get().strip()
+        if not folder:
+            return
+        payload = {"state": TASK_STATE_LABELS.get(state, state), "detail": self._redact_sensitive(detail)}
+        hooks_config = self.hooks_config
+
+        def work():
+            results = _hooks.run_hooks(hooks_config, "Stop", folder, payload, env=build_verification_environment())
+            for argv, code, _output in results:
+                self._parity_queue.put(("log", f"> hook Stop {' '.join(argv)} → {code}"))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _extra_instruction_context(self, folder):
         text, labels = _memory.load_memory_files(
@@ -12928,6 +12949,7 @@ def _encode_images(paths):
     return tuple(urls)
 
 
+STOP_HOOK_STATES = (TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR)
 # Optional callable(dict) receiving token estimates for each provider call.
 USAGE_SINK = None
 
@@ -13794,7 +13816,7 @@ def build_undo_transaction(proposal):
         new_bytes = None if edit.content is None else edit.content.encode("utf-8")
         if original == new_bytes:
             continue
-        total_bytes += len(original or b"") + len(new_bytes)
+        total_bytes += len(original or b"") + len(new_bytes or b"")
         if total_bytes > UNDO_MAX_TOTAL_BYTES:
             raise ValueError("Undo capture exceeds the bounded byte limit.")
         states.append(
@@ -14173,7 +14195,14 @@ def _enable_dpi_awareness():
             pass
 
 
-def main():
+def main(argv=None):
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"exec", "commands", "-h", "--help"}:
+        import cli
+
+        raise SystemExit(cli.main(argv, sys.modules[__name__]))
     _enable_dpi_awareness()
     app = CodeAgentApp()
     app.deiconify()
