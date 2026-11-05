@@ -9618,44 +9618,54 @@ class CodeAgentApp(tk.Tk):
             if discovery_note:
                 emit("fallback", redact_sensitive_text(f"> {discovery_note}", [self.api_key]))
             emit("model_status", f"Free model queue ready: {len(model_queue)} candidates")
-            result, model_used = call_openrouter_with_fallback(
-                api_key=self.api_key,
-                instructions=safe_instructions,
-                files=files,
-                session_messages=[
-                    {"role": role, "content": content}
-                    for role, content in snapshot.session_history
-                ],
-                log_queue=self.work_queue,
-                run_id=run_id,
-                event_is_current=is_current,
-                model_queue=model_queue,
-                project_instructions=snapshot.project_instructions,
-                approved_plan=snapshot.approved_plan,
-                health_tracker=health_tracker,
-                task_context_tokens=estimate_task_context_tokens(
-                    safe_instructions
+            tool_context = list(inspect_context)
+            for tool_round in range(TOOL_QUERY_MAX_ROUNDS + 1):
+                result, model_used = call_openrouter_with_fallback(
+                    api_key=self.api_key,
+                    instructions=safe_instructions,
+                    files=files,
+                    session_messages=[
+                        {"role": role, "content": content}
+                        for role, content in snapshot.session_history
+                    ],
+                    log_queue=self.work_queue,
+                    run_id=run_id,
+                    event_is_current=is_current,
+                    model_queue=model_queue,
+                    project_instructions=snapshot.project_instructions,
+                    approved_plan=snapshot.approved_plan,
+                    health_tracker=health_tracker,
+                    task_context_tokens=estimate_task_context_tokens(
+                        safe_instructions
+                        + (
+                            "\n\n" + snapshot.project_instructions
+                            if snapshot.project_instructions
+                            else ""
+                        ),
+                        files,
+                        snapshot.session_history,
+                    )
                     + (
-                        "\n\n" + snapshot.project_instructions
-                        if snapshot.project_instructions
-                        else ""
+                        (len(format_execution_plan(snapshot.approved_plan)) + 3) // 4
+                        if snapshot.approved_plan
+                        else 0
                     ),
-                    files,
-                    snapshot.session_history,
+                    resource_owner=resource_owner,
+                    inspect_context=tuple(tool_context),
+                    strict_actions=strict_actions,
+                    verification_result=verification_result,
+                    task_category=task_category,
+                    model_selection_mode=snapshot.model_selection_mode,
+                    model_override=snapshot.model_override,
                 )
-                + (
-                    (len(format_execution_plan(snapshot.approved_plan)) + 3) // 4
-                    if snapshot.approved_plan
-                    else 0
-                ),
-                resource_owner=resource_owner,
-                inspect_context=inspect_context,
-                strict_actions=strict_actions,
-                verification_result=verification_result,
-                task_category=task_category,
-                model_selection_mode=snapshot.model_selection_mode,
-                model_override=snapshot.model_override,
-            )
+                if not isinstance(result, ToolQuery):
+                    break
+                if tool_round >= TOOL_QUERY_MAX_ROUNDS:
+                    raise ValueError("The model kept searching without proposing changes.")
+                ensure_run_current(is_current)
+                tool_context.append(run_tool_query(snapshot.project_root, result, secrets=[self.api_key]))
+                emit("timeline", f"Local {result.label()} ({tool_round + 1}/{TOOL_QUERY_MAX_ROUNDS})")
+                emit("task_state", (TASK_STATE_RUNNING, f"Model ran {result.label()}"))
             ensure_run_current(is_current)
             if isinstance(result, InspectRequest):
                 if (
@@ -13099,7 +13109,11 @@ def call_openrouter(
         "Return exactly one of these JSON shapes: "
         "{\"action\":\"final\",\"summary\":\"...\",\"files\":[{\"path\":\"relative/path.ext\",\"content\":\"complete content\"}]} "
         "or {\"action\":\"inspect\",\"summary\":\"...\",\"paths\":[\"relative/path.ext\"]} "
-        "or {\"action\":\"verify\",\"command\":\"bounded command\"}. "
+        "or {\"action\":\"verify\",\"command\":\"bounded command\"} "
+        "or {\"action\":\"search\",\"pattern\":\"regex\",\"glob\":\"optional *.py\"} "
+        "or {\"action\":\"list\",\"path\":\"relative/dir\"}. "
+        f"search and list are read-only, run locally without permission and return results as inspect context; "
+        f"use at most {TOOL_QUERY_MAX_ROUNDS} of them per step, then return final. "
         f"An inspect request may contain at most {INSPECT_MAX_PATHS} relative paths and is read-only; never request commands or writes. "
         "A verification request is permission-only and never starts a command. "
         "When a verification result is supplied below, return only final or inspect; never request another verify action. "
@@ -13618,6 +13632,113 @@ def parse_plan_response(response_text, secrets=None):
     return ExecutionPlan(summary=summary, steps=tuple(steps))
 
 
+TOOL_QUERY_MAX_ROUNDS = 4
+TOOL_SEARCH_MAX_MATCHES = 80
+TOOL_LIST_MAX_ENTRIES = 200
+TOOL_OUTPUT_MAX_CHARS = 16 * 1024
+
+
+@dataclass(frozen=True)
+class ToolQuery:
+    """A read-only, local search or directory listing requested by the model."""
+
+    action: str
+    pattern: str = ""
+    path: str = ""
+    glob: str = ""
+
+    def label(self):
+        if self.action == "search":
+            return f"search {self.pattern!r}" + (f" in {self.glob}" if self.glob else "")
+        return f"list {self.path or '.'}"
+
+
+def parse_tool_query(data):
+    action = data.get("action")
+    allowed = {"action", "pattern", "glob"} if action == "search" else {"action", "path"}
+    if not set(data) <= allowed:
+        raise ValueError(f"{action} response contains unknown fields.")
+    if action == "search":
+        pattern = data.get("pattern")
+        glob = data.get("glob") or ""
+        if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 200 or not isinstance(glob, str) or len(glob) > 120:
+            raise ValueError("Search response needs a short pattern.")
+        return ToolQuery("search", pattern=pattern, glob=glob.strip())
+    path = data.get("path") or ""
+    if not isinstance(path, str) or len(path) > INSPECT_MAX_PATH_CHARS:
+        raise ValueError("List response path is invalid.")
+    path = path.strip().strip("/").replace("\\", "/")
+    if path in {"", "."}:
+        path = ""
+    else:
+        path = normalize_inspect_path(path)
+    return ToolQuery("list", path=path)
+
+
+def _tool_walk(root):
+    for current, directories, filenames in os.walk(str(root)):
+        directories[:] = sorted(
+            name for name in directories
+            if name.casefold() not in DEFAULT_IGNORE_DIRS and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            path = Path(current) / name
+            relative = path.relative_to(root).as_posix()
+            if is_secret_like_relative_path(relative) or path.is_symlink():
+                continue
+            yield path, relative
+
+
+def run_tool_query(root, query, secrets=None):
+    """Run a ToolQuery inside root and return it as a read-only SourceFile."""
+    import fnmatch
+
+    root = Path(root).resolve()
+    lines = []
+    if query.action == "search":
+        try:
+            matcher = re.compile(query.pattern, re.IGNORECASE)
+        except re.error:
+            matcher = re.compile(re.escape(query.pattern), re.IGNORECASE)
+        matches = 0
+        for path, relative in _tool_walk(root):
+            if query.glob and not fnmatch.fnmatch(relative, query.glob) and not fnmatch.fnmatch(path.name, query.glob):
+                continue
+            try:
+                if path.stat().st_size > 512 * 1024:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for number, line in enumerate(text.splitlines(), 1):
+                if matcher.search(line):
+                    lines.append(f"{relative}:{number}: {line.strip()[:200]}")
+                    matches += 1
+                    if matches >= TOOL_SEARCH_MAX_MATCHES:
+                        break
+            if matches >= TOOL_SEARCH_MAX_MATCHES:
+                lines.append(f"(stopped at {TOOL_SEARCH_MAX_MATCHES} matches)")
+                break
+        if not lines:
+            lines.append("(no matches)")
+    else:
+        base = (root / query.path).resolve() if query.path else root
+        if base != root and root not in base.parents:
+            raise ValueError("List path leaves the project.")
+        if not base.is_dir():
+            lines.append("(not a directory)")
+        else:
+            for count, child in enumerate(sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))):
+                if count >= TOOL_LIST_MAX_ENTRIES:
+                    lines.append("(truncated)")
+                    break
+                if child.name.casefold() in DEFAULT_IGNORE_DIRS or is_secret_like_relative_path(child.name):
+                    continue
+                lines.append(child.name + ("/" if child.is_dir() else ""))
+    content = redact_sensitive_text("\n".join(lines), list(secrets or ()))[:TOOL_OUTPUT_MAX_CHARS]
+    return SourceFile(path=root, relative_path=f"[{query.label()}]", content=content)
+
+
 def parse_executor_response(response_text, secrets=None):
     """Parse the strict final/inspect union used by the edit executor."""
     if not isinstance(response_text, str) or not response_text.strip():
@@ -13633,6 +13754,8 @@ def parse_executor_response(response_text, secrets=None):
     if not isinstance(data, dict):
         raise ValueError("Executor response must be a JSON object.")
     action = data.get("action")
+    if action in {"search", "list"}:
+        return parse_tool_query(data)
     if action not in {"final", "inspect", "verify"}:
         raise ValueError("Executor response action must be final, inspect, or verify.")
 

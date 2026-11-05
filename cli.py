@@ -139,14 +139,24 @@ def run_exec(args, core):
                 for step in plan.steps:
                     print(f"  {step.id}. {step.title} — {step.detail}")
         inspect_context = ()
-        for round_number in range(max(0, args.max_rounds) + 1):
+        tool_rounds = 0
+        for round_number in range(max(0, args.max_rounds) + core.TOOL_QUERY_MAX_ROUNDS + 1):
             outcome, model = core.call_openrouter_with_fallback(
                 **common, approved_plan=plan, inspect_context=inspect_context, strict_actions=True,
             )
             result["model"] = str(model)
+            if isinstance(outcome, core.ToolQuery):
+                tool_rounds += 1
+                if tool_rounds > core.TOOL_QUERY_MAX_ROUNDS:
+                    result["summary"] = "The model kept searching without proposing changes."
+                    break
+                inspect_context = tuple(inspect_context) + (core.run_tool_query(root, outcome, secrets=secrets),)
+                if not (args.quiet or args.json):
+                    print(f"\n> {outcome.label()}", file=sys.stderr)
+                continue
             if isinstance(outcome, core.InspectRequest):
                 decision = _approval.auto_decision(mode, "inspect", rules, outcome.paths)
-                if decision != "allow" or round_number >= args.max_rounds:
+                if decision != "allow" or round_number - tool_rounds >= args.max_rounds:
                     result["summary"] = f"Model wants to read {', '.join(outcome.paths)}; rerun with --approval full-auto."
                     break
                 inspect_context, _status = core.collect_inspect_files(root, outcome.paths, secrets=secrets)

@@ -279,6 +279,32 @@ class ExecutorExtensionTests(unittest.TestCase):
             core.GENERATION_SETTINGS.update(saved)
 
 
+class ToolQueryTests(unittest.TestCase):
+    def setUp(self):
+        import CodeRouter as core
+
+        self.core = core
+
+    def test_parse_and_run_search_and_list(self):
+        core = self.core
+        query = core.parse_executor_response(json.dumps({"action": "search", "pattern": "def (\\w+)", "glob": "*.py"}))
+        self.assertEqual(query, core.ToolQuery("search", pattern="def (\\w+)", glob="*.py"))
+        with self.assertRaises(ValueError):
+            core.parse_executor_response(json.dumps({"action": "list", "path": "../up"}))
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "src").mkdir()
+            Path(root, "src", "a.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+            Path(root, "secrets.txt").write_text("def hidden():", encoding="utf-8")
+            Path(root, "node_modules").mkdir()
+            Path(root, "node_modules", "b.py").write_text("def beta():", encoding="utf-8")
+            found = core.run_tool_query(root, query)
+            self.assertEqual(found.content, "src/a.py:1: def alpha():")
+            listing = core.run_tool_query(root, core.parse_executor_response(json.dumps({"action": "list", "path": ""})))
+            self.assertEqual(listing.content.splitlines(), ["src/"])
+            literal = core.run_tool_query(root, core.ToolQuery("search", pattern="alpha(("))
+            self.assertIn("(no matches)", literal.content)
+
+
 class ExecCliTests(unittest.TestCase):
     def setUp(self):
         import CodeRouter as core
@@ -322,6 +348,15 @@ class ExecCliTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(json.loads(out)["plan"]["summary"], "p")
 
+    def test_exec_tool_query_then_final(self):
+        search = json.dumps({"action": "search", "pattern": "x ="})
+        final = json.dumps({"action": "final", "summary": "Found it", "files": []})
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.py").write_text("x = 1\n", encoding="utf-8")
+            code, out, _err = self.run_cli(["exec", "-C", root, "--no-plan", "--json", "find x"], [search, final])
+            self.assertEqual(code, 0, out)
+            self.assertEqual(json.loads(out)["summary"], "Found it")
+
     def test_exec_requires_key_and_prompt(self):
         with tempfile.TemporaryDirectory() as root:
             code, _out, err = self.run_cli(["exec", "-C", root], [], env_key="")
@@ -330,3 +365,42 @@ class ExecCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerToolLoopTests(unittest.TestCase):
+    def test_worker_runs_tool_queries_then_proposes(self):
+        import queue as queue_module
+        import CodeRouter as core
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.py").write_text("x = 1\n", encoding="utf-8")
+
+            class Host:
+                api_key = "worker-key-123456"
+                work_queue = queue_module.Queue()
+                lifecycle = core.RunLifecycle()
+
+                def _run_is_current(self, run_id):
+                    return self.lifecycle.accepts(run_id)
+
+            host = Host()
+            snapshot = core.create_run_snapshot(root, (), (), core.APPLY_MODE_REVIEW, run_id="tool-run", request_text="t")
+            host.lifecycle.activate(snapshot)
+            final = {"action": "final", "summary": "Bump", "files": [{"path": "a.py", "content": "x = 2\n"}]}
+            calls = []
+
+            def fake_call(**kwargs):
+                calls.append(kwargs["inspect_context"])
+                return (core.ToolQuery("search", pattern="x"), "m:free") if len(calls) == 1 else (final, "m:free")
+
+            with (
+                mock.patch.object(core, "build_free_model_queue", return_value=([], None)),
+                mock.patch.object(core, "call_openrouter_with_fallback", side_effect=fake_call),
+            ):
+                core.CodeAgentApp._run_agent_worker(host, snapshot, "t", None, True)
+            kinds = []
+            while not host.work_queue.empty():
+                kinds.append(host.work_queue.get_nowait().kind)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][0].content, "a.py:1: x = 1")
+            self.assertIn("proposal", kinds)
