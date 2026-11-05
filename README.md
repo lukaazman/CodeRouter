@@ -61,6 +61,8 @@ python -m unittest discover -s tests
 - Output style, reasoning effort and temperature per user; image attach for vision models
 - Token and context meter (cost is always $0)
 - Profiles: named setting sets in `"profiles"` switched with `/profile <name>`
+- `"test_after_apply": true` runs the detected (or `"test_command"`) tests after each apply when an allow rule or Full auto permits it
+- `"statusline_command": ["python", "tools/status.py"]` shows the first output line in the status bar (JSON context on stdin, every 10 s)
 - Headless `exec` mode for scripts and CI
 - Local history and redacted task reports
 

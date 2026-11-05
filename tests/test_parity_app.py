@@ -445,6 +445,13 @@ class ParityAppTests(unittest.TestCase):
         self.assertTrue(self.app.run_slash_command("/test after-apply on")[1])
         self.assertTrue(self.app.config_data["test_after_apply"])
 
+    def test_custom_statusline(self):
+        import sys as _sys
+
+        self.app.config_data["statusline_command"] = [_sys.executable, "-c", "import sys, json; print('proj:' + str(json.load(sys.stdin)['approval']))"]
+        self.app._start_statusline()
+        self.assertTrue(self._pump(lambda: self.app._statusline_label.cget("text") == "proj:suggest"))
+
 
 if __name__ == "__main__":
     unittest.main()

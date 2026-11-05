@@ -5330,7 +5330,7 @@ class CodeAgentApp(tk.Tk):
         animator = getattr(self, "animator", None)
         if animator is not None:
             animator.close()
-        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id", "_toast_after_id", "_git_refresh_after_id"):
+        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id", "_toast_after_id", "_git_refresh_after_id", "_statusline_after_id"):
             after_id = getattr(self, name, None)
             setattr(self, name, None)
             if after_id is not None:
@@ -10765,6 +10765,10 @@ class CodeAgentApp(tk.Tk):
                 self._finish_answer(payload)
             elif kind == "models":
                 self._show_output(payload)
+            elif kind == "statusline":
+                label = getattr(self, "_statusline_label", None)
+                if label is not None:
+                    label.configure(text=self._redact_sensitive(payload))
             elif kind == "fetched":
                 self._finish_fetch(payload)
             elif kind == "mcp":
@@ -12241,6 +12245,43 @@ class CodeAgentApp(tk.Tk):
         self._attach_tooltip(meter, "Context window used by the last prompt")
         self._refresh_status_strip()
 
+    STATUSLINE_INTERVAL_MS = 10_000
+
+    def _start_statusline(self):
+        argv = self.config_data.get("statusline_command")
+        if isinstance(argv, str):
+            argv = argv.split()
+        if not isinstance(argv, list) or not argv or _hooks.hook_problem(argv):
+            return
+        self._statusline_argv = [str(part) for part in argv]
+        self._statusline_label = tk.Label(self.status_strip, text="", bg=PALETTE["canvas"], fg=PALETTE["text_muted"],
+                                          font=FONTS["small"], padx=self._px(6))
+        self._statusline_label.pack(side=tk.LEFT)
+        self._tick_statusline()
+
+    def _tick_statusline(self):
+        if self.lifecycle.closed:
+            return
+        folder = self.selected_folder.get().strip() or None
+        argv = self._statusline_argv
+        payload = json.dumps({"project": folder, "state": TASK_STATE_LABELS.get(self.task_state, ""),
+                              "approval": self.approval_mode_value, "model": self.usage_meter.last_model})
+
+        def work():
+            try:
+                completed = subprocess.run(argv, input=payload, capture_output=True, text=True, timeout=5,
+                                           cwd=folder, env=build_verification_environment(), shell=False)
+                text = (completed.stdout or "").strip().splitlines()[0][:120] if completed.stdout.strip() else ""
+            except (OSError, subprocess.TimeoutExpired, IndexError):
+                text = ""
+            self._parity_queue.put(("statusline", text))
+
+        threading.Thread(target=work, daemon=True).start()
+        try:
+            self._statusline_after_id = self.after(self.STATUSLINE_INTERVAL_MS, self._tick_statusline)
+        except tk.TclError:
+            pass
+
     def _cycle_approval_mode(self, _event=None):
         modes = _approval.APPROVAL_MODES
         current = modes.index(self.approval_mode_value)
@@ -12692,6 +12733,7 @@ class CodeAgentApp(tk.Tk):
             pass
         self._style_transcript()
         self._build_status_strip()
+        self._start_statusline()
         self._build_composer_suggestions()
         self._build_agent_preferences()
         self._build_command_palette()
