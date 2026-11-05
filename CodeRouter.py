@@ -12,8 +12,16 @@ import subprocess
 import tempfile
 import threading
 import time
-import tkinter as tk
-import tkinter.font as tkfont
+try:
+    import tkinter as tk
+    import tkinter.font as tkfont
+    from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+    TK_AVAILABLE = True
+except ImportError:  # headless: exec, ask and commands still work
+    from headless_tk import filedialog, messagebox, scrolledtext, tk, tkfont, ttk
+
+    TK_AVAILABLE = False
 import uuid
 import urllib.parse
 import webbrowser
@@ -22,7 +30,6 @@ import secrets as secrets_module
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PureWindowsPath
-from tkinter import filedialog, messagebox, scrolledtext, ttk
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -16093,6 +16100,8 @@ def main(argv=None):
         import cli
 
         raise SystemExit(cli.main(["open", *argv], sys.modules[__name__]))
+    if not TK_AVAILABLE:
+        raise SystemExit("Tkinter is missing (install python3-tk). Headless commands: exec, ask, commands.")
     launch_window()
 
 

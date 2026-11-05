@@ -90,7 +90,7 @@ python CodeRouter.py "add a health check endpoint"
 
 Without a subcommand, arguments open the window: `-C <folder>` opens a project, `--resume` restores its latest conversation, and any text is put in the composer.
 
-Suggest mode prints the diff and exits with code 3 when changes are not applied; `--yes` or `--approval auto-edit` writes them. It needs Tkinter installed but no display.
+Suggest mode prints the diff and exits with code 3 when changes are not applied; `--yes` or `--approval auto-edit` writes them. `exec`, `ask` and `commands` work without a display and even without Tkinter (servers, CI).
 
 ## Configuration
 

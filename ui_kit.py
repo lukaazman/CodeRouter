@@ -11,7 +11,10 @@ import json
 import math
 import os
 import time
-import tkinter as tk
+try:
+    import tkinter as tk
+except ImportError:  # headless use of the pure helpers
+    from headless_tk import tk
 
 
 def hex_to_rgb(value):
