@@ -482,6 +482,11 @@ class ParityAppTests(unittest.TestCase):
         self.assertNotIn("abc123secret", note)
         self.assertIn("y = 2", note)
 
+    def test_custom_keybindings(self):
+        self.app.config_data["keybindings"] = {"palette": "<Control-F12>", "bogus": "<F3>", "stop": "nope"}
+        self.assertEqual(self.app._apply_keybindings(), ["palette"])
+        self.assertTrue(self.app.bind_all("<Control-F12>"))
+
 
 if __name__ == "__main__":
     unittest.main()

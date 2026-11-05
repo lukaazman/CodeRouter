@@ -12953,6 +12953,7 @@ class CodeAgentApp(tk.Tk):
                 except tk.TclError:
                     pass
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
+        self._apply_keybindings()
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
         try:
             self.bind_all("<ISO_Left_Tab>", self._on_shift_tab, add="+")  # X11 reports Shift+Tab this way
@@ -13094,6 +13095,43 @@ class CodeAgentApp(tk.Tk):
             return "break"
         self._show_command_result(self.run_slash_command(f"/{command.name}"))
         return "break"
+
+    KEYBINDING_ACTIONS = {
+        "palette": "open_command_palette",
+        "run": "_on_run_shortcut",
+        "new_chat": "_on_clear_shortcut",
+        "approval_mode": "_cycle_approval_mode",
+        "command_field": "_on_local_command_shortcut",
+        "stop": "_keybinding_stop",
+        "settings": "_keybinding_settings",
+        "focus_prompt": "_keybinding_focus_prompt",
+    }
+
+    def _apply_keybindings(self):
+        """Extra shortcuts from config: {"keybindings": {"palette": "<Control-space>"}}."""
+        bindings = self.config_data.get("keybindings") or {}
+        applied = []
+        for action, sequence in bindings.items() if isinstance(bindings, dict) else ():
+            method = self.KEYBINDING_ACTIONS.get(action)
+            if not method or not isinstance(sequence, str) or not sequence.startswith("<"):
+                continue
+            handler = getattr(self, method)
+            try:
+                self.bind_all(sequence, lambda event, h=handler: (h(event), "break")[1], add="+")
+                applied.append(action)
+            except tk.TclError:
+                self.log(f"! keybinding {action}: invalid sequence {sequence}")
+        return applied
+
+    def _keybinding_stop(self, _event=None):
+        if self._run_in_progress():
+            self.cancel_active_run()
+
+    def _keybinding_settings(self, _event=None):
+        self._show_utility_view("settings")
+
+    def _keybinding_focus_prompt(self, _event=None):
+        self.instructions.focus_set()
 
     def _on_clear_shortcut(self, _event=None):
         if not self._run_in_progress():
