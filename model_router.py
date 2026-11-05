@@ -299,7 +299,6 @@ def classify_prompt_category(prompt):
 
 
 def explain_prompt_category(prompt):
-    scores = score_prompt_categories(prompt)
     category = classify_prompt_category(prompt)
     signals = [
         term

@@ -3,5 +3,34 @@
   "last_folder": "",
   "extra_context_files": [],
   "model_selection_mode": "auto",
-  "model_override": ""
+  "model_override": "",
+  "approval_mode": "suggest",
+  "plan_gate": true,
+  "style": "default",
+  "reasoning_effort": "",
+  "temperature": 0.1,
+  "theme": "dark",
+  "accent": "",
+  "motion": "full",
+  "user_memory": true,
+  "permissions": {
+    "allow": ["Bash(python -m pytest*)", "Read(src/**)"],
+    "deny": ["Read(secrets/**)", "Edit(migrations/**)"]
+  },
+  "profiles": {
+    "fast": {"approval_mode": "full-auto", "plan_gate": false, "style": "concise"},
+    "careful": {"approval_mode": "suggest", "plan_gate": true, "reasoning_effort": "high"}
+  },
+  "mcp_servers": {},
+  "context_budget_tokens": 60000,
+  "auto_commit": false,
+  "sandbox": "off",
+  "notify": true,
+  "hooks": {
+    "UserPromptSubmit": [],
+    "PreToolUse": [],
+    "PreApply": [],
+    "PostApply": [["python", "-m", "pytest", "-q"]],
+    "Stop": []
+  }
 }

@@ -1,7 +1,6 @@
 import json
 import queue
 import tempfile
-import tkinter as tk
 import unittest
 from pathlib import Path
 from unittest import mock

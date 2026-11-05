@@ -12,8 +12,16 @@ import subprocess
 import tempfile
 import threading
 import time
-import tkinter as tk
-import tkinter.font as tkfont
+try:
+    import tkinter as tk
+    import tkinter.font as tkfont
+    from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+    TK_AVAILABLE = True
+except ImportError:  # headless: exec, ask and commands still work
+    from headless_tk import filedialog, messagebox, scrolledtext, tk, tkfont, ttk
+
+    TK_AVAILABLE = False
 import uuid
 import urllib.parse
 import webbrowser
@@ -22,13 +30,29 @@ import secrets as secrets_module
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PureWindowsPath
-from tkinter import filedialog, messagebox, scrolledtext, ttk
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import model_router as _model_router
 import command_suggestions as _command_suggestions
 import ui_kit
+import edit_ops as _edit_ops
+import ignore_rules as _ignore
+import extensions as _ext
+import web_fetch as _web
+import mcp_client as _mcp
+import context_budget as _budget
+import sandbox as _sandbox
+import plugins as _plugins
+import slash_commands as _slash
+import approval as _approval
+import hooks as _hooks
+import usage as _usage
+import git_tools as _git
+import sessions as _sessions
+import memory_files as _memory
+import mentions as _mentions
+import theme as _theme
 from constants import *  # noqa: F403
 from redaction import (
     SECRET_PATTERN,
@@ -86,25 +110,7 @@ WINDOW_ICON_BACKGROUND = "#080808"
 WINDOW_ICON_FOREGROUND = "#f3f3f3"
 
 
-PALETTE = {
-    "canvas": "#0f0f11",
-    "surface": "#0f0f11",
-    "surface_alt": "#17171a",
-    "surface_raised": "#1f1f23",
-    "terminal": "#131316",
-    "border": "#232327",
-    "border_strong": "#34343a",
-    "text": "#ececf0",
-    "text_muted": "#a0a0aa",
-    "text_subtle": "#71717b",
-    "accent": "#9dbdff",
-    "accent_active": "#bdd2ff",
-    "accent_ink": "#0f1726",
-    "success": "#7fcf9c",
-    "warning": "#e6bd75",
-    "danger": "#ec8b95",
-    "focus": "#9dbdff",
-}
+PALETTE = dict(_theme.DARK)
 
 TASK_STATE_COLORS = {
     TASK_STATE_IDLE: PALETTE["text_muted"],
@@ -131,10 +137,35 @@ FONTS = {
 
 # Preferred faces when installed; Segoe UI / Consolas stay the fallback.
 FONT_PREFERENCES = {
-    "sans": ("Segoe UI Variable Text", "Segoe UI"),
-    "display": ("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI"),
-    "mono": ("Cascadia Mono", "Consolas"),
+    "sans": ("Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "IBM Plex Sans",
+             "Noto Sans", "Cantarell", "Ubuntu", "Inter", "DejaVu Sans", "Segoe UI"),
+    "display": ("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", "SF Pro Display",
+                "Helvetica Neue", "IBM Plex Sans", "Noto Sans", "Cantarell", "Ubuntu", "Inter Display", "Inter",
+                "DejaVu Sans", "Segoe UI"),
+    "mono": ("Cascadia Mono", "Cascadia Code", "SF Mono", "JetBrains Mono", "Menlo", "IBM Plex Mono",
+             "Noto Sans Mono", "DejaVu Sans Mono", "Consolas"),
 }
+
+DIFF_TONES = _theme.diff_tones_for("dark")
+
+
+def apply_theme_tokens(theme_name, accent=None):
+    """Swap palette tokens in place so every module-level reference updates."""
+    PALETTE.update(_theme.with_accent(_theme.palette_for(theme_name), accent))
+    DIFF_TONES.update(_theme.diff_tones_for(theme_name))
+    TASK_STATE_COLORS.update({
+        TASK_STATE_IDLE: PALETTE["text_muted"],
+        TASK_STATE_COLLECTING: PALETTE["warning"],
+        TASK_STATE_PLANNING: PALETTE["accent"],
+        TASK_STATE_PLAN: PALETTE["warning"],
+        TASK_STATE_RUNNING: PALETTE["accent"],
+        TASK_STATE_REVIEW: PALETTE["warning"],
+        TASK_STATE_APPLIED: PALETTE["success"],
+        TASK_STATE_REJECTED: PALETTE["danger"],
+        TASK_STATE_ERROR: PALETTE["danger"],
+    })
+    return _theme.resolve_theme(theme_name)
+
 
 SPACING = {
     "page": 18,
@@ -2367,6 +2398,8 @@ class CodeAgentApp(tk.Tk):
     def __init__(self, history_path=None, overseer_adapter=None):
         super().__init__()
         self.withdraw()
+        early_config = load_local_config()
+        self.theme_name = apply_theme_tokens(early_config.get("theme", "dark"), early_config.get("accent"))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.title(APP_TITLE)
         self.geometry("1440x900")
@@ -2375,7 +2408,9 @@ class CodeAgentApp(tk.Tk):
         self._configure_typography()
         self._ui_scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
         self.animator = ui_kit.Animator(self)
-        self.icons = ui_kit.IconFactory(self, self._ui_scale)
+        from history import user_data_dir
+
+        self.icons = ui_kit.IconFactory(self, self._ui_scale, cache_path=str(user_data_dir() / "icon-cache.json"))
         self._ui_heartbeat_after_id = None
         self._setup_window_icon()
 
@@ -2502,8 +2537,6 @@ class CodeAgentApp(tk.Tk):
         self._overseer_next_step_run_started = False
         self._overseer_consumed_handoff_run_id = None
         self._overseer_continuation_parent_run_id = None
-        self.pulse_step = 0
-        self.animated_buttons = []
         self._poll_after_id = None
         self._command_palette_destroyed = False
         self._tooltips = []
@@ -2530,8 +2563,11 @@ class CodeAgentApp(tk.Tk):
         self._workbench_scroll_sync_after_id = None
         self._workbench_scroll_syncing = False
 
+        self._parity_queue = queue.Queue()
+        self._init_parity_state()
         self._build_styles()
         self._build_ui()
+        self._finish_parity_ui()
         self._set_local_command_disclosure(False)
         self._refresh_history_browser()
         self.set_task_state(TASK_STATE_IDLE, "Ready")
@@ -2627,13 +2663,13 @@ class CodeAgentApp(tk.Tk):
         sans, display, mono = pick("sans"), pick("display"), pick("mono")
         FONTS.update(
             {
-                "title": (display, 17, "bold"),
+                "title": (display, 17, "normal"),
                 "section": (sans, 9, "bold"),
                 "body": (sans, 10),
                 "body_bold": (sans, 10, "bold"),
                 "mono": (mono, 10),
                 "mono_small": (mono, 9),
-                "display": (display, 20, "bold"),
+                "display": (display, 24, "normal"),
                 "small": (sans, 9),
             }
         )
@@ -2803,7 +2839,7 @@ class CodeAgentApp(tk.Tk):
         self.local_command_detail = tk.Frame(toolbar, bg=PALETTE["canvas"])
         self.local_command_detail.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.local_command_detail.columnconfigure(1, weight=1)
-        ttk.Label(self.local_command_detail, text="COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.local_command_detail, text="Command", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         self.local_command_entry = ttk.Entry(
             self.local_command_detail,
             textvariable=self.local_command,
@@ -3043,7 +3079,7 @@ class CodeAgentApp(tk.Tk):
         self.context_clear_button.grid(row=1, column=0, sticky="ew", pady=(0, SPACING["control"]))
         ttk.Label(context_controls, textvariable=self.extra_context_count, style="PanelMuted.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=6, column=0, sticky="ew", pady=(2, 14))
-        ttk.Label(sidebar, text="APPLY POLICY", style="Section.TLabel").grid(row=7, column=0, sticky="w")
+        ttk.Label(sidebar, text="Apply policy", style="Section.TLabel").grid(row=7, column=0, sticky="w")
         self.review_mode_button = ttk.Radiobutton(sidebar, text="Review", variable=self.apply_mode, value=APPLY_MODE_REVIEW, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
         self.review_mode_button.grid(row=8, column=0, sticky="w", pady=(SPACING["section"], 3))
         self.auto_mode_button = ttk.Radiobutton(sidebar, text="Auto", variable=self.apply_mode, value=APPLY_MODE_AUTO, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
@@ -3070,7 +3106,7 @@ class CodeAgentApp(tk.Tk):
             textvariable=self.trust_settings_detail_text,
             bg=PALETTE["surface"],
             fg=PALETTE["text_muted"],
-            font=FONTS["mono_small"],
+            font=FONTS["small"],
             justify=tk.LEFT,
             anchor="w",
             wraplength=235,
@@ -3086,7 +3122,7 @@ class CodeAgentApp(tk.Tk):
         )
         self.openrouter_connect_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.openrouter_connect_button.grid_remove()
-        ttk.Label(sidebar, text="ACTIONS", style="Section.TLabel").grid(row=12, column=0, sticky="w")
+        ttk.Label(sidebar, text="Actions", style="Section.TLabel").grid(row=12, column=0, sticky="w")
         self.run_button = self._button(sidebar, "Run chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
         self.run_button.grid(row=13, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
         self.scan_button = self._button(sidebar, "Scan", self.scan_folder, "Secondary.TButton", "Rescan project files")
@@ -3094,7 +3130,7 @@ class CodeAgentApp(tk.Tk):
         self.new_chat_button = self._button(sidebar, "New chat", self.reset_session, "Secondary.TButton", "Clear conversation memory")
         self.new_chat_button.grid(row=15, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=16, column=0, sticky="ew", pady=(14, 14))
-        ttk.Label(sidebar, text="SNAPSHOT", style="Section.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Label(sidebar, text="Snapshot", style="Section.TLabel").grid(row=17, column=0, sticky="w")
         stats = tk.Frame(sidebar, bg=PALETTE["surface_alt"], padx=8, pady=8, highlightthickness=1, highlightbackground=PALETTE["border"])
         stats.grid(row=18, column=0, sticky="ew", pady=(SPACING["section"], 0))
         self.snapshot_stats = stats
@@ -3313,8 +3349,8 @@ class CodeAgentApp(tk.Tk):
             activity_meta,
             textvariable=self.activity_digest,
             bg=PALETTE["surface"],
-            fg=PALETTE["text_muted"],
-            font=FONTS["mono_small"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["small"],
             anchor="w",
             justify=tk.LEFT,
             wraplength=720,
@@ -3348,7 +3384,7 @@ class CodeAgentApp(tk.Tk):
         self.task_tools_disclosure_button.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         plan_panel = tk.Frame(right, bg=PALETTE["surface"])
         plan_panel.grid(row=3, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(plan_panel, text="PLAN", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(plan_panel, text="Plan", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.plan_preview = scrolledtext.ScrolledText(
             plan_panel,
             height=5,
@@ -3372,7 +3408,7 @@ class CodeAgentApp(tk.Tk):
         list_panel.columnconfigure(0, weight=1)
         list_panel.rowconfigure(0, weight=1)
         self.edited_files = ttk.Treeview(list_panel, columns=("status", "lines"), show="headings", selectmode="extended")
-        self.edited_files.heading("status", text="FILE")
+        self.edited_files.heading("status", text="File")
         self.edited_files.heading("lines", text="+/-")
         self.edited_files.column("status", width=310, anchor="w")
         self.edited_files.column("lines", width=70, anchor="e")
@@ -3395,8 +3431,8 @@ class CodeAgentApp(tk.Tk):
         diff_panel.rowconfigure(0, weight=1)
         self.diff = scrolledtext.ScrolledText(diff_panel, wrap=tk.NONE, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["text"])
         self.diff.grid(row=0, column=0, sticky="nsew")
-        self.diff.tag_configure("add", foreground=PALETTE["success"], background="#1b3325")
-        self.diff.tag_configure("del", foreground=PALETTE["danger"], background="#3a2025")
+        self.diff.tag_configure("add", foreground=DIFF_TONES["add_fg"], background=DIFF_TONES["add_bg"])
+        self.diff.tag_configure("del", foreground=DIFF_TONES["del_fg"], background=DIFF_TONES["del_bg"])
         self.diff.tag_configure("file", foreground=PALETTE["accent"], font=FONTS["body_bold"])
         self.diff.tag_configure("meta", foreground=PALETTE["text_subtle"])
         self.review_diff_pane.add(diff_panel, weight=2)
@@ -3429,7 +3465,7 @@ class CodeAgentApp(tk.Tk):
         inspect_panel = tk.Frame(right, bg=PALETTE["surface"])
         inspect_panel.grid(row=6, column=0, sticky="ew", pady=(0, 10))
         inspect_panel.columnconfigure(0, weight=1)
-        ttk.Label(inspect_panel, text="INSPECT REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(inspect_panel, text="Read request", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.inspect_preview = scrolledtext.ScrolledText(
             inspect_panel,
             height=3,
@@ -3470,7 +3506,7 @@ class CodeAgentApp(tk.Tk):
         verify_panel = tk.Frame(right, bg=PALETTE["surface"])
         verify_panel.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         verify_panel.columnconfigure(0, weight=1)
-        ttk.Label(verify_panel, text="VERIFY REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(verify_panel, text="Command request", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.verification_request_preview = scrolledtext.ScrolledText(
             verify_panel,
             height=2,
@@ -3550,7 +3586,7 @@ class CodeAgentApp(tk.Tk):
         handoff_panel = tk.Frame(right, bg=PALETTE["surface"])
         handoff_panel.grid(row=9, column=0, sticky="ew", pady=(12, 0))
         handoff_panel.columnconfigure(0, weight=1)
-        ttk.Label(handoff_panel, text="EXECUTOR → OVERSEER", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(handoff_panel, text="Second opinion", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.handoff_preview = scrolledtext.ScrolledText(
             handoff_panel,
             height=5,
@@ -3878,7 +3914,7 @@ class CodeAgentApp(tk.Tk):
             text='●',
             bg=PALETTE['canvas'],
             fg=TASK_STATE_COLORS[TASK_STATE_IDLE],
-            font=('Segoe UI', 11),
+            font=(FONTS['body'][0], 11),
         )
         self.rail_state_marker.grid(row=10, column=0, pady=(10, 2))
         self.rail_folder_label = tk.Label(
@@ -3990,7 +4026,7 @@ class CodeAgentApp(tk.Tk):
             if isinstance(widget, ttk.Label):
                 label = widget.cget('text')
                 if label == 'CHAT':
-                    widget.configure(text='Conversation', font=('Segoe UI', 15, 'bold'), foreground=PALETTE['text'])
+                    widget.configure(text='Conversation', font=(FONTS['body'][0], 15, 'bold'), foreground=PALETTE['text'])
                 elif label == 'Prompt':
                     widget.grid_configure(row=3, pady=(18, 0))
                     widget.configure(text='Your task')
@@ -4000,8 +4036,8 @@ class CodeAgentApp(tk.Tk):
         center.rowconfigure(5, weight=0)
         self.summary.grid_configure(row=2, pady=(16, 4))
         self.instructions.grid_configure(row=5, pady=(8, 0))
-        self.instructions.configure(height=5, font=('Segoe UI', 11), highlightbackground=PALETTE['surface_alt'])
-        self.summary.configure(height=9, bg=PALETTE['surface'], highlightthickness=0, font=('Segoe UI', 11), padx=2, pady=8)
+        self.instructions.configure(height=5, font=(FONTS['body'][0], 11), highlightbackground=PALETTE['surface_alt'])
+        self.summary.configure(height=9, bg=PALETTE['surface'], highlightthickness=0, font=(FONTS['body'][0], 11), padx=2, pady=8)
         self.composer_run_button.master.grid_configure(row=9, pady=(12, 0))
         self.composer_run_button.configure(text='Run task  →')
         for widget in self.composer_run_button.master.winfo_children():
@@ -4095,6 +4131,8 @@ class CodeAgentApp(tk.Tk):
         self._overhaul_drawer()
         self._overhaul_text_surfaces()
         self.bind("<Configure>", self._on_window_configure, add="+")
+        # The first Configure can arrive before the window is mapped.
+        self.bind("<Map>", lambda event: event.widget is self and self.after_idle(self._apply_breakpoints), add="+")
         self._overhaul_ready = True
         self._sync_chrome()
         self._sync_empty_state()
@@ -4191,6 +4229,7 @@ class CodeAgentApp(tk.Tk):
             key,
             duration,
             lambda t: widget.configure(**{option: ui_kit.mix(start, target, t)}),
+            easing=ui_kit.EASE_UI,
         )
 
     def _make_clickable(self, widget, command, icon_labels=(), hint=None, border=True):
@@ -4201,7 +4240,8 @@ class CodeAgentApp(tk.Tk):
         def hover(active):
             if border:
                 self._tween_color(("hover", str(widget)), widget, "highlightbackground",
-                                  c["border_strong"] if active else c["border"])
+                                  c["border_strong"] if active else c["border"],
+                                  ui_kit.DURATION["hover_in"] if active else ui_kit.DURATION["hover_out"])
             for label, (name, size, color) in icon_labels:
                 label.configure(image=self._icon(name, size, c["accent"] if active else color, label.cget("bg")))
 
@@ -4256,9 +4296,9 @@ class CodeAgentApp(tk.Tk):
         chevron.pack(side=tk.LEFT, padx=(self._px(6), 0))
         self._make_clickable(
             chip,
-            self.choose_folder,
+            lambda: self._open_project_menu(chip),
             icon_labels=((self.project_chip_icon, ("folder", 16, c["text_muted"])),),
-            hint="Open a project folder",
+            hint="Switch project · recent folders",
         )
 
         rail = self.workflow_rail
@@ -4286,7 +4326,7 @@ class CodeAgentApp(tk.Tk):
             cursor="hand2",
         )
         self._attach_tooltip(model_button, "Model queue · free models ranked for this prompt")
-        self.workflow_model_value.configure(fg=c["text_muted"], font=FONTS["mono_small"], wraplength=0, cursor="hand2")
+        self.workflow_model_value.configure(fg=c["text_muted"], font=FONTS["small"], wraplength=0, cursor="hand2")
         self.workflow_model_value.grid_configure(padx=(self._px(4), self._px(12)))
         self.workflow_model_value.bind("<ButtonRelease-1>", lambda _event: self._toggle_model_queue_disclosure(), add="+")
         self.workflow_model_detail.configure(fg=c["text_muted"])
@@ -4321,6 +4361,7 @@ class CodeAgentApp(tk.Tk):
         chip.grid_configure(row=0, column=3, sticky="e", padx=(0, self._px(12)))
         chip.bind("<ButtonRelease-1>", lambda _event: self._show_utility_view("settings"), add="+")
         self._attach_tooltip(chip, "Apply policy · open settings")
+        chip.grid_remove()  # The composer status strip shows the approval mode.
 
         status_frame = self.state_marker.master
         status_frame.grid_configure(row=0, column=4, rowspan=1, sticky="e")
@@ -4402,7 +4443,10 @@ class CodeAgentApp(tk.Tk):
         text_color = TASK_STATE_COLORS.get(state, c["text_muted"])
         text_x = last + self._px(14)
         canvas.create_text(text_x, mid, text=label, anchor="w", fill=text_color, font=FONTS["body_bold"])
-        width = text_x + tkfont.Font(font=FONTS["body_bold"]).measure(label) + self._px(4)
+        measure = getattr(self, "_stepper_font", None)
+        if measure is None:
+            measure = self._stepper_font = tkfont.Font(font=FONTS["body_bold"])
+        width = text_x + measure.measure(label) + self._px(4)
         if int(canvas.cget("width")) != width:
             canvas.configure(width=width)
 
@@ -4419,17 +4463,26 @@ class CodeAgentApp(tk.Tk):
             self._stepper_progress = start + (target - start) * t
             self._draw_stepper()
 
-        self.animator.tween("stepper", 0.32, apply)
+        self.animator.tween("stepper", ui_kit.DURATION["enter"], apply, easing=ui_kit.EASE_UI)
 
     def _pulse_step(self, elapsed):
         if not self._ui_busy or self.lifecycle.closed:
+            try:
+                self.summary.tag_configure("live_bar", foreground=PALETTE["accent"])
+            except tk.TclError:
+                pass
             self._stepper_pulse = 0.0
             self._draw_stepper()
             self._paint_state_marker(0.0)
             return False
-        self._stepper_pulse = ui_kit.pulse(elapsed, 1.6)
+        # Quantised so the cached dot images stay bounded.
+        self._stepper_pulse = round(ui_kit.pulse(elapsed, 1.6) * 12) / 12
         self._draw_stepper()
         self._paint_state_marker(self._stepper_pulse)
+        try:
+            self.summary.tag_configure("live_bar", foreground=ui_kit.mix(PALETTE["accent"], PALETTE["canvas"], 0.65 * self._stepper_pulse))
+        except tk.TclError:
+            pass
         return None
 
     def _paint_state_marker(self, amount):
@@ -4500,6 +4553,8 @@ class CodeAgentApp(tk.Tk):
             )
             button.bind("<Enter>", lambda _event, n=name: self._rail_hover(n, True), add="+")
             button.bind("<Leave>", lambda _event, n=name: self._rail_hover(n, False), add="+")
+            # Buttons below the flexible row move when the rail resizes.
+            button.bind("<Configure>", lambda _event, n=name: n == self._utility_drawer_view and self._move_rail_indicator(animate=False), add="+")
         self.new_chat_rail_button.configure(text="")
         self._set_button_icon(
             self.new_chat_rail_button, "plus", 20, c["text_muted"], c["canvas"], c["surface_raised"],
@@ -4569,7 +4624,7 @@ class CodeAgentApp(tk.Tk):
             indicator.place(x=0, y=y, width=2, height=height)
             self._rail_indicator_y = y
 
-        self.animator.tween("rail-indicator", 0.2, apply)
+        self.animator.tween("rail-indicator", ui_kit.DURATION["indicator"], apply, easing=ui_kit.EASE_UI)
 
     def _animate_drawer_open(self):
         sidebar = getattr(self, "_legacy_sidebar", None)
@@ -4590,8 +4645,9 @@ class CodeAgentApp(tk.Tk):
         def done():
             sidebar.grid_propagate(True)
             self._queue_workbench_scroll_sync()
+            self._move_rail_indicator()
 
-        self.animator.tween("drawer", 0.2, apply, done=done)
+        self.animator.tween("drawer", ui_kit.DURATION["panel"], apply, easing=ui_kit.EASE_UI, done=done)
 
     # Conversation + composer ---------------------------------------------------
 
@@ -4638,8 +4694,9 @@ class CodeAgentApp(tk.Tk):
         self.prompt_placeholder.bind("<Button-1>", lambda _event: self.instructions.focus_set())
         for sequence in ("<KeyRelease>", "<<Modified>>", "<FocusIn>", "<FocusOut>"):
             self.instructions.bind(sequence, lambda _event: self._sync_prompt_placeholder(), add="+")
-        self.instructions.bind("<FocusIn>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border_strong"]), add="+")
-        self.instructions.bind("<FocusOut>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border"]), add="+")
+        focus_ring = ui_kit.mix(c["border_strong"], c["accent"], 0.55)
+        self.instructions.bind("<FocusIn>", lambda _event: self._tween_color("card", card, "highlightbackground", focus_ring, ui_kit.DURATION["hover_in"]), add="+")
+        self.instructions.bind("<FocusOut>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border"], ui_kit.DURATION["hover_out"]), add="+")
 
         composer_actions.configure(bg=c["surface_alt"], padx=self._px(8), pady=self._px(8))
         for column in range(8):
@@ -4710,7 +4767,8 @@ class CodeAgentApp(tk.Tk):
         self.router_canvas = tk.Canvas(inner, width=self._px(340), height=self._px(116), bg=c["canvas"], highlightthickness=0)
         self.router_canvas.pack()
         self._draw_router_graphic()
-        tk.Label(inner, text="What should we build?", bg=c["canvas"], fg=c["text"], font=FONTS["display"]).pack(pady=(self._px(20), self._px(6)))
+        self.empty_heading = tk.Label(inner, text="What should we build?", bg=c["canvas"], fg=c["text"], font=FONTS["display"])
+        self.empty_heading.pack(pady=(self._px(20), self._px(6)))
 
         project = tk.Frame(inner, bg=c["canvas"], padx=self._px(8), pady=self._px(3))
         project.pack()
@@ -4724,23 +4782,103 @@ class CodeAgentApp(tk.Tk):
             border=False,
         )
 
+        self.empty_hint_label = tk.Label(
+            inner, text="Type / for commands, @ to mention a file, ? to ask, # to remember",
+            bg=c["canvas"], fg=c["text_subtle"], font=FONTS["small"],
+        )
+        self.empty_hint_label.pack(pady=(self._px(4), 0))
         tiles = tk.Frame(inner, bg=c["canvas"])
-        tiles.pack(pady=(self._px(22), 0))
+        tiles.pack(pady=(self._px(20), 0))
         self.empty_tiles_frame = tiles
         self._empty_tiles = []
-        for icon, label, prefix in self.PROMPT_STARTERS:
+        self._empty_tile_parts = []
+        self._starter_actions = list(self.PROMPT_STARTERS)
+        self._starter_signature = None
+        for index, (icon, label, _prefix) in enumerate(self.PROMPT_STARTERS):
             tile = tk.Frame(tiles, bg=c["canvas"], padx=self._px(14), pady=self._px(12))
             icon_label = tk.Label(tile, image=self._icon(icon, 18, c["text_muted"]), bg=c["canvas"])
             icon_label.pack(anchor="w")
-            tk.Label(tile, text=label, bg=c["canvas"], fg=c["text"], font=FONTS["body"]).pack(anchor="w", pady=(self._px(10), 0))
+            text_label = tk.Label(tile, text=label, bg=c["canvas"], fg=c["text"], font=FONTS["body"])
+            text_label.pack(anchor="w", pady=(self._px(10), 0))
+            icon_spec = [icon, 18, c["text_muted"]]
             self._make_clickable(
-                tile, lambda value=prefix: self._prefill_prompt(value),
-                icon_labels=((icon_label, (icon, 18, c["text_muted"])),),
+                tile, lambda i=index: self._run_starter(i),
+                icon_labels=((icon_label, icon_spec),),
             )
             self._empty_tiles.append(tile)
+            self._empty_tile_parts.append((icon_label, text_label, icon_spec))
         self._empty_tile_columns = None
         self._layout_empty_tiles(4)
         hero.bind("<Configure>", self._on_empty_state_configure, add="+")
+
+    def _starter_set(self):
+        """Starters that fit the project's state: an empty screen invites the next step."""
+        folder = self.selected_folder.get().strip()
+        starters = []
+        if not self.api_key:
+            starters.append(("chip", "Connect OpenRouter", "@connect"))
+        if not folder:
+            starters.append(("folder", "Open a project", "@open"))
+            return tuple((starters + list(self.PROMPT_STARTERS[1:]))[:4])
+        status = getattr(self, "git_state", None)
+        if status is not None and status.dirty:
+            starters += [("review", "Review my changes", "/code-review"), ("check", "Commit changes", "/commit")]
+        if not (Path(folder) / PROJECT_INSTRUCTIONS_FILENAME).exists():
+            starters.append(("doc", "Write AGENTS.md", "/init"))
+        store = getattr(self, "session_store", None)
+        latest = store.latest(folder) if store is not None else None
+        if latest is not None and latest.session_id != getattr(self.conversation, "session_id", None):
+            starters.insert(0, ("history", "Resume last chat", "/resume"))
+        for starter in self.PROMPT_STARTERS:
+            if len(starters) >= 4:
+                break
+            starters.append(starter)
+        return tuple(starters[:4])
+
+    def _refresh_starters(self):
+        parts = getattr(self, "_empty_tile_parts", None)
+        if not parts:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_starters_checked_at", 0.0) < 2.0:
+            return
+        self._starters_checked_at = now
+        starters = self._starter_set()
+        if starters == self._starter_signature:
+            return
+        self._starter_signature = starters
+        self._starter_actions = list(starters)
+        c = PALETTE
+        for (icon_label, text_label, spec), (icon, label, _action) in zip(parts, starters):
+            spec[0] = icon
+            icon_label.configure(image=self._icon(icon, 18, c["text_muted"], icon_label.cget("bg")))
+            text_label.configure(text=label)
+
+    def _run_starter(self, index):
+        icon, label, action = self._starter_actions[index]
+        if action == "@open":
+            self.choose_folder()
+        elif action == "@connect":
+            self._start_openrouter_login()
+        elif action.startswith("/"):
+            self._show_command_result(self.run_slash_command(action))
+        else:
+            self._prefill_prompt(action)
+
+    def _animate_empty_entrance(self):
+        """Fade starter tiles in with a short stagger (colour only, no layout)."""
+        tiles = getattr(self, "_empty_tiles", ())
+        if not tiles or self.animator.reduce:
+            return
+        c = PALETTE
+
+        def paint(tile, t):
+            tile.configure(highlightbackground=ui_kit.mix(c["canvas"], c["border"], t))
+            for child in tile.winfo_children():
+                if isinstance(child, tk.Label) and child.cget("text"):
+                    child.configure(fg=ui_kit.mix(c["canvas"], c["text"], t))
+
+        self.animator.stagger("empty-tiles", tiles, ui_kit.DURATION["enter"], paint, each=0.05)
 
     def _layout_empty_tiles(self, columns):
         if columns == self._empty_tile_columns:
@@ -4756,6 +4894,15 @@ class CodeAgentApp(tk.Tk):
 
     def _on_empty_state_configure(self, event):
         self._layout_empty_tiles(4 if event.width >= self._px(620) else 2)
+        # Short windows drop the decorative graphic instead of clipping it.
+        compact = event.height < self._px(470 if self._empty_tile_columns == 2 else 380)
+        try:
+            if compact and self.router_canvas.winfo_manager():
+                self.router_canvas.pack_forget()
+            elif not compact and not self.router_canvas.winfo_manager():
+                self.router_canvas.pack(before=self.empty_heading)
+        except tk.TclError:
+            pass
 
     def _router_paths(self):
         s = self._px
@@ -4792,6 +4939,16 @@ class CodeAgentApp(tk.Tk):
         hero = getattr(self, "empty_state", None)
         if hero is None or self.lifecycle.closed or not hero.winfo_viewable():
             return False
+        # ~30 fps is plenty for a decorative loop; skip frames when unfocused.
+        frame = int(elapsed * 30)
+        if frame == getattr(self, "_router_last_frame", None):
+            return None
+        self._router_last_frame = frame
+        try:
+            if self.focus_displayof() is None and frame % 4:
+                return None
+        except (tk.TclError, KeyError):
+            pass
         c = PALETTE
         canvas = self.router_canvas
         period = 2.8
@@ -4829,8 +4986,11 @@ class CodeAgentApp(tk.Tk):
         try:
             text = self.summary.get("1.0", "end-1c").strip()
             empty = text in self.EMPTY_SUMMARY_TEXTS and not self.pending_plan and not self._run_in_progress()
+            if empty:
+                self._refresh_starters()
             if empty and not hero.winfo_manager():
                 hero.place(in_=self.summary.frame, relx=0, rely=0, relwidth=1, relheight=1)
+                self._animate_empty_entrance()
             elif not empty and hero.winfo_manager():
                 hero.place_forget()
                 self.animator.stop("router")
@@ -5100,8 +5260,14 @@ class CodeAgentApp(tk.Tk):
         )
         if busy != self._ui_busy:
             self._ui_busy = busy
-            if not busy:
+            if busy:
+                self._busy_started = time.monotonic()
+                self._stream_chars = 0
+                self._stream_buffer = ""
+                self._stream_preview = ""
+            else:
                 self._paint_state_marker(0.0)
+            self._refresh_status_strip()
         if busy and not self.animator.reduce:
             self.animator.loop("progress", self._progress_step)
             self.animator.loop("pulse", self._pulse_step)
@@ -5135,10 +5301,8 @@ class CodeAgentApp(tk.Tk):
                 self.workflow_model_value.grid_remove()
             self.local_command_disclosure_button.configure(compound="image" if compact else "left")
             if compact:
-                self.workflow_policy_chip.grid_remove()
                 self.status_detail_label.pack_forget()
             else:
-                self.workflow_policy_chip.grid()
                 if not self.status_detail_label.winfo_manager():
                     self.status_detail_label.pack(side=tk.LEFT)
             inspector_needed = bool(self.pending_plan or self.inspect_request or self.verification_request or self.edited_files.get_children())
@@ -5165,6 +5329,9 @@ class CodeAgentApp(tk.Tk):
             self._sync_motion()
             self._sync_prompt_placeholder()
             self._sync_empty_state()
+            if getattr(self, "_ui_busy", False):
+                self._refresh_status_strip()
+                self._show_stream_preview()
         except tk.TclError:
             return
         self._start_ui_heartbeat()
@@ -5173,7 +5340,7 @@ class CodeAgentApp(tk.Tk):
         animator = getattr(self, "animator", None)
         if animator is not None:
             animator.close()
-        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id"):
+        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id", "_toast_after_id", "_git_refresh_after_id", "_statusline_after_id"):
             after_id = getattr(self, name, None)
             setattr(self, name, None)
             if after_id is not None:
@@ -5222,10 +5389,11 @@ class CodeAgentApp(tk.Tk):
             elif view == 'verification':
                 self._set_disclosure('verification', True)
             elif view == 'settings':
-                self._set_trust_settings_disclosure(True)
+                # Details stay one click away so the drawer fits the window.
+                self._set_trust_settings_disclosure(False)
         if self._utility_drawer_view:
             allowed = {'workspace': {0, 1, 2, 3, 4, 14, 18},
-                       'settings': {0, 7, 8, 9, 10, 11},
+                       'settings': {0, 11, 12},
                        'history': {0, 21, 22, 23, 24},
                        'verification': {0, 27, 28, 29}}[self._utility_drawer_view]
             for widget, row in self._sidebar_rows.items():
@@ -6455,11 +6623,17 @@ class CodeAgentApp(tk.Tk):
             ok, result = self._apply_model_selection_command(setting_mode, setting_override)
             self.local_command_result.set(self._local_command_safe_text(result))
             return ok
+        parsed = _slash.split_command(raw)
+        if parsed is not None and getattr(self, "_parity_ready", False) and f"/{parsed[0]}" not in LOCAL_COMMANDS:
+            handled, ok, message = self.run_slash_command(raw)
+            if handled:
+                self.local_command_result.set(self._local_command_safe_text(message))
+                return ok
         try:
             command = parse_local_command(raw)
         except ValueError:
             self.local_command_result.set(
-                "Rejected · exact commands: /status, /model, /permissions, /review; settings: /model auto, /model reset, /model <id>:free"
+                "Rejected · exact commands: /status, /model, /permissions, /review; /help lists every command"
             )
             return False
         if command == "/status":
@@ -6474,6 +6648,9 @@ class CodeAgentApp(tk.Tk):
         return True
 
     def _on_escape_shortcut(self, _event):
+        palette = getattr(self, "palette_frame", None)
+        if palette is not None and palette.winfo_manager():
+            return self.close_command_palette()
         if self.pending_plan:
             self.cancel_plan()
         elif self.inspect_request:
@@ -6554,7 +6731,12 @@ class CodeAgentApp(tk.Tk):
     def set_task_state(self, state, detail="", log_message=None):
         if state not in TASK_STATE_LABELS:
             raise ValueError(f"Unknown task state: {state}")
+        previous_state = getattr(self, "task_state", None)
         self.task_state = state
+        if previous_state != state and state in STOP_HOOK_STATES:
+            self._run_stop_hooks(state, detail)
+        if previous_state != state and getattr(self, "_parity_ready", False):
+            self._on_state_transition(previous_state, state)
         label = TASK_STATE_LABELS[state]
         visible = f"{label} · {detail}" if detail else label
         self.status.set(visible)
@@ -6683,8 +6865,21 @@ class CodeAgentApp(tk.Tk):
             return False
         return True
 
+    UNDO_STACK_MAX = 10
+
+    def _push_apply_undo(self, transaction):
+        """Keep earlier applies restorable (newest first) for /rewind."""
+        previous = self._last_apply_undo
+        if previous is not None and transaction is not None:
+            stack = getattr(self, "apply_undo_stack", [])
+            stack.append(previous)
+            self.apply_undo_stack = stack[-self.UNDO_STACK_MAX:]
+        if transaction is not None:
+            self._last_apply_undo = transaction
+
     def _clear_last_apply_undo(self):
         self._last_apply_undo = None
+        self.apply_undo_stack = []
         if hasattr(self, "undo_last_apply_button"):
             self.undo_last_apply_button.configure(state=tk.DISABLED)
 
@@ -8645,7 +8840,7 @@ class CodeAgentApp(tk.Tk):
             if not work_is_current():
                 return
             root = validate_verification_root(root, cwd=root)
-            process = subprocess.Popen(list(argv), **verification_process_options(root))
+            process = subprocess.Popen(_sandbox.wrap(argv, SANDBOX_SETTINGS["mode"]), **verification_process_options(root))
             if owner is None or not owner.register_process(process):
                 raise RunCancelledError("Verification was cancelled before process registration.")
             containment = owner.process_containment(process) if owner is not None else None
@@ -8834,6 +9029,8 @@ class CodeAgentApp(tk.Tk):
         self.pending_plan_run_id = run_id
         self.approved_plan = None
         self._write_plan_preview(format_execution_plan(plan))
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("agent", self._plan_checklist(plan, "pending"))
         self.set_summary("Plan ready. Approve it before the edit run starts.")
         self._update_lifecycle_controls()
 
@@ -8911,12 +9108,21 @@ class CodeAgentApp(tk.Tk):
     def revise_plan(self):
         if not self.pending_plan:
             return
+        plan = self.pending_plan
+        snapshot = self.lifecycle.active_snapshot
+        request = getattr(snapshot, "request_text", "") or ""
         self._invalidate_handoff("plan revised")
         self._discard_pending_plan("revise")
         self._invalidate_run()
         self._history_clear_current()
         self.approved_plan = None
-        self.set_summary("Plan discarded. Revise the prompt, then request a new plan.")
+        if getattr(self, "_parity_ready", False) and request:
+            steps = "; ".join(step.title for step in plan.steps)
+            self.session_messages.append({"role": "system", "content": f"The user rejected this plan: {plan.summary} ({steps})."})
+            if not self.instructions.get("1.0", "end-1c").strip():
+                self._set_prompt_text(f"{request}\n\nChange the plan: ")
+                self.instructions.mark_set(tk.INSERT, tk.END)
+        self.set_summary("Plan discarded. Say what to change, then request a new plan.")
         self.set_task_state(TASK_STATE_IDLE, "Plan revision requested")
         self.instructions.focus_set()
 
@@ -9001,6 +9207,12 @@ class CodeAgentApp(tk.Tk):
     def on_close(self):
         if self.lifecycle.closed:
             return
+        manager = getattr(self, "mcp_manager", None)
+        if manager is not None:
+            manager.stop_all()
+        icons = getattr(self, "icons", None)
+        if icons is not None:
+            icons.save()
         self._dismiss_tooltips()
         self._clear_last_apply_undo()
         self._invalidate_handoff("application close")
@@ -9047,6 +9259,58 @@ class CodeAgentApp(tk.Tk):
             self.config_data["last_folder"] = folder
             save_local_config(self.config_data)
             self.scan_folder(preserve_task_state=False)
+            self._on_project_changed(folder)
+
+    RECENT_FOLDERS_MAX = 8
+
+    def _remember_folder(self, folder):
+        recent = [item for item in self.config_data.get("recent_folders", []) if item != folder]
+        self.config_data["recent_folders"] = ([folder] + recent)[:self.RECENT_FOLDERS_MAX]
+        self._save_config_quietly()
+
+    def _open_project_menu(self, anchor):
+        recent = [item for item in self.config_data.get("recent_folders", []) if Path(item).is_dir()]
+        current = self.selected_folder.get().strip()
+        if not recent or recent == [current]:
+            self.choose_folder()
+            return
+        c = PALETTE
+        menu = tk.Menu(self, tearoff=False, bg=c["surface_raised"], fg=c["text"], activebackground=c["border_strong"],
+                       activeforeground=c["text"], borderwidth=0, font=FONTS["small"])
+        for folder in recent:
+            label = ("✓ " if folder == current else "   ") + f"{Path(folder).name}  ·  {folder}"
+            menu.add_command(label=label, command=lambda f=folder: self.open_folder(f))
+        menu.add_separator()
+        menu.add_command(label="Open folder…", command=self.choose_folder)
+        try:
+            menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def open_folder(self, folder):
+        """Switch to folder without the file dialog (recent projects)."""
+        if folder == self.selected_folder.get().strip():
+            return
+        with mock_dialog(filedialog, "askdirectory", folder):
+            self.choose_folder()
+
+    def _on_project_changed(self, folder):
+        if not getattr(self, "_parity_ready", False):
+            return
+        self._remember_folder(folder)
+        self._reload_extensions(folder)
+        self._base_title = f"{Path(folder).name} · {APP_TITLE}"
+        self.title(self._base_title)
+        self.command_registry.reload(folder)
+        self._reload_extensions(folder)
+        self.mcp_manager.stop_all()
+        self.mcp_manager.specs = _mcp.load_server_specs(self._mcp_config(), folder)
+        self._start_mcp_servers()
+        self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder)
+        self._refresh_git_status_async()
+        custom = len(self.command_registry.custom)
+        if custom:
+            self._toast(f"{custom} custom command(s) loaded")
 
     def add_context_files(self):
         if self._block_if_run_active("context change"):
@@ -9119,9 +9383,50 @@ class CodeAgentApp(tk.Tk):
         state_name = state or self.task_state
         state_label = TASK_STATE_LABELS.get(state_name, TASK_STATE_LABELS[TASK_STATE_ERROR]).lower()
         safe_text = self._redact_sensitive(text)
-        self.activity.insert(tk.END, f"[{state_label}] {safe_text}\n")
+        if getattr(self, "_log_streaming", False):
+            self.activity.insert(tk.END, "\n")
+            self._log_streaming = False
+        tone = "log_error" if safe_text.startswith("!") else ("log_user" if safe_text.startswith("> user:") else "log_body")
+        self.activity.insert(tk.END, f"[{state_label}] ", ("log_state",))
+        self.activity.insert(tk.END, f"{safe_text}\n", (tone,))
         self.activity.see(tk.END)
         self._refresh_activity_digest()
+
+    STREAM_FIELD_PATTERN = re.compile(r'"(summary|title)"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+    def _show_stream_preview(self):
+        """While the model writes JSON, show the summary it is writing."""
+        if not getattr(self, "_parity_ready", False):
+            return
+        matches = self.STREAM_FIELD_PATTERN.findall(getattr(self, "_stream_buffer", ""))
+        if not matches:
+            return
+        field, raw = matches[-1]
+        try:
+            text = json.loads(f'"{raw}"') if not raw.endswith("\\") else raw
+        except ValueError:
+            text = raw
+        preview = ("Writing · " if field == "summary" else "Planning · ") + " ".join(str(text).split())[:240]
+        if preview != getattr(self, "_stream_preview", ""):
+            self._stream_preview = preview
+            self.set_summary(preview)
+
+    def _log_stream(self, text):
+        """Model output streams inline instead of one line per chunk."""
+        safe_text = self._redact_sensitive(text)
+        if not getattr(self, "_log_streaming", False):
+            self.activity.insert(tk.END, "[model] ", ("log_state",))
+            self._log_streaming = True
+        self.activity.insert(tk.END, safe_text, ("log_stream",))
+        self.activity.see(tk.END)
+
+    def _style_activity_log(self):
+        c = PALETTE
+        self.activity.tag_configure("log_state", foreground=c["text_subtle"])
+        self.activity.tag_configure("log_body", foreground=c["text_muted"])
+        self.activity.tag_configure("log_user", foreground=c["text"])
+        self.activity.tag_configure("log_error", foreground=c["danger"])
+        self.activity.tag_configure("log_stream", foreground=ui_kit.mix(c["text_muted"], c["accent"], 0.35))
 
     def _reset_run_timeline(self, run_id=None):
         self.run_timeline = []
@@ -9213,12 +9518,88 @@ class CodeAgentApp(tk.Tk):
         self._refresh_activity_digest()
         return True
 
+    TRANSCRIPT_MAX_ENTRIES = 40
+    TRANSCRIPT_ROLE_LABELS = {"user": "You", "agent": "CodeRouter"}
+
     def set_summary(self, text):
-        self.summary.configure(state=tk.NORMAL)
-        self.summary.delete("1.0", tk.END)
-        self.summary.insert("1.0", self._redact_sensitive(text).strip() or "No summary returned.")
-        self.summary.configure(state=tk.DISABLED)
+        """Render the conversation transcript with the current status last."""
+        current = self._redact_sensitive(text).strip() or "No summary returned."
+        transcript = getattr(self, "transcript", ())
+        widget = self.summary
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        if not transcript:
+            widget.insert("1.0", current)
+        else:
+            for role, body in transcript:
+                if role == "event":
+                    widget.insert(tk.END, "↳ " + body.strip() + "\n\n", ("event",))
+                    continue
+                widget.insert(tk.END, self.TRANSCRIPT_ROLE_LABELS.get(role, role) + "\n", ("role",))
+                if role == "user":
+                    widget.insert(tk.END, body.strip() + "\n\n", ("body_user",))
+                else:
+                    self._insert_markdown(widget, body.strip())
+                    widget.insert(tk.END, "\n\n", ("body_agent",))
+            if current != (transcript[-1][1].strip() if transcript[-1][0] == "agent" else None):
+                widget.insert(tk.END, "▍", ("live_bar",))
+                widget.insert(tk.END, current, ("live",))
+            widget.see(tk.END)
+        widget.configure(state=tk.DISABLED)
         self._sync_empty_state()
+
+    INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+)`")
+
+    def _insert_markdown(self, widget, text):
+        """Small Markdown subset: fenced code, headings, bullets, inline code."""
+        in_code = False
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            end = "" if index == len(lines) - 1 else "\n"
+            if line.strip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                widget.insert(tk.END, line + end, ("code_block",))
+                continue
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                widget.insert(tk.END, stripped.lstrip("#").strip() + end, ("md_heading",))
+                continue
+            tags = ("body_agent",)
+            if stripped[:2] in {"- ", "* "}:
+                line = "  • " + stripped[2:]
+            position = 0
+            for match in self.INLINE_CODE_PATTERN.finditer(line):
+                widget.insert(tk.END, line[position:match.start()], tags)
+                widget.insert(tk.END, match.group(1), ("code_inline",))
+                position = match.end()
+            widget.insert(tk.END, line[position:] + end, tags)
+
+    def _transcript_add(self, role, text):
+        if not hasattr(self, "transcript"):
+            self.transcript = []
+        body = self._redact_sensitive(str(text or "")).strip()
+        if not body:
+            return
+        self.transcript.append((role, body[:4000]))
+        del self.transcript[:-self.TRANSCRIPT_MAX_ENTRIES]
+
+    def _style_transcript(self):
+        c = PALETTE
+        sans = FONTS["body"][0]
+        self.summary.tag_configure("role", foreground=c["text_subtle"], font=(sans, 9), spacing1=self._px(6), spacing3=self._px(2))
+        self.summary.tag_configure("body_user", foreground=c["text_muted"], lmargin1=0, lmargin2=0, spacing3=self._px(4))
+        self.summary.tag_configure("body_agent", foreground=c["text"], spacing3=self._px(4))
+        mono = FONTS["mono_small"]
+        self.summary.tag_configure("code_block", font=mono, foreground=c["text"], background=c["surface_alt"],
+                                   lmargin1=self._px(10), lmargin2=self._px(10), rmargin=self._px(10))
+        self.summary.tag_configure("code_inline", font=mono, foreground=c["accent"])
+        self.summary.tag_configure("md_heading", font=(FONTS["body"][0], 11, "bold"), foreground=c["text"],
+                                   spacing1=self._px(6), spacing3=self._px(2))
+        self.summary.tag_configure("live", foreground=c["text"], lmargin2=self._px(14))
+        self.summary.tag_configure("live_bar", foreground=c["accent"])
+        self.summary.tag_configure("event", foreground=c["text_subtle"], font=FONTS["small"])
 
     def reset_session(self):
         self._clear_last_apply_undo()
@@ -9239,7 +9620,13 @@ class CodeAgentApp(tk.Tk):
         self._discard_pending_proposal("new chat")
         self._clear_pending_proposal()
         self._clear_scanned_context_preview()
+        self.transcript = []
         self.set_summary("New chat started. Previous model context cleared.")
+        if getattr(self, "_parity_ready", False):
+            self.conversation = _sessions.Conversation(_sessions.new_session_id(), self.selected_folder.get().strip())
+            self.usage_meter.reset()
+            self.attached_images = []
+            self._refresh_status_strip()
         self.log("> session reset")
         self.set_task_state(TASK_STATE_IDLE, "Ready")
 
@@ -9272,6 +9659,8 @@ class CodeAgentApp(tk.Tk):
         return True
 
     def run_agent(self):
+        if getattr(self, "_parity_ready", False) and self._run_in_progress() and self._queue_prompt():
+            return
         if self._block_if_run_active("new run"):
             return
         folder = self._validate_folder()
@@ -9284,6 +9673,14 @@ class CodeAgentApp(tk.Tk):
         if not instructions:
             messagebox.showerror(APP_TITLE, "Write an instruction first.")
             return
+        if getattr(self, "_parity_ready", False):
+            self._remember_prompt(instructions)
+            instructions = self._preprocess_prompt(instructions)
+            if instructions is None:
+                return
+            if not self._run_prompt_hooks(folder, instructions):
+                return
+        display_prompt = instructions
 
         self._discard_pending_proposal("new run")
         self._discard_pending_plan("new run")
@@ -9293,6 +9690,22 @@ class CodeAgentApp(tk.Tk):
             folder,
             secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
         )
+        if getattr(self, "_parity_ready", False):
+            memory_text, memory_labels = self._extra_instruction_context(folder)
+            project_instructions = _memory.combine_instructions(project_instructions, memory_text)
+            extension_text, extension_labels = self._extension_context(instructions)
+            project_instructions = _memory.combine_instructions(project_instructions, extension_text)
+            memory_labels = list(memory_labels) + extension_labels
+            if memory_labels:
+                project_instructions_status = (project_instructions_status + "; memory: " + ", ".join(memory_labels)).lstrip("; ")
+            mention_note = self._mention_context(instructions)
+            if mention_note:
+                instructions = f"{instructions}\n\n({mention_note})"
+            GENERATION_SETTINGS["images"] = _encode_images(self.attached_images)
+            if self.attached_images:
+                instructions = f"[image attached] {instructions}"
+                self.attached_images = []
+                self._refresh_status_strip()
         session_id, parent_task_id, parent_session_id = self._lineage_for_new_snapshot()
         snapshot = create_run_snapshot(
             project_root=folder,
@@ -9324,6 +9737,7 @@ class CodeAgentApp(tk.Tk):
         self.overseer_review = None
         self._reset_run_timeline(snapshot.run_id)
         self._clear_pending_proposal()
+        self._transcript_add("user", display_prompt)
         self.set_summary("Reading project, preparing context, and generating an execution plan.")
         self.set_task_state(TASK_STATE_PLANNING, "Preparing plan")
         self.log("")
@@ -9355,6 +9769,11 @@ class CodeAgentApp(tk.Tk):
             files = collect_files(snapshot.project_root, max_files=max_files, max_file_kb=max_file_kb)
             ensure_run_current(is_current)
             files.extend(collect_extra_context_files(snapshot.extra_context_paths, max_file_kb=max_file_kb))
+            files, lean_note = _budget.fit_context(
+                files, instructions, context_budget_for(self), _mentions.extract_mentions(instructions),
+            )
+            if lean_note:
+                emit("log", f"> {lean_note}")
             ensure_run_current(is_current)
             emit("log", f"> plan context: {len(files)} files, max {max_file_kb} KB/file")
             emit("summary", "Snapshot collected. Selecting an explicitly free model for planning.")
@@ -9459,6 +9878,11 @@ class CodeAgentApp(tk.Tk):
             files = collect_files(snapshot.project_root, max_files=max_files, max_file_kb=max_file_kb)
             ensure_run_current(is_current)
             files.extend(collect_extra_context_files(snapshot.extra_context_paths, max_file_kb=max_file_kb))
+            files, lean_note = _budget.fit_context(
+                files, instructions, context_budget_for(self), _mentions.extract_mentions(instructions),
+            )
+            if lean_note:
+                emit("log", f"> {lean_note}")
             ensure_run_current(is_current)
             emit("log", f"> context: {len(files)} files, max {max_file_kb} KB/file")
             emit("summary", "Snapshot collected. Selecting an explicitly free coding model.")
@@ -9507,44 +9931,57 @@ class CodeAgentApp(tk.Tk):
             if discovery_note:
                 emit("fallback", redact_sensitive_text(f"> {discovery_note}", [self.api_key]))
             emit("model_status", f"Free model queue ready: {len(model_queue)} candidates")
-            result, model_used = call_openrouter_with_fallback(
-                api_key=self.api_key,
-                instructions=safe_instructions,
-                files=files,
-                session_messages=[
-                    {"role": role, "content": content}
-                    for role, content in snapshot.session_history
-                ],
-                log_queue=self.work_queue,
-                run_id=run_id,
-                event_is_current=is_current,
-                model_queue=model_queue,
-                project_instructions=snapshot.project_instructions,
-                approved_plan=snapshot.approved_plan,
-                health_tracker=health_tracker,
-                task_context_tokens=estimate_task_context_tokens(
-                    safe_instructions
+            tool_context = list(inspect_context)
+            for tool_round in range(TOOL_QUERY_MAX_ROUNDS + 1):
+                result, model_used = call_openrouter_with_fallback(
+                    api_key=self.api_key,
+                    instructions=safe_instructions,
+                    files=files,
+                    session_messages=[
+                        {"role": role, "content": content}
+                        for role, content in snapshot.session_history
+                    ],
+                    log_queue=self.work_queue,
+                    run_id=run_id,
+                    event_is_current=is_current,
+                    model_queue=model_queue,
+                    project_instructions=snapshot.project_instructions,
+                    approved_plan=snapshot.approved_plan,
+                    health_tracker=health_tracker,
+                    task_context_tokens=estimate_task_context_tokens(
+                        safe_instructions
+                        + (
+                            "\n\n" + snapshot.project_instructions
+                            if snapshot.project_instructions
+                            else ""
+                        ),
+                        files,
+                        snapshot.session_history,
+                    )
                     + (
-                        "\n\n" + snapshot.project_instructions
-                        if snapshot.project_instructions
-                        else ""
+                        (len(format_execution_plan(snapshot.approved_plan)) + 3) // 4
+                        if snapshot.approved_plan
+                        else 0
                     ),
-                    files,
-                    snapshot.session_history,
+                    resource_owner=resource_owner,
+                    inspect_context=tuple(tool_context),
+                    strict_actions=strict_actions,
+                    verification_result=verification_result,
+                    task_category=task_category,
+                    model_selection_mode=snapshot.model_selection_mode,
+                    model_override=snapshot.model_override,
                 )
-                + (
-                    (len(format_execution_plan(snapshot.approved_plan)) + 3) // 4
-                    if snapshot.approved_plan
-                    else 0
-                ),
-                resource_owner=resource_owner,
-                inspect_context=inspect_context,
-                strict_actions=strict_actions,
-                verification_result=verification_result,
-                task_category=task_category,
-                model_selection_mode=snapshot.model_selection_mode,
-                model_override=snapshot.model_override,
-            )
+                if not isinstance(result, (ToolQuery, McpCall)):
+                    break
+                if tool_round >= TOOL_QUERY_MAX_ROUNDS:
+                    raise ValueError("The model kept searching without proposing changes.")
+                ensure_run_current(is_current)
+                if isinstance(result, McpCall):
+                    tool_context.append(self._run_mcp_call(result))
+                else:
+                    tool_context.append(run_tool_query(snapshot.project_root, result, secrets=[self.api_key]))
+                emit("timeline", f"Local {result.label()} ({tool_round + 1}/{TOOL_QUERY_MAX_ROUNDS})")
+                emit("task_state", (TASK_STATE_RUNNING, f"Model ran {result.label()}"))
             ensure_run_current(is_current)
             if isinstance(result, InspectRequest):
                 if (
@@ -9611,6 +10048,7 @@ class CodeAgentApp(tk.Tk):
                 return
 
             ensure_run_current(is_current)
+            edits = resolve_edit_hunks(snapshot.project_root, edits)
             proposal = create_pending_proposal(snapshot, edits)
             ensure_run_current(is_current)
             diff_by_path = render_diff_by_path(snapshot.project_root, edits)
@@ -9666,6 +10104,12 @@ class CodeAgentApp(tk.Tk):
         if explicit and self._proposal_apply_has_active_resources(proposal.run_id):
             self._report_lifecycle_action("apply blocked while active work is running")
             return
+        blocked_paths = _approval.edits_blocked(self.approval_rules, [edit.relative_path for edit in proposal.edits])
+        if blocked_paths:
+            messagebox.showerror(APP_TITLE, "Blocked by an Edit deny rule:\n" + "\n".join(blocked_paths[:10]))
+            return
+        if not self._run_apply_hooks("PreApply", folder, [edit.relative_path for edit in proposal.edits]):
+            return
         if explicit:
             self._record_permission_decision(
                 "apply",
@@ -9692,7 +10136,7 @@ class CodeAgentApp(tk.Tk):
             self._history_clear_current()
             messagebox.showerror(APP_TITLE, str(exc))
             return
-        self._last_apply_undo = undo_transaction if changed else None
+        self._push_apply_undo(undo_transaction if changed else None)
         self._history_update(
             state=TASK_STATE_APPLIED,
             detail=f"Applied {changed} files",
@@ -9707,6 +10151,13 @@ class CodeAgentApp(tk.Tk):
         self.set_task_state(TASK_STATE_APPLIED, f"Applied {changed} files")
         self.set_summary("Changes accepted. You can ask for another change and the chat will continue with this context.")
         self.scan_folder(silent=True, preserve_task_state=True)
+        self._run_apply_hooks("PostApply", folder, [edit.relative_path for edit in proposal.edits])
+        self._auto_commit_after_apply(folder, [edit.relative_path for edit in proposal.edits])
+        self._transcript_add("event", f"Applied {changed} file(s): " + ", ".join(edit.relative_path for edit in proposal.edits[:8]))
+        if self.config_data.get("test_after_apply"):
+            self.after(200, lambda: self._test_after_apply(folder))
+        self._toast(f"Applied {changed} file(s) · /undo to revert" + ("" if self.config_data.get("auto_commit") else " · /commit to commit"), "success")
+        self._refresh_git_status_async()
 
     def apply_selected(self):
         """Apply only the explicitly selected files from the current proposal."""
@@ -9771,7 +10222,7 @@ class CodeAgentApp(tk.Tk):
             self.log(f"! selected apply failed safely: {safe_error}", state=TASK_STATE_REVIEW)
             return False
 
-        self._last_apply_undo = undo_transaction if changed else None
+        self._push_apply_undo(undo_transaction if changed else None)
         selected_keys = {str(path).casefold() for path in selected_paths}
         remaining_edits = tuple(
             edit for edit in proposal.edits if edit.relative_path.casefold() not in selected_keys
@@ -9887,7 +10338,11 @@ class CodeAgentApp(tk.Tk):
             self.set_summary("Undo failed safely; no silent partial restore was accepted.")
             self.log(f"! undo failed safely: {safe_error}", state=TASK_STATE_ERROR)
             return False
+        earlier = list(getattr(self, "apply_undo_stack", []))
         self._clear_last_apply_undo()
+        if earlier:
+            self._last_apply_undo = earlier.pop()
+            self.apply_undo_stack = earlier
         self.session_messages.append({"role": "system", "content": "User undid the last applied changes."})
         self.log(f"> undid last Apply ({restored} files)")
         pending = self.pending_proposal
@@ -9911,6 +10366,10 @@ class CodeAgentApp(tk.Tk):
             self._update_lifecycle_controls()
         else:
             self.set_task_state(TASK_STATE_IDLE, f"Last Apply undone ({restored} files)")
+        if self._last_apply_undo is not None and hasattr(self, "undo_last_apply_button"):
+            self.undo_last_apply_button.configure(state=tk.NORMAL)
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("event", f"Undid an apply ({restored} file(s))")
         self.set_summary("Last Apply was undone. No worker, command, proposal, or auto-apply action was started.")
         return True
 
@@ -9934,7 +10393,9 @@ class CodeAgentApp(tk.Tk):
         self._invalidate_run()
         self.session_messages.append({"role": "system", "content": f"User rejected {count} proposed files. Do not assume they were applied."})
         self._clear_pending_proposal()
-        self.set_summary("Changes rejected. Add a correction in Instructions and run again to continue the same chat.")
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("event", "Rejected the proposed changes")
+        self.set_summary("Changes rejected. Say what to do differently and run again; the chat continues.")
         self.set_task_state(TASK_STATE_REJECTED, f"Rejected {count} files")
         self.log(f"> rejected {count} pending files")
 
@@ -9995,21 +10456,102 @@ class CodeAgentApp(tk.Tk):
         self.write_diff(self.diff_by_path.get(path, ""))
         self._update_apply_controls()
 
+    DIFF_HUNK_PATTERN = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
     def write_diff(self, text):
+        """Render a unified diff: line-number gutter, quiet headers, word-level changes."""
         self.diff.configure(state=tk.NORMAL)
         self.diff.delete("1.0", tk.END)
+        try:
+            self.diff.tag_configure("gutter", foreground=PALETTE["text_subtle"])
+            self.diff.tag_configure("hunk", foreground=DIFF_TONES["hunk_fg"])
+            self.diff.tag_configure("add_word", background=ui_kit.mix(DIFF_TONES["add_bg"], DIFF_TONES["add_fg"], 0.28))
+            self.diff.tag_configure("del_word", background=ui_kit.mix(DIFF_TONES["del_bg"], DIFF_TONES["del_fg"], 0.28))
+            self.diff.tag_raise("add_word")
+            self.diff.tag_raise("del_word")
+        except tk.TclError:
+            pass
+        rows = []  # (gutter, line, tag)
+        old_line = new_line = None
         for line in text.splitlines(True):
             tag = None
+            gutter = ""
+            match = self.DIFF_HUNK_PATTERN.match(line)
+            if (line.startswith("--- a/") or line.startswith("+++ b/") or line.startswith("+++ /dev/null")) and new_line is None:
+                continue  # the FILE header already names the path
             if line.startswith("+++ ") or line.startswith("--- FILE"):
                 tag = "file"
+            elif match:
+                old_line, new_line = int(match.group(1)), int(match.group(2))
+                tag = "hunk"
+            elif line.startswith("--- "):
+                tag = "meta"
+            elif new_line is not None and line.startswith("+"):
+                tag, gutter = "add", f"{'':>4} {new_line:>4} "
+                new_line += 1
+            elif new_line is not None and line.startswith("-"):
+                tag, gutter = "del", f"{old_line:>4} {'':>4} "
+                old_line += 1
+            elif new_line is not None and line.startswith(" "):
+                gutter = f"{old_line:>4} {new_line:>4} "
+                old_line += 1
+                new_line += 1
             elif line.startswith("+") and not line.startswith("+++"):
                 tag = "add"
             elif line.startswith("-") and not line.startswith("---"):
                 tag = "del"
-            elif line.startswith("@@") or line.startswith("--- "):
-                tag = "meta"
+            rows.append((gutter, line, tag))
+        spans = self._word_spans(rows)
+        for index, (gutter, line, tag) in enumerate(rows):
+            if gutter:
+                self.diff.insert(tk.END, gutter, ("gutter",))
+            start = self.diff.index("end-1c")
             self.diff.insert(tk.END, line, tag)
+            for begin, end in spans.get(index, ()):
+                word_tag = "add_word" if tag == "add" else "del_word"
+                self.diff.tag_add(word_tag, f"{start}+{begin}c", f"{start}+{end}c")
         self.diff.configure(state=tk.DISABLED)
+
+    @staticmethod
+    def _word_spans(rows, max_pairs=200):
+        """Changed character spans for paired -/+ lines (same-size blocks only)."""
+        spans, index, pairs = {}, 0, 0
+        while index < len(rows) and pairs < max_pairs:
+            if rows[index][2] != "del":
+                index += 1
+                continue
+            dels = index
+            while index < len(rows) and rows[index][2] == "del":
+                index += 1
+            adds = index
+            while index < len(rows) and rows[index][2] == "add":
+                index += 1
+            count = adds - dels
+            if count == 0 or index - adds != count:
+                continue
+            for offset in range(count):
+                old = rows[dels + offset][1][1:].rstrip("\n")
+                new = rows[adds + offset][1][1:].rstrip("\n")
+                if not old.strip() or not new.strip():
+                    continue
+                old_tokens = [(m.group(), m.start()) for m in re.finditer(r"\w+|\s+|[^\w\s]", old)]
+                new_tokens = [(m.group(), m.start()) for m in re.finditer(r"\w+|\s+|[^\w\s]", new)]
+                matcher = difflib.SequenceMatcher(None, [t for t, _ in old_tokens], [t for t, _ in new_tokens], autojunk=False)
+                if matcher.ratio() < 0.4:
+                    continue
+
+                def char_span(tokens, first, last):
+                    return tokens[first][1] + 1, tokens[last - 1][1] + len(tokens[last - 1][0]) + 1
+
+                for op, a0, a1, b0, b1 in matcher.get_opcodes():
+                    if op == "equal":
+                        continue
+                    if a1 > a0:
+                        spans.setdefault(dels + offset, []).append(char_span(old_tokens, a0, a1))
+                    if b1 > b0:
+                        spans.setdefault(adds + offset, []).append(char_span(new_tokens, b0, b1))
+                pairs += 1
+        return spans
 
     def _cancel_poll_timer(self):
         after_id = self._poll_after_id
@@ -10239,7 +10781,9 @@ class CodeAgentApp(tk.Tk):
                 elif kind == "fallback":
                     self.log(payload)
                 elif kind == "stream_delta":
-                    self.log(payload, state=TASK_STATE_RUNNING)
+                    self._log_stream(payload)
+                    self._stream_chars = getattr(self, "_stream_chars", 0) + len(str(payload or ""))
+                    self._stream_buffer = (getattr(self, "_stream_buffer", "") + str(payload or ""))[-20000:]
                 elif kind == "timeline":
                     self.log(payload)
                 elif kind == "session":
@@ -10247,19 +10791,2357 @@ class CodeAgentApp(tk.Tk):
                     self.session_messages.append({"role": "user", "content": user_content})
                     self.session_messages.append({"role": "assistant", "content": assistant_content})
                     self.last_summary = assistant_content
+                    self._transcript_add("agent", assistant_content)
+                    self._record_conversation_turn(user_content, assistant_content)
+
                 elif kind == "proposal":
                     self._set_pending_proposal(payload)
                 elif kind == "diffs":
                     self.diff_by_path = payload
                 elif kind == "files":
                     self.populate_changed_files(payload)
+                    if getattr(self, "_parity_ready", False) and payload:
+                        self._transcript_add("event", self._proposal_digest(payload))
                 elif kind == "auto_apply":
                     self.apply_pending(explicit=False)
         except queue.Empty:
             pass
+        self._drain_parity_queue()
+        self._auto_gates()
         self._refresh_workflow_rail()
         if not self.lifecycle.closed:
             self._schedule_poll()
+
+    def _drain_parity_queue(self):
+        parity_queue = getattr(self, "_parity_queue", None)
+        if parity_queue is None:
+            return
+        while True:
+            try:
+                kind, payload = parity_queue.get_nowait()
+            except queue.Empty:
+                return
+            if self.lifecycle.closed:
+                return
+            if kind == "compact":
+                self._finish_compact(payload)
+            elif kind == "review":
+                self._finish_review(payload)
+            elif kind == "answer":
+                self._finish_answer(payload)
+            elif kind == "models":
+                self._show_output(payload)
+            elif kind == "statusline":
+                label = getattr(self, "_statusline_label", None)
+                if label is not None:
+                    label.configure(text=self._redact_sensitive(payload))
+            elif kind == "fetched":
+                self._finish_fetch(payload)
+            elif kind == "mcp":
+                self._finish_mcp_start(payload)
+            elif kind == "usage":
+                self._record_usage(payload)
+            elif kind == "log":
+                self.log(payload)
+            elif kind == "git":
+                self.git_state = payload
+                self.git_text.set(payload.label())
+                self._refresh_status_strip()
+
+    # --- Agent parity: commands, memory, approval, sessions, git, usage ------------
+
+    def _init_parity_state(self):
+        cfg = self.config_data
+        folder = self.selected_folder.get().strip() or None
+        self.command_registry = _slash.CommandRegistry(folder)
+        self.approval_rules = _approval.RuleSet.from_config(cfg.get("permissions"))
+        self.approval_mode_value = _approval.normalize_approval_mode(cfg.get("approval_mode"), self.apply_mode.get())
+        self.approval_mode_var = tk.StringVar(master=self, value=self.approval_mode_value)
+        self.hooks_config = _hooks.normalize_hooks(cfg.get("hooks"))
+        self.usage_meter = _usage.UsageMeter()
+        self.usage_text = tk.StringVar(master=self, value=self.usage_meter.short_label())
+        self.git_text = tk.StringVar(master=self, value="")
+        self.git_state = _git.GitStatus()
+        self.session_store = _sessions.SessionStore(cfg.get("sessions_dir") or None)
+        self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder or "")
+        self.plan_gate_enabled = cfg.get("plan_gate", True) is not False
+        self.plan_gate_var = tk.BooleanVar(master=self, value=self.plan_gate_enabled)
+        settings = configure_generation(cfg.get("temperature"), cfg.get("style", "default"), cfg.get("reasoning_effort", ""))
+        self.style_var = tk.StringVar(master=self, value=settings["style"])
+        self.effort_var = tk.StringVar(master=self, value=settings["reasoning_effort"] or "default")
+        self.theme_var = tk.StringVar(master=self, value=_theme.normalize_theme(cfg.get("theme")))
+        self.attached_images = []
+        self.mentioned_paths = []
+        self._auto_gate_seen = set()
+        self._memory_labels = []
+        self._toast_after_id = None
+        self._suggest_items = []
+        self._suggest_kind = None
+        self._parity_ready = False
+        SANDBOX_SETTINGS["mode"] = _sandbox.normalize_mode(cfg.get("sandbox"))
+        self.pinned_skills = []
+        self.active_agent_name = cfg.get("agent", "")
+        self.file_style_name = cfg.get("output_style_file", "")
+        self._reload_extensions(folder)
+        self.mcp_manager = _mcp.McpManager(
+            _mcp.load_server_specs(self._mcp_config(), folder), cfg.get("mcp_enabled_project", ()),
+        )
+
+    def _mcp_config(self):
+        servers = dict(self.config_data.get("mcp_servers") or {})
+        for name, spec in getattr(self, "_plugin_mcp", {}).items():
+            servers.setdefault(name, spec)
+        return {**self.config_data, "mcp_servers": servers}
+
+    def _reload_extensions(self, folder=None):
+        folder = folder or self.selected_folder.get().strip() or None
+        self.plugins = _plugins.enabled_plugins(folder, disabled=self.config_data.get("plugins_disabled", ()))
+        self.command_registry.reload(folder, _plugins.plugin_dirs(self.plugins, "commands"))
+        self.skills = _ext.load_extensions("skill", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "skills"))
+        self.agents = _ext.load_extensions("agent", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "agents"))
+        self.file_styles = _ext.load_extensions("style", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "output-styles"))
+        # Hooks and MCP servers run programs, so only user-level plugins may add them.
+        trusted = [plugin for plugin in self.plugins if plugin.scope == "user"]
+        merged = dict(self.config_data.get("hooks") or {})
+        for event, entries in _plugins.plugin_hooks(trusted).items():
+            merged[event] = list(merged.get(event, [])) + list(entries)
+        self.hooks_config = _hooks.normalize_hooks(merged)
+        self._plugin_mcp = _plugins.plugin_mcp_servers(trusted)
+        self.pinned_skills = [name for name in self.pinned_skills if name in self.skills]
+
+    # Configuration helpers ------------------------------------------------------
+
+    def _save_config_quietly(self):
+        try:
+            save_local_config(self.config_data)
+            return True
+        except OSError as exc:
+            self._toast(f"Could not save settings: {short_error(exc)}", "danger")
+            return False
+
+    def set_approval_mode(self, mode, announce=True):
+        mode = _approval.normalize_approval_mode(mode)
+        if self._mode_locked_for_active_run():
+            self.approval_mode_var.set(self.approval_mode_value)
+            return False, "Approval mode is locked while a run is active."
+        self.approval_mode_value = mode
+        self.approval_mode_var.set(mode)
+        self.config_data["approval_mode"] = mode
+        self.apply_mode.set(_approval.apply_mode_for(mode))
+        self._on_apply_mode_changed()
+        self._save_config_quietly()
+        self._refresh_status_strip()
+        if announce:
+            self._toast(_approval.APPROVAL_LABELS[mode])
+        return True, f"Approval mode · {_approval.APPROVAL_LABELS[mode]}"
+
+    def set_output_style(self, style):
+        if style not in OUTPUT_STYLES:
+            return False, "Styles: " + ", ".join(OUTPUT_STYLES)
+        configure_generation(style=style)
+        self.style_var.set(style)
+        self.config_data["style"] = style
+        self._save_config_quietly()
+        return True, f"Output style · {style}"
+
+    def set_reasoning_effort(self, effort):
+        effort = "" if effort in {"", "default", "off", "none"} else effort
+        if effort and effort not in REASONING_EFFORTS:
+            return False, "Effort: low, medium, high or default"
+        configure_generation(reasoning_effort=effort)
+        self.effort_var.set(effort or "default")
+        self.config_data["reasoning_effort"] = effort
+        self._save_config_quietly()
+        return True, f"Reasoning effort · {effort or 'model default'}"
+
+    def set_temperature(self, value):
+        if value in {"", "default"}:
+            GENERATION_SETTINGS["temperature"] = None
+            self.config_data.pop("temperature", None)
+            self._save_config_quietly()
+            return True, "Temperature · default (0.1)"
+        try:
+            number = float(value)
+        except ValueError:
+            return False, "Temperature must be a number between 0 and 1."
+        if not 0 <= number <= 1:
+            return False, "Temperature must be a number between 0 and 1."
+        configure_generation(temperature=number)
+        self.config_data["temperature"] = number
+        self._save_config_quietly()
+        return True, f"Temperature · {number:g}"
+
+    def set_plan_gate(self, enabled):
+        self.plan_gate_enabled = bool(enabled)
+        self.plan_gate_var.set(self.plan_gate_enabled)
+        self.config_data["plan_gate"] = self.plan_gate_enabled
+        self._save_config_quietly()
+        return True, "Plan gate · " + ("on (approve each plan)" if enabled else "off (plans auto-approve)")
+
+    def set_theme(self, name):
+        name = _theme.normalize_theme(name)
+        self.theme_var.set(name)
+        self.config_data["theme"] = name
+        self._save_config_quietly()
+        return True, f"Theme · {name} (applies on next start)"
+
+    def set_motion(self, mode):
+        mode = str(mode or "").strip().lower()
+        if mode not in {"full", "reduced", "system"}:
+            return False, "Motion: full, reduced or system"
+        self.reduce_motion.set(ui_kit.reduced_motion(mode))
+        self._on_reduce_motion_changed()
+        self.config_data["motion"] = mode
+        self._save_config_quietly()
+        return True, f"Motion · {mode}"
+
+    # Slash command dispatch -----------------------------------------------------
+
+    def run_slash_command(self, text):
+        """Run a slash command from the composer or command field.
+
+        Returns (handled, ok, message). Custom commands expand into the
+        prompt and start a run.
+        """
+        parsed = _slash.split_command(text)
+        if parsed is None:
+            return False, False, ""
+        name, args = parsed
+        command = self.command_registry.resolve(name)
+        if command is None:
+            return True, False, f"Unknown command /{name} · /help lists commands"
+        if command.kind == "custom":
+            prompt = _slash.expand_custom_command(command, args)
+            self._set_prompt_text(prompt)
+            self.run_agent()
+            return True, True, f"/{name} · expanded custom command"
+        handler = getattr(self, "_cmd_" + command.name.replace("-", "_").replace(":", "_"), None)
+        if handler is None:
+            return True, False, f"/{name} is not available here"
+        try:
+            result = handler(args)
+        except Exception as exc:  # surface, never crash the UI
+            return True, False, f"/{name} failed: {short_error(self._redact_sensitive(str(exc)))}"
+        if isinstance(result, tuple):
+            ok, message = result
+        else:
+            ok, message = True, result or ""
+        return True, ok, message
+
+    def _set_prompt_text(self, text):
+        self.instructions.delete("1.0", tk.END)
+        if text:
+            self.instructions.insert("1.0", text)
+        self._sync_prompt_placeholder()
+
+    def _show_output(self, text):
+        """Show a local command result in the conversation pane."""
+        if text.startswith("```"):
+            self._transcript_add("agent", text)
+            self.set_summary("")
+            return
+        self.set_summary(text)
+
+    ASK_CONTEXT_MAX_CHARS = 120_000
+
+    def _cmd_ask(self, args):
+        question = args.strip()
+        if not question:
+            return False, "Usage: /ask <question> (or start a prompt with ?)"
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        folder = self._validate_folder(show_error=False)
+        api_key = self.api_key
+        history = [(item["role"], item["content"]) for item in self.session_messages[-8:]]
+        instructions = ""
+        if folder:
+            instructions, _status = load_project_instructions(folder, secrets=[api_key])
+            memory_text, _labels = self._extra_instruction_context(folder)
+            instructions = _memory.combine_instructions(instructions, memory_text)
+        mentions = _mentions.extract_mentions(question)
+        self._transcript_add("user", question)
+        self.set_summary("Thinking about your question…")
+        self._busy_started = time.monotonic()
+
+        def work():
+            try:
+                parts = []
+                if folder:
+                    max_files, max_file_kb = choose_context_limits(folder)
+                    files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+                    resolved, _missing = _mentions.resolve_mentions(mentions, [f.relative_path for f in files])
+                    used = 0
+                    for source in _mentions.prioritise_files(files, resolved):
+                        block = f"--- FILE: {source.relative_path} ---\n{source.content}"
+                        if used + len(block) > self.ASK_CONTEXT_MAX_CHARS:
+                            continue
+                        parts.append(block)
+                        used += len(block)
+                prompt = (
+                    ("Project instructions (read-only):\n" + instructions + "\n\n" if instructions else "")
+                    + ("Conversation so far:\n" + "\n".join(f"{r}: {c}" for r, c in history) + "\n\n" if history else "")
+                    + ("Project files:\n" + "\n\n".join(parts) + "\n\n" if parts else "")
+                    + "Question: " + question
+                )
+                prompt = redact_sensitive_text(prompt, [api_key])
+                answer, model = complete_text(
+                    api_key, prompt,
+                    system="You answer questions about a codebase. Be precise, cite file paths, keep it short. Never invent files."
+                    + generation_style_suffix(),
+                )
+            except Exception as exc:
+                answer, model = f"Could not answer: {short_error(exc)}", ""
+            self._parity_queue.put(("answer", (question, answer, model)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return "Asking a free model"
+
+    def _finish_answer(self, payload):
+        question, answer, model = payload
+        answer = self._redact_sensitive(answer)
+        self._transcript_add("agent", answer + (f"\n\n({model})" if model else ""))
+        self.session_messages.append({"role": "user", "content": question})
+        self.session_messages.append({"role": "assistant", "content": answer[:4000]})
+        self._record_conversation_turn(question, answer)
+        self.set_summary("Ask a follow-up, or describe a change to make.")
+
+    def _cmd_help(self, _args):
+        self._show_output(self.command_registry.help_text())
+        return "Help shown in the conversation"
+
+    def _cmd_status(self, _args):
+        return self._local_command_status()
+
+    def _cmd_model(self, args):
+        if args:
+            try:
+                mode, override = parse_model_selection_command(f"/model {args}")
+            except ValueError as exc:
+                return False, str(exc)
+            return self._apply_model_selection_command(mode, override)
+        return self._local_command_model()
+
+    def _cmd_permissions(self, _args):
+        rules = self.approval_rules
+        lines = [
+            self._local_command_permissions(),
+            "",
+            f"Approval mode: {_approval.APPROVAL_LABELS[self.approval_mode_value]}",
+            "Allow rules: " + (", ".join(rules.allow) or "none"),
+            "Deny rules: " + (", ".join(rules.deny) or "none"),
+        ]
+        self._show_output("\n".join(lines))
+        return "Permissions shown in the conversation"
+
+    def _cmd_review(self, _args):
+        return self._local_command_review()
+
+    def _cmd_clear(self, _args):
+        if self._block_if_run_active("new chat"):
+            return False, "Stop the active run first."
+        self.reset_session()
+        return "New chat started"
+
+    def _cmd_compact(self, args):
+        messages = [(item["role"], item["content"]) for item in self.session_messages]
+        older, recent = _sessions.split_for_compaction(messages)
+        if not older:
+            return False, "Nothing to compact yet."
+        if self._run_in_progress():
+            return False, "Wait for the active run to finish."
+        prompt = _sessions.compact_prompt(older, args)
+        api_key = self.api_key
+
+        def work():
+            try:
+                summary, model = complete_text(api_key, prompt) if api_key else (_sessions.local_compact(older), "local")
+            except Exception:
+                summary, model = _sessions.local_compact(older), "local"
+            self._parity_queue.put(("compact", (summary, model, len(older), recent)))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._toast("Compacting conversation…")
+        return "Compacting older turns"
+
+    def _finish_compact(self, payload):
+        summary, model, dropped, recent = payload
+        summary = self._redact_sensitive(summary)
+        self.session_messages = [{"role": "system", "content": "Summary of earlier conversation: " + summary}]
+        self.session_messages += [{"role": role, "content": content} for role, content in recent]
+        self.conversation.summary = summary
+        self.conversation.messages = list(recent)
+        self._persist_conversation()
+        self._toast(f"Compacted {dropped} turns ({model})", "success")
+        self.log(f"> compacted {dropped} turns with {model}")
+
+    def _cmd_sessions(self, _args):
+        items = self.session_store.list(self.selected_folder.get().strip() or None)
+        if not items:
+            return False, "No saved conversations for this project yet."
+        lines = ["Saved conversations (newest first) · /resume <id>"]
+        for item in items[:20]:
+            lines.append(f"  {item.session_id}  {item.updated_at[:16].replace('T', ' ')}  {item.title or '(untitled)'}  · {len(item.messages)} msgs")
+        self._show_output("\n".join(lines))
+        return f"{len(items)} saved conversation(s)"
+
+    def _cmd_resume(self, args):
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        folder = self.selected_folder.get().strip() or None
+        try:
+            conversation = self.session_store.load(args.strip()) if args.strip() else self.session_store.latest(folder)
+        except (OSError, ValueError):
+            conversation = None
+        if conversation is None:
+            return False, "No saved conversation found · /sessions lists them"
+        self.reset_session()
+        self.conversation = conversation
+        self.session_messages = [{"role": role, "content": content} for role, content in conversation.model_messages()]
+        self.transcript = []
+        for role, content in conversation.messages[-12:]:
+            self._transcript_add("user" if role == "user" else "agent", content[:1200])
+        self._show_output(f"Resumed {conversation.title or conversation.session_id}. Continue where you left off.")
+        self._toast("Conversation resumed", "success")
+        return f"Resumed {conversation.session_id} · {len(conversation.messages)} messages"
+
+    def _persist_conversation(self):
+        try:
+            self.conversation.project_root = self.selected_folder.get().strip()
+            self.session_store.save(self.conversation)
+        except (OSError, ValueError):
+            pass
+
+    def _record_conversation_turn(self, user_content, assistant_content):
+        self.conversation.add("user", user_content)
+        self.conversation.add("assistant", assistant_content)
+        self._persist_conversation()
+
+    def _cmd_history(self, _args):
+        self._show_utility_view("history")
+        return "History opened"
+
+    def _cmd_init(self, _args):
+        self._set_prompt_text(_memory.INIT_PROMPT)
+        self.run_agent()
+        return "Drafting AGENTS.md"
+
+    def _cmd_memory(self, args):
+        if args.startswith("add "):
+            return self._add_memory_note(args[4:])
+        folder = self.selected_folder.get().strip() or None
+        _text, labels = _memory.load_memory_files(folder)
+        instructions, status = ("", "")
+        if folder:
+            instructions, status = load_project_instructions(folder)
+        lines = ["Memory and instruction files"]
+        lines.append("  AGENTS.md hierarchy: " + (status.replace("> project instructions: ", "") or "none"))
+        lines += [f"  {label}" for label in labels] or ["  no CLAUDE.md / user memory files found"]
+        lines += ["", "Add a note: start a prompt with #, or /memory add <note>"]
+        self._show_output("\n".join(lines))
+        return f"{len(labels) + (1 if instructions else 0)} memory source(s)"
+
+    def _add_memory_note(self, note):
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        try:
+            path = _memory.append_memory_note(folder, note)
+        except (OSError, ValueError) as exc:
+            return False, f"Could not save note: {short_error(exc)}"
+        self._toast(f"Saved to {path.name}", "success")
+        return True, f"Memory note saved to {path.name}"
+
+    def _cmd_diff(self, args):
+        if self.diff_by_path and not args.strip() == "git":
+            self._show_output("\n".join(self.diff_by_path.values())[:60000])
+            return f"{len(self.diff_by_path)} pending file diff(s)"
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "No pending changes and no git repository."
+        diff = _git.git_diff(folder)
+        self._show_output(diff or "Working tree is clean.")
+        return "git diff shown"
+
+    def _cmd_apply(self, _args):
+        if not self.pending_proposal:
+            return False, "Nothing pending."
+        self.apply_pending()
+        return "Applied"
+
+    @staticmethod
+    def _proposal_digest(rows):
+        additions = deletions = 0
+        for row in rows:
+            match = re.match(r"\+(\d+) / -(\d+)", str(row.get("stats", "")))
+            if match:
+                additions += int(match.group(1))
+                deletions += int(match.group(2))
+        names = ", ".join(str(row.get("path")) for row in rows[:6]) + (" …" if len(rows) > 6 else "")
+        return f"Proposed {len(rows)} file(s) +{additions} −{deletions}: {names} · review on the right"
+
+    def _cmd_reject(self, args):
+        if not self.pending_proposal:
+            return False, "Nothing pending."
+        paths = args.split()
+        if not paths:
+            self.reject_pending()
+            return "Rejected pending changes"
+        return self.reject_paths(paths)
+
+    def reject_selected(self):
+        paths = tuple(str(path) for path in self.edited_files.selection())
+        if not paths:
+            self._toast("Select files to reject first", "warning")
+            return False
+        ok, message = self.reject_paths(paths)
+        self._toast(message, "success" if ok else "danger")
+        return ok
+
+    def reject_paths(self, paths):
+        """Drop some files from the pending proposal; the rest stay in review."""
+        proposal = self.pending_proposal
+        if not isinstance(proposal, PendingProposal) or self.task_state != TASK_STATE_REVIEW:
+            return False, "Nothing pending in review."
+        keys = {str(path).replace("\\", "/").casefold() for path in paths}
+        known = {edit.relative_path.casefold() for edit in proposal.edits}
+        if not keys <= known:
+            return False, "Only pending files can be rejected: " + ", ".join(sorted(keys - known))
+        if keys == known:
+            self.reject_pending()
+            return True, "Rejected every pending file"
+        remaining = PendingProposal(
+            run_id=proposal.run_id,
+            project_root=proposal.project_root,
+            edits=tuple(edit for edit in proposal.edits if edit.relative_path.casefold() not in keys),
+            preconditions=tuple(item for item in proposal.preconditions if item.relative_path.casefold() not in keys),
+        )
+        self.diff_by_path = {path: diff for path, diff in self.diff_by_path.items() if str(path).casefold() not in keys}
+        self._set_pending_proposal(remaining)
+        self.populate_changed_files(build_file_rows(self.diff_by_path))
+        self.session_messages.append({"role": "system", "content": f"User rejected {len(keys)} file(s): {', '.join(sorted(keys))}."})
+        self.set_task_state(TASK_STATE_REVIEW, f"{len(remaining.edits)} files remain in review")
+        self.log(f"> rejected {len(keys)} file(s); {len(remaining.edits)} remain", state=TASK_STATE_REVIEW)
+        self._transcript_add("event", "Rejected " + ", ".join(sorted(keys)))
+        return True, f"Rejected {len(keys)} file(s) · {len(remaining.edits)} remain"
+
+    def _cmd_undo(self, _args):
+        if not getattr(self, "_last_apply_undo", None):
+            return False, "Nothing to undo."
+        self.undo_last_apply()
+        return "Undo requested"
+
+    def _cmd_rewind(self, args):
+        try:
+            count = max(1, min(self.UNDO_STACK_MAX + 1, int(args.strip() or "1")))
+        except ValueError:
+            return False, "Usage: /rewind [count]"
+        undone = 0
+        for _ in range(count):
+            if not self._last_apply_undo or not self.undo_last_apply():
+                break
+            undone += 1
+        if not undone:
+            return False, "Nothing to rewind."
+        depth = len(getattr(self, "apply_undo_stack", [])) + (1 if self._last_apply_undo else 0)
+        return f"Rewound {undone} apply(s) · {depth} more available"
+
+    def _cmd_git(self, _args):
+        status = self._refresh_git_status()
+        if not status.is_repo:
+            return False, "Not a git repository."
+        lines = [f"Branch {status.branch or 'detached'} · ahead {status.ahead} · behind {status.behind}",
+                 f"Last commit: {status.last_commit or 'none'}", ""]
+        lines += [f"  {code:>2} {path}" for code, path in status.changed[:60]] or ["  clean"]
+        self._show_output("\n".join(lines))
+        return status.label()
+
+    def _cmd_commit(self, args):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "Not a git repository."
+        status = self._refresh_git_status()
+        if not status.dirty:
+            return False, "Nothing to commit."
+        message = args.strip() or _git.suggest_commit_message([path for _code, path in status.changed], self.last_summary)
+        if not messagebox.askyesno(APP_TITLE, f"Commit {len(status.changed)} change(s)?\n\n{message}", parent=self):
+            return False, "Commit cancelled."
+        ok, text = _git.git_commit(folder, message)
+        self._refresh_git_status()
+        self._toast(text if ok else f"Commit failed: {text}", "success" if ok else "danger")
+        return ok, text
+
+    def _cmd_branch(self, args):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "Not a git repository."
+        if self._run_in_progress() or self.pending_proposal:
+            return False, "Finish or reject the current task first."
+        ok, text = _git.git_branch(folder, args)
+        self._refresh_git_status()
+        if ok:
+            self.scan_folder(silent=True, preserve_task_state=True)
+        return ok, text
+
+    def _test_after_apply(self, folder):
+        """Run the project's tests after an apply when the policy already allows it."""
+        if self.lifecycle.closed or self._run_in_progress() or self._verification_is_active():
+            return False
+        command = str(self.config_data.get("test_command") or _git.detect_test_command(folder))
+        if not command:
+            return False
+        self.verification_command.set(command)
+        try:
+            policy = verification_command_policy(parse_verification_command(command))
+        except ValueError:
+            return False
+        decision = _approval.auto_decision(self.approval_mode_value, "verify", self.approval_rules, command,
+                                           command_policy_allowed=policy == "allowed")
+        if decision != "allow" or policy == "blocked":
+            self._toast(f"Tests ready: {command} · allow with /allow {_approval.command_rule_for(command)}")
+            return False
+        self._transcript_add("event", f"Running tests: {command}")
+        with mock_dialog(messagebox, "askyesno", True):
+            return self.run_verification()
+
+    def _cmd_auto_commit(self, args):
+        value = args.strip().lower()
+        if value in {"on", "off"}:
+            self.config_data["auto_commit"] = value == "on"
+            self._save_config_quietly()
+        state = "on" if self.config_data.get("auto_commit") else "off"
+        return True, f"Auto-commit after apply · {state}"
+
+    def _auto_commit_after_apply(self, folder, paths):
+        if not self.config_data.get("auto_commit") or not _git.is_git_repo(folder):
+            return
+        message = _git.suggest_commit_message(paths, self.last_summary)
+        ok, text = _git.git_commit(folder, message, paths=list(paths))
+        self.log(f"> auto-commit: {self._redact_sensitive(text)}")
+        if not ok:
+            self._toast(f"Auto-commit failed: {text}", "danger")
+
+    def _cmd_todos(self, _args):
+        plan = self.approved_plan or self.pending_plan
+        if not plan:
+            return False, "No plan yet."
+        done = self.task_state in {TASK_STATE_APPLIED}
+        lines = [f"Plan · {plan.summary}", ""]
+        for step in plan.steps:
+            mark = "✓" if done else ("•" if self.task_state in {TASK_STATE_RUNNING, TASK_STATE_REVIEW} else "○")
+            lines.append(f"  {mark} {step.id}. {step.title} — {step.detail}")
+        self._show_output("\n".join(lines))
+        return f"{len(plan.steps)} step(s)"
+
+    def _cmd_cost(self, _args):
+        self._show_output(self.usage_meter.report())
+        return self.usage_meter.short_label()
+
+    def _cmd_context(self, _args):
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        secrets = [self.api_key]
+        instructions, _status = load_project_instructions(folder, secrets=secrets)
+        memory_text, _labels = self._extra_instruction_context(folder)
+        extension_text, _ext_labels = self._extension_context("")
+        max_files, max_file_kb = choose_context_limits(folder)
+        files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+        extra = collect_extra_context_files(self.extra_context_paths, max_file_kb=max_file_kb)
+        history = "\n".join(f"{m['role']}: {m['content']}" for m in self.session_messages[-12:])
+        rows = [
+            ("System prompt", 900),
+            ("AGENTS.md", _usage.estimate_tokens(instructions)),
+            ("Memory files", _usage.estimate_tokens(memory_text)),
+            ("Skills / agent", _usage.estimate_tokens(extension_text)),
+            ("Conversation", _usage.estimate_tokens(history)),
+            ("Project files", sum(_usage.estimate_tokens(f.content) for f in files)),
+            ("Extra context", sum(_usage.estimate_tokens(f.content) for f in extra)),
+            ("MCP tools", _usage.estimate_tokens(MCP_CATALOG.get("text", ""))),
+        ]
+        total = sum(value for _name, value in rows)
+        window = self.usage_meter.last_context_window or _usage.DEFAULT_CONTEXT_WINDOW
+        lines = [f"Context estimate · {_usage.format_tokens(total)} of {_usage.format_tokens(window)} tokens ({min(999, int(total * 100 / window))}%)", ""]
+        width = 28
+        for name, value in rows:
+            share = value / total if total else 0
+            bar = "█" * max(1 if value else 0, round(share * width))
+            lines.append(f"{name:<15} {bar:<{width}} {_usage.format_tokens(value):>6}")
+        largest = sorted(files, key=lambda f: len(f.content), reverse=True)[:5]
+        if largest:
+            lines += ["", "Largest files: " + ", ".join(f"{f.relative_path} ({_usage.format_tokens(_usage.estimate_tokens(f.content))})" for f in largest)]
+        sent, lean_note = _budget.fit_context(files, " ".join(m["content"] for m in self.session_messages[-2:]), context_budget_for(self))
+        if lean_note:
+            lines += ["", f"Sent per run: {lean_note} (budget {_usage.format_tokens(context_budget_for(self))}, set context_budget_tokens)."]
+        lines += ["", "Trim with .coderouterignore, /compact or fewer context files."]
+        self._show_output("```\n" + "\n".join(lines[:2 + len(rows)]) + "\n```\n" + "\n".join(lines[2 + len(rows):]))
+        return f"{_usage.format_tokens(total)} tokens in context"
+
+    def _cmd_approval(self, args):
+        if not args:
+            return True, f"Approval mode · {_approval.APPROVAL_LABELS[self.approval_mode_value]} · options: " + ", ".join(_approval.APPROVAL_MODES)
+        return self.set_approval_mode(args)
+
+    def _rule_command(self, kind, args):
+        try:
+            rule = self.approval_rules.add(kind, args)
+        except ValueError as exc:
+            return False, str(exc)
+        self.config_data["permissions"] = self.approval_rules.to_config()
+        self._save_config_quietly()
+        return True, f"{kind.title()} rule saved · {rule}"
+
+    def _cmd_allow(self, args):
+        return self._rule_command("allow", args)
+
+    def _cmd_deny(self, args):
+        return self._rule_command("deny", args)
+
+    def _cmd_style(self, args):
+        if not args:
+            return True, f"Output style · {GENERATION_SETTINGS['style']} · options: " + ", ".join(OUTPUT_STYLES)
+        return self.set_output_style(args.strip())
+
+    def _cmd_effort(self, args):
+        if not args:
+            return True, f"Reasoning effort · {GENERATION_SETTINGS['reasoning_effort'] or 'default'}"
+        return self.set_reasoning_effort(args.strip().lower())
+
+    def _cmd_temperature(self, args):
+        if not args:
+            value = GENERATION_SETTINGS["temperature"]
+            return True, f"Temperature · {'default (0.1)' if value is None else value}"
+        return self.set_temperature(args.strip())
+
+    def _cmd_theme(self, args):
+        if not args:
+            return True, f"Theme · {self.theme_var.get()} · options: dark, light, system"
+        return self.set_theme(args.strip())
+
+    def _cmd_motion(self, args):
+        if not args:
+            return True, "Motion · " + ("reduced" if self.animator.reduce else "full")
+        return self.set_motion(args)
+
+    def _cmd_plan(self, args):
+        value = args.strip().lower()
+        if value in {"on", "true", "1"}:
+            return self.set_plan_gate(True)
+        if value in {"off", "false", "0"}:
+            return self.set_plan_gate(False)
+        return True, "Plan gate · " + ("on" if self.plan_gate_enabled else "off") + " · /plan on|off"
+
+    PROFILE_KEYS = ("approval_mode", "style", "reasoning_effort", "temperature", "plan_gate", "model_override",
+                    "model_selection_mode", "agent", "auto_commit", "context_budget_tokens")
+
+    def _cmd_profile(self, args):
+        profiles = self.config_data.get("profiles") or {}
+        name = args.strip()
+        if not name:
+            if not profiles:
+                return True, 'No profiles · add "profiles": {"fast": {"approval_mode": "full-auto", "plan_gate": false}} to the config'
+            active = self.config_data.get("active_profile", "")
+            return True, "Profiles: " + ", ".join(("*" if key == active else "") + key for key in sorted(profiles))
+        profile = profiles.get(name)
+        if not isinstance(profile, dict):
+            return False, f"No profile named {name}"
+        applied = []
+        for key in self.PROFILE_KEYS:
+            if key not in profile:
+                continue
+            value = profile[key]
+            if key == "approval_mode":
+                self.set_approval_mode(value, announce=False)
+            elif key == "style":
+                self.set_output_style(value)
+            elif key == "reasoning_effort":
+                self.set_reasoning_effort(value or "")
+            elif key == "temperature":
+                self.set_temperature(str(value))
+            elif key == "plan_gate":
+                self.set_plan_gate(bool(value))
+            elif key in {"model_override", "model_selection_mode"}:
+                mode = profile.get("model_selection_mode", MODEL_SELECTION_OVERRIDE if profile.get("model_override") else MODEL_SELECTION_AUTO)
+                self._apply_model_selection_command(mode, profile.get("model_override", ""))
+            elif key == "agent":
+                self._cmd_agents(value or "off")
+            else:
+                self.config_data[key] = value
+            applied.append(key)
+        self.config_data["active_profile"] = name
+        self._save_config_quietly()
+        self._refresh_status_strip()
+        return True, f"Profile {name} · " + (", ".join(applied) or "no known keys")
+
+    def _cmd_sandbox(self, args):
+        value = args.strip().lower()
+        if value:
+            if value not in _sandbox.SANDBOX_MODES:
+                return False, "Sandbox: off or network-off"
+            if value != "off" and not _sandbox.sandbox_tool():
+                return False, "network-off needs unshare (Linux) or sandbox-exec (macOS)"
+            SANDBOX_SETTINGS["mode"] = value
+            self.config_data["sandbox"] = value
+            self._save_config_quietly()
+        return True, "Sandbox · " + _sandbox.describe(SANDBOX_SETTINGS["mode"])
+
+    def _cmd_plugins(self, args):
+        folder = self.selected_folder.get().strip() or None
+        words = args.split()
+        if len(words) == 2 and words[0] in {"enable", "disable"}:
+            disabled = set(self.config_data.get("plugins_disabled", []))
+            (disabled.discard if words[0] == "enable" else disabled.add)(words[1])
+            self.config_data["plugins_disabled"] = sorted(disabled)
+            self._save_config_quietly()
+            self._reload_extensions(folder)
+            return f"Plugin {words[1]} {words[0]}d · /mcp restart to reload its servers"
+        found = _plugins.discover_plugins(folder, disabled=self.config_data.get("plugins_disabled", ()))
+        if not found:
+            return True, "No plugins · add folders under ~/.coderouter/plugins/<name>/ (commands/, skills/, agents/, hooks.json, .mcp.json)"
+        lines = ["Plugins"]
+        for plugin, enabled in found:
+            parts = [name for name in ("commands", "skills", "agents", "output-styles") if plugin.subdir(name)]
+            if (plugin.root / "hooks.json").is_file():
+                parts.append("hooks")
+            if (plugin.root / ".mcp.json").is_file():
+                parts.append("mcp")
+            version = f" {plugin.version}" if plugin.version else ""
+            lines.append(f"  {'on ' if enabled else 'off'} {plugin.name}{version} ({plugin.scope}) · {', '.join(parts) or 'empty'}"
+                         + (f" - {plugin.description}" if plugin.description else ""))
+        self._show_output("\n".join(lines))
+        return f"{len(found)} plugin(s)"
+
+    def _cmd_rules(self, args):
+        words = args.split(maxsplit=1)
+        if words[:1] == ["remove"] and len(words) == 2:
+            rule = words[1].strip()
+            removed = False
+            for bucket in (self.approval_rules.allow, self.approval_rules.deny):
+                if rule in bucket:
+                    bucket.remove(rule)
+                    removed = True
+            if not removed:
+                return False, f"No rule {rule}"
+            self.config_data["permissions"] = self.approval_rules.to_config()
+            self._save_config_quietly()
+            return f"Removed {rule}"
+        rules = self.approval_rules
+        return True, "Allow: " + (", ".join(rules.allow) or "none") + " · Deny: " + (", ".join(rules.deny) or "none")
+
+    def _cmd_hooks(self, _args):
+        self._show_output(_hooks.describe_hooks(self.hooks_config))
+        return f"{sum(len(v) for v in self.hooks_config.values())} hook(s)"
+
+    def _cmd_config(self, _args):
+        self._show_utility_view("settings")
+        return "Settings opened"
+
+    def _cmd_commands(self, _args):
+        folder = self.selected_folder.get().strip() or None
+        self.command_registry.reload(folder)
+        lines = ["Custom command folders"] + [f"  {line}" for line in _slash.describe_custom_sources(folder)]
+        lines += ["", "Loaded"] + [f"  /{c.name} - {c.description}" for c in self.command_registry.custom.values()] or ["  none"]
+        self._show_output("\n".join(lines))
+        return f"{len(self.command_registry.custom)} custom command(s)"
+
+    def _cmd_export(self, _args):
+        self.export_report()
+        return "Export started"
+
+    def _cmd_verify(self, args):
+        if args:
+            self.verification_command.set(args)
+        self._show_utility_view("verification")
+        return "Verification opened"
+
+    def _cmd_add(self, _args):
+        self.add_context_files()
+        return "Choose context files"
+
+    def _cmd_image(self, _args):
+        return self.attach_image()
+
+    def _cmd_code_review(self, args):
+        return self._diff_task("code-review", args, _git.REVIEW_PROMPT, "You are a precise code reviewer.", "Reviewing")
+
+    def _cmd_security_review(self, args):
+        return self._diff_task("security-review", args, _git.SECURITY_REVIEW_PROMPT, "You are an application security engineer.", "Security review of")
+
+    def _cmd_pr_description(self, args):
+        return self._diff_task("pr-description", args, _git.PR_PROMPT, "You write clear pull request descriptions.", "Drafting a PR for")
+
+    def _cmd_test(self, args):
+        words = args.split()
+        if words[:1] == ["after-apply"] and len(words) == 2 and words[1] in {"on", "off"}:
+            self.config_data["test_after_apply"] = words[1] == "on"
+            self._save_config_quietly()
+            return True, f"Tests after apply · {words[1]}"
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        command = _git.detect_test_command(folder)
+        if not command:
+            return False, "No test setup detected · use /verify <command>"
+        self.verification_command.set(command)
+        self._show_utility_view("verification")
+        return f"Test command ready: {command} · press Run in Verify"
+
+    def _cmd_restart(self, _args):
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        import sys as _sys
+
+        self._save_config_quietly()
+        self.on_close()
+        os.execv(_sys.executable, [_sys.executable, str(Path(__file__).resolve())])
+        return "Restarting"
+
+    def _diff_task(self, name, args, header, system, verb):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, f"/{name} needs a git repository."
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        diff = _git.git_review_diff(folder, args.strip())
+        if not diff.strip() or diff.startswith("("):
+            return False, diff.strip() or "No changes to review."
+        prompt = header + self._redact_sensitive(diff)
+        api_key = self.api_key
+        target = args.strip() or "working tree"
+        self._transcript_add("user", f"/{name} {target}")
+        self.set_summary(f"{verb} {target} with a free model…")
+
+        def work():
+            try:
+                text, model = complete_text(api_key, prompt, system=system)
+            except Exception as exc:
+                text, model = f"Review failed: {short_error(exc)}", ""
+            self._parity_queue.put(("review", (text, model)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return f"{verb} {target}"
+
+    def _finish_review(self, payload):
+        text, model = payload
+        body = self._redact_sensitive(text)
+        self._transcript_add("agent", body + (f"\n\n(reviewed by {model})" if model else ""))
+        self.set_summary("Done. Ask for follow-up changes in the composer.")
+
+    def _cmd_mention(self, args):
+        path = args.strip().lstrip("@")
+        if not path:
+            return False, "Usage: /mention <path>"
+        self.instructions.insert(tk.INSERT, f"@{path} ")
+        self._sync_prompt_placeholder()
+        self.instructions.focus_set()
+        return f"Mentioned @{path}"
+
+    def _last_agent_reply(self):
+        for role, body in reversed(getattr(self, "transcript", [])):
+            if role == "agent":
+                return body
+        return self.last_summary
+
+    def _cmd_copy(self, _args):
+        reply = self._last_agent_reply()
+        if not reply:
+            return False, "Nothing to copy yet."
+        self.clipboard_clear()
+        self.clipboard_append(reply)
+        return "Copied the last reply"
+
+    def _conversation_markdown(self):
+        title = self.conversation.title or "CodeRouter conversation"
+        lines = [f"# {title}", ""]
+        for role, body in getattr(self, "transcript", []):
+            lines += [f"## {self.TRANSCRIPT_ROLE_LABELS.get(role, role)}", "", body, ""]
+        return "\n".join(lines)
+
+    def _cmd_save(self, args):
+        if not getattr(self, "transcript", None):
+            return False, "Nothing to save yet."
+        target = args.strip()
+        if not target:
+            target = filedialog.asksaveasfilename(parent=self, defaultextension=".md",
+                                                  filetypes=(("Markdown", "*.md"), ("All files", "*.*")))
+        if not target:
+            return False, "Save cancelled."
+        path = Path(target)
+        if not path.is_absolute():
+            folder = self._validate_folder(show_error=False)
+            path = (Path(folder) if folder else Path.cwd()) / path
+        path.write_text(self._conversation_markdown(), encoding="utf-8")
+        return f"Saved {path.name}"
+
+    def _cmd_rename(self, args):
+        title = " ".join(args.split())[:80]
+        if not title:
+            return False, "Usage: /rename <title>"
+        self.conversation.title = title
+        self._persist_conversation()
+        return f"Conversation renamed to {title}"
+
+    def _cmd_doctor(self, _args):
+        import platform
+        import sys as _sys
+
+        folder = self.selected_folder.get().strip()
+        checks = [
+            ("Python", platform.python_version(), _sys.version_info >= (3, 10)),
+            ("Tk", str(tk.TkVersion), tk.TkVersion >= 8.6),
+            ("git", "found" if _git.git_available() else "missing", _git.git_available()),
+            ("OpenRouter key", "set" if self.api_key else "missing", bool(self.api_key)),
+            ("Project", folder or "none", bool(folder) and Path(folder).is_dir()),
+            ("Config", str(CONFIG_PATH), True),
+            ("Data folder", str(self.session_store.directory.parent), True),
+            ("Custom commands", str(len(self.command_registry.custom)), True),
+            ("Hooks", str(sum(len(v) for v in self.hooks_config.values())), True),
+            ("Skills / agents", f"{len(self.skills)} / {len(self.agents)}", True),
+            ("MCP", f"{len(self.mcp_manager.specs)} server(s), {len(self.mcp_manager.tool_names())} tool(s)", True),
+            ("Context budget", _usage.format_tokens(context_budget_for(self)) + " tokens", True),
+            ("Theme", self.theme_name, True),
+        ]
+        lines = ["Doctor"] + [f"  {'ok ' if ok else 'fix'}  {name}: {value}" for name, value, ok in checks]
+        self._show_output("\n".join(lines))
+        problems = sum(1 for *_rest, ok in checks if not ok)
+        return (problems == 0, "All checks passed" if not problems else f"{problems} check(s) need attention")
+
+    def _cmd_retry(self, _args):
+        history = [item for item in getattr(self, "prompt_history", []) if _slash.split_command(item) is None]
+        if not history:
+            return False, "No earlier prompt to retry."
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        if self.pending_proposal:
+            self.reject_pending()
+        self._set_prompt_text(history[-1])
+        self.after_idle(self.run_agent)
+        return f"Retrying: {one_line(history[-1])}"
+
+    def _cmd_stop(self, _args):
+        if not self._run_in_progress():
+            return False, "No active run."
+        self.cancel_active_run()
+        return "Stopping"
+
+    def _cmd_exit(self, _args):
+        self.after_idle(self.on_close)
+        return "Closing"
+
+    # Composer pre-processing ------------------------------------------------------
+
+    def _preprocess_prompt(self, text):
+        """Handle /commands and #notes typed into the composer.
+
+        Returns None when the prompt was fully handled locally, else the
+        prompt that should be sent to the model.
+        """
+        if _slash.split_command(text) is not None:
+            handled, ok, message = self.run_slash_command(text)
+            if handled:
+                if message:
+                    self._toast(message, "success" if ok else "danger")
+                self._clear_prompt_after_command(text)
+                return None
+        if text.startswith("?") and len(text) > 1:
+            handled, ok, message = self.run_slash_command("/ask " + text[1:].strip())
+            if ok:
+                self._set_prompt_text("")
+            elif message:
+                self._toast(message, "danger")
+            return None
+        note = _memory.parse_memory_note(text)
+        if note is not None:
+            ok, message = self._add_memory_note(note)
+            if ok:
+                self._set_prompt_text("")
+            else:
+                self._toast(message, "danger")
+            return None
+        return text
+
+    def _clear_prompt_after_command(self, original):
+        try:
+            if self.instructions.get("1.0", "end-1c").strip() == original.strip():
+                self._set_prompt_text("")
+        except tk.TclError:
+            pass
+
+    def _run_prompt_hooks(self, folder, prompt):
+        if not self.hooks_config.get("UserPromptSubmit"):
+            return True
+        results = _hooks.run_hooks(self.hooks_config, "UserPromptSubmit", folder, {"prompt": prompt},
+                                   env=build_verification_environment(), wrap=_sandboxed)
+        for argv, code, output in results:
+            self.log(f"> hook UserPromptSubmit {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
+        if _hooks.blocked("UserPromptSubmit", results):
+            self._toast("Prompt blocked by a UserPromptSubmit hook", "danger")
+            return False
+        return True
+
+    def _run_apply_hooks(self, event, folder, paths):
+        if not self.hooks_config.get(event):
+            return True
+        results = _hooks.run_hooks(self.hooks_config, event, folder, {"paths": list(paths)},
+                                   env=build_verification_environment(), wrap=_sandboxed)
+        for argv, code, output in results:
+            self.log(f"> hook {event} {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
+        if _hooks.blocked(event, results):
+            self._toast(f"{event} hook blocked the action", "danger")
+            return False
+        if event == "PostApply" and any(code for _a, code, _o in results):
+            self._toast("A PostApply hook reported a failure", "warning")
+        return True
+
+    def _run_stop_hooks(self, state, detail):
+        if not getattr(self, "_parity_ready", False) or not self.hooks_config.get("Stop"):
+            return
+        folder = self.selected_folder.get().strip()
+        if not folder:
+            return
+        payload = {"state": TASK_STATE_LABELS.get(state, state), "detail": self._redact_sensitive(detail)}
+        hooks_config = self.hooks_config
+
+        def work():
+            results = _hooks.run_hooks(hooks_config, "Stop", folder, payload, env=build_verification_environment(), wrap=_sandboxed)
+            for argv, code, _output in results:
+                self._parity_queue.put(("log", f"> hook Stop {' '.join(argv)} → {code}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # Plan checklist, attention signal, queued prompts --------------------------------
+
+    PLAN_MARKS = {"pending": "○", "active": "◐", "done": "✓"}
+
+    def _plan_checklist(self, plan, status):
+        mark = self.PLAN_MARKS.get(status, "○")
+        lines = [f"Plan · {plan.summary}"]
+        lines += [f"{mark} {step.title} — {step.detail}" for step in plan.steps]
+        if status == "pending":
+            lines.append("Approve the plan to start, or revise it.")
+        return "\n".join(lines)
+
+    def _refresh_plan_checklist(self, status):
+        plan = self.approved_plan or self.pending_plan
+        transcript = getattr(self, "transcript", [])
+        if not plan:
+            return
+        prefix = f"Plan · {plan.summary}"
+        for index in range(len(transcript) - 1, -1, -1):
+            role, body = transcript[index]
+            if role == "agent" and body.startswith(prefix):
+                transcript[index] = (role, self._plan_checklist(plan, status))
+                return
+
+    def _on_state_transition(self, previous, state):
+        if state == TASK_STATE_RUNNING:
+            self._refresh_plan_checklist("active")
+        elif state in {TASK_STATE_REVIEW, TASK_STATE_APPLIED}:
+            self._refresh_plan_checklist("done")
+        if state in {TASK_STATE_PLAN, TASK_STATE_REVIEW, TASK_STATE_APPLIED, TASK_STATE_ERROR} or (
+            self.inspect_request or self.verification_request
+        ):
+            self._signal_attention(state)
+        if state in {TASK_STATE_IDLE, TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR}:
+            if getattr(self, "queued_prompts", None):
+                self.after(400, self._run_queued_prompt)
+
+    def _run_event_hook(self, event, payload):
+        if not getattr(self, "_parity_ready", False) or not self.hooks_config.get(event):
+            return
+        folder = self.selected_folder.get().strip()
+        if not folder:
+            return
+        hooks_config = self.hooks_config
+
+        def work():
+            for argv, code, _output in _hooks.run_hooks(hooks_config, event, folder, payload, env=build_verification_environment(), wrap=_sandboxed):
+                self._parity_queue.put(("log", f"> hook {event} {' '.join(argv)} → {code}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _signal_attention(self, state):
+        """Ring and mark the title when the window is in the background."""
+        try:
+            if self.focus_displayof() is not None:
+                return
+        except (tk.TclError, KeyError):
+            return
+        if self.config_data.get("notify", True) is False:
+            return
+        self._run_event_hook("Notification", {"state": TASK_STATE_LABELS.get(state, state)})
+        try:
+            self.bell()
+            base = getattr(self, "_base_title", APP_TITLE)
+            self.title(f"● {TASK_STATE_LABELS.get(state, '').title()} · {base}")
+            if not getattr(self, "_attention_bound", False):
+                self.bind("<FocusIn>", lambda _e: self.title(getattr(self, "_base_title", APP_TITLE)), add="+")
+                self._attention_bound = True
+        except tk.TclError:
+            pass
+
+    def _queue_prompt(self):
+        try:
+            text = self.instructions.get("1.0", "end-1c").strip()
+        except tk.TclError:
+            return False
+        if not text or _slash.split_command(text) is not None:
+            return False
+        if not hasattr(self, "queued_prompts"):
+            self.queued_prompts = []
+        if len(self.queued_prompts) >= 5:
+            self._toast("Queue is full (5 prompts)", "warning")
+            return True
+        self.queued_prompts.append(text)
+        self._set_prompt_text("")
+        self._toast(f"Queued · runs after the current task ({len(self.queued_prompts)} waiting)")
+        self._refresh_status_strip()
+        return True
+
+    def _run_queued_prompt(self):
+        if self.lifecycle.closed or self._run_in_progress() or not getattr(self, "queued_prompts", None):
+            return
+        if self.pending_proposal:
+            return  # keep waiting until the review is settled
+        prompt = self.queued_prompts.pop(0)
+        self._set_prompt_text(prompt)
+        self._refresh_status_strip()
+        self.run_agent()
+
+    def _extension_context(self, prompt):
+        """Skills matched to the prompt, the active agent and a file output style."""
+        parts, labels = [], []
+        skills = _ext.match_skills(self.skills, prompt, self.pinned_skills)
+        if skills:
+            parts.append(_ext.skills_context(skills))
+            labels += [f"skill:{skill.name}" for skill in skills]
+        agent = self.agents.get(self.active_agent_name)
+        if agent:
+            parts.append(_ext.agent_context(agent))
+            labels.append(f"agent:{agent.name}")
+        style = self.file_styles.get(self.file_style_name)
+        if style:
+            parts.append(f"=== OUTPUT STYLE: {style.name} ===\n{style.body}")
+            labels.append(f"style:{style.name}")
+        return "\n\n".join(parts), labels
+
+    def _cmd_skills(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "clear"}:
+            self.pinned_skills = []
+            return "Pinned skills cleared"
+        if name:
+            if name not in self.skills:
+                return False, f"No skill named {name} · /skills lists them"
+            if name not in self.pinned_skills:
+                self.pinned_skills.append(name)
+            return f"Skill {name} pinned for the next runs"
+        self._show_output("Skills (auto-added when the prompt matches; /skill <name> pins one)\n"
+                          + _ext.describe(self.skills, "  none · add .claude/skills/<name>/SKILL.md")
+                          + ("\n\nPinned: " + ", ".join(self.pinned_skills) if self.pinned_skills else ""))
+        return f"{len(self.skills)} skill(s)"
+
+    def _cmd_agents(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "default"}:
+            self.active_agent_name = ""
+            self.config_data["agent"] = ""
+            self._save_config_quietly()
+            return "Default agent"
+        if name:
+            if name not in self.agents:
+                return False, f"No agent named {name} · /agents lists them"
+            self.active_agent_name = name
+            self.config_data["agent"] = name
+            self._save_config_quietly()
+            self._refresh_status_strip()
+            return f"Agent {name} active"
+        self._show_output("Agents (/agent <name> to activate, /agent off)\n"
+                          + _ext.describe(self.agents, "  none · add .claude/agents/<name>.md")
+                          + (f"\n\nActive: {self.active_agent_name}" if self.active_agent_name else ""))
+        return f"{len(self.agents)} agent(s)"
+
+    def _cmd_output_style(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "default"}:
+            self.file_style_name = ""
+            self.config_data["output_style_file"] = ""
+            self._save_config_quietly()
+            return "File output style off"
+        if name:
+            if name not in self.file_styles:
+                return False, f"No output style file named {name}"
+            self.file_style_name = name
+            self.config_data["output_style_file"] = name
+            self._save_config_quietly()
+            return f"Output style {name}"
+        self._show_output("Output style files (/output-style <name>, /output-style off)\n"
+                          + _ext.describe(self.file_styles, "  none · add .claude/output-styles/<name>.md")
+                          + "\n\nBuilt-in styles: /style concise | default | explanatory")
+        return f"{len(self.file_styles)} style file(s)"
+
+    def _cmd_fetch(self, args):
+        try:
+            url = _web.validate_url(args)
+        except ValueError as exc:
+            return False, str(exc)
+        if self._run_in_progress():
+            return False, "Wait for the active run to finish."
+        directory = self.session_store.directory.parent / "fetched"
+
+        def work():
+            try:
+                title, text = _web.fetch_text(url)
+                path = _web.save_fetched(directory, url, title, self._redact_sensitive(text))
+                self._parity_queue.put(("fetched", (str(path), title, len(text))))
+            except Exception as exc:
+                self._parity_queue.put(("fetched", (None, short_error(exc), 0)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return f"Fetching {url}"
+
+    def _finish_fetch(self, payload):
+        path, title, size = payload
+        if not path:
+            self._toast(f"Fetch failed: {title}", "danger")
+            return
+        if path not in self.extra_context_paths:
+            self.extra_context_paths.append(path)
+            self.config_data["extra_context_files"] = list(self.extra_context_paths)
+            self._save_config_quietly()
+        self.extra_context_count.set(self._extra_context_label())
+        self._toast(f"Added {title[:60]} as context ({_usage.format_tokens(size)} chars)", "success")
+        self.log(f"> fetched {title} into read-only context")
+
+    def _run_mcp_call(self, call):
+        """Worker thread: run one MCP call if the approval policy allows it."""
+        manager = getattr(self, "mcp_manager", None)
+        decision = _approval.auto_decision(self.approval_mode_value, "mcp", self.approval_rules, call.tool)
+        if manager is None:
+            text = "MCP is not configured."
+        elif decision != "allow":
+            text = (f"Refused: {call.tool} needs approval. The user can allow it with /allow Mcp({call.tool}) "
+                    "or Full auto. Continue without it.")
+        else:
+            folder = self.selected_folder.get().strip() or "."
+            payload = {"tool": call.tool, "arguments": call.argument_dict()}
+            pre = _hooks.run_hooks(self.hooks_config, "PreToolUse", folder, payload, env=build_verification_environment(), wrap=_sandboxed)
+            if _hooks.blocked("PreToolUse", pre):
+                text = f"Refused by a PreToolUse hook: {call.tool}."
+            else:
+                try:
+                    text = manager.call(call.tool, call.argument_dict())
+                except (_mcp.McpError, ValueError, OSError) as exc:
+                    text = f"MCP call failed: {short_error(exc)}"
+                _hooks.run_hooks(self.hooks_config, "PostToolUse", folder, {**payload, "result": text[:2000]},
+                                 env=build_verification_environment(), wrap=_sandboxed)
+        safe = redact_sensitive_text(text, [self.api_key])
+        return SourceFile(path=Path("."), relative_path=f"[{call.label()}]", content=safe)
+
+    def _start_mcp_servers(self):
+        manager = getattr(self, "mcp_manager", None)
+        if manager is None or not manager.specs:
+            MCP_CATALOG["text"] = ""
+            return
+
+        def work():
+            errors = manager.start_all()
+            self._parity_queue.put(("mcp", (manager.catalog_text(), errors)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_mcp_start(self, payload):
+        catalog, errors = payload
+        MCP_CATALOG["text"] = catalog
+        tools = len(self.mcp_manager.tool_names())
+        if tools:
+            self._toast(f"MCP ready · {tools} tool(s)", "success")
+        for error in errors[:3]:
+            self.log(f"! mcp: {self._redact_sensitive(error)}")
+        if errors:
+            self._toast(f"MCP: {len(errors)} server(s) failed to start · /mcp", "warning")
+
+    def _cmd_mcp(self, args):
+        manager = self.mcp_manager
+        words = args.split()
+        if words[:1] == ["enable"] and len(words) == 2:
+            name = words[1]
+            if name not in manager.specs:
+                return False, f"No MCP server named {name}"
+            enabled = set(self.config_data.get("mcp_enabled_project", []))
+            enabled.add(name)
+            self.config_data["mcp_enabled_project"] = sorted(enabled)
+            self._save_config_quietly()
+            manager.enabled_project.add(name)
+            self._start_mcp_servers()
+            return f"Starting {name}"
+        if words[:1] == ["restart"]:
+            manager.stop_all()
+            manager.specs = _mcp.load_server_specs(self._mcp_config(), self.selected_folder.get().strip() or None)
+            self._start_mcp_servers()
+            return "Restarting MCP servers"
+        lines = ["MCP servers"]
+        if not manager.specs:
+            lines.append('  none · add "mcp_servers" to local_config.json or a project .mcp.json')
+        for name, spec in sorted(manager.specs.items()):
+            server = manager.servers.get(name)
+            if server and server.running:
+                state = f"connected · {len(server.tools)} tool(s)"
+            elif not manager.startable(name):
+                state = f"project server, disabled · /mcp enable {name}"
+            else:
+                state = "not running"
+            lines.append(f"  {name} ({spec.source}): {state}")
+        catalog = manager.catalog_text()
+        if catalog:
+            lines += ["", "Tools (allow with /allow Mcp(server.tool) or Full auto)", catalog]
+        self._show_output("\n".join(lines))
+        return f"{len(manager.specs)} MCP server(s)"
+
+    def _cmd_models(self, _args):
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        api_key = self.api_key
+
+        def work():
+            try:
+                result = discover_free_models(api_key)
+                models = list(getattr(result, "candidates", None) or result or [])
+            except Exception as exc:
+                self._parity_queue.put(("models", f"Could not list models: {short_error(exc)}"))
+                return
+            lines = ["Free models (use /model <id> to pin one)"]
+            for model in models[:60]:
+                context = getattr(model, "context_length", None)
+                lines.append(f"  {model}" + (f"  · {_usage.format_tokens(context)} context" if context else ""))
+            self._parity_queue.put(("models", "\n".join(lines)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return "Listing free models"
+
+    def _extra_instruction_context(self, folder):
+        text, labels = _memory.load_memory_files(
+            folder, secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
+            include_user=self.config_data.get("user_memory", True) is not False,
+        )
+        self._memory_labels = labels
+        return text, labels
+
+    def _mention_context(self, prompt):
+        mentions = _mentions.extract_mentions(prompt)
+        self.mentioned_paths = mentions
+        if not mentions:
+            return ""
+        note = "Files the user mentioned (prioritise them): " + ", ".join(mentions)
+        folder = self.selected_folder.get().strip()
+        for path, start, end in _mentions.extract_ranges(prompt):
+            try:
+                path = normalize_inspect_path(path)  # same guard as model reads: no secrets or protected files
+            except ValueError:
+                continue
+            snippet = _mentions.read_range(folder, path, start, end) if folder else None
+            if snippet:
+                note += f"\n\nLines {start}-{end} of {path}:\n{self._redact_sensitive(snippet)}"
+        return note
+
+    # Images -------------------------------------------------------------------------
+
+    def attach_image(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Attach image",
+            filetypes=(("Images", "*.png *.jpg *.jpeg *.gif *.webp"), ("All files", "*.*")),
+        )
+        if not path:
+            return False, "No image chosen."
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return False, short_error(exc)
+        if size > IMAGE_MAX_BYTES:
+            return False, f"Image is larger than {IMAGE_MAX_BYTES // (1024 * 1024)} MB."
+        self.attached_images = (self.attached_images + [path])[-IMAGE_MAX_COUNT:]
+        self._toast(f"Image attached · {Path(path).name}", "success")
+        self._refresh_status_strip()
+        return True, f"{len(self.attached_images)} image(s) attached for the next run"
+
+    # Auto gates (approval modes) ---------------------------------------------------
+
+    def _auto_gates(self):
+        if not getattr(self, "_parity_ready", False) or self.lifecycle.closed:
+            return
+        self._sync_always_allow_buttons()
+        self._sync_request_panels()
+        mode = self.approval_mode_value
+        plan = self.pending_plan
+        if plan is not None and not self.plan_gate_enabled and ("plan", id(plan)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("plan", id(plan)))
+            self.log("> plan auto-approved (plan gate off)")
+            self.after_idle(self.approve_plan)
+            return
+        request = self.inspect_request
+        if request is not None and ("inspect", id(request)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("inspect", id(request)))
+            decision = _approval.auto_decision(mode, "inspect", self.approval_rules, request.paths)
+            if decision == "allow":
+                self.log("> inspect auto-allowed by approval mode/rules")
+                self.after_idle(self.allow_inspect)
+            elif decision == "deny":
+                self.log("> inspect auto-denied by a deny rule")
+                self.after_idle(self.deny_inspect)
+            return
+        request = self.verification_request
+        if request is not None and ("verify", id(request)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("verify", id(request)))
+            try:
+                policy = verification_command_policy(parse_verification_command(request.command))
+            except ValueError:
+                policy = "blocked"
+            decision = _approval.auto_decision(mode, "verify", self.approval_rules, request.command,
+                                               command_policy_allowed=policy == "allowed")
+            if decision == "allow" and policy != "blocked":
+                self.log("> verification auto-allowed by approval mode/rules")
+                self.after_idle(self.allow_verification)
+            elif decision == "deny":
+                self.log("> verification auto-denied by a deny rule")
+                self.after_idle(self.deny_verification)
+            return
+        proposal = self.pending_proposal
+        if (proposal is not None and mode == _approval.APPROVAL_FULL_AUTO
+                and self.task_state == TASK_STATE_REVIEW and ("apply", id(proposal)) not in self._auto_gate_seen):
+            self._auto_gate_seen.add(("apply", id(proposal)))
+            self.after_idle(lambda: self.pending_proposal is proposal and self.apply_pending(explicit=False))
+
+    # Git + status strip ---------------------------------------------------------
+
+    def _refresh_git_status(self):
+        folder = self.selected_folder.get().strip()
+        status = _git.git_status(folder) if folder else _git.GitStatus()
+        self.git_state = status
+        self.git_text.set(status.label())
+        self._refresh_status_strip()
+        return status
+
+    def _refresh_git_status_async(self):
+        """Deferred to idle time so folder changes and applies stay responsive."""
+        if self.lifecycle.closed or getattr(self, "_git_refresh_after_id", None) is not None:
+            return
+
+        def run():
+            self._git_refresh_after_id = None
+            if not self.lifecycle.closed:
+                self._refresh_git_status()
+
+        try:
+            self._git_refresh_after_id = self.after(120, run)
+        except tk.TclError:
+            self._git_refresh_after_id = None
+
+    def _record_usage(self, payload):
+        if not isinstance(payload, dict):
+            return
+        self.usage_meter.record(
+            payload.get("model", ""), payload.get("prompt_tokens", 0), payload.get("completion_tokens", 0),
+            payload.get("context_window") or None,
+        )
+        self.usage_text.set(self.usage_meter.short_label())
+        self._refresh_status_strip()
+        fraction = self.usage_meter.context_fraction()
+        if fraction >= 0.85 and not getattr(self, "_context_warned", False):
+            self._context_warned = True
+            self._toast(f"Context is {int(fraction * 100)}% full · /compact frees space", "warning")
+        elif fraction < 0.6:
+            self._context_warned = False
+
+    def _refresh_status_strip(self):
+        strip = getattr(self, "status_strip", None)
+        if strip is None:
+            return
+        try:
+            mode = {"suggest": "Suggest", "auto-edit": "Auto-edit", "full-auto": "Full auto"}[self.approval_mode_value]
+            self.status_approval_label.configure(text=mode)
+            self.status_git_label.configure(text=self.git_state.label() or "no git")
+            self.status_usage_label.configure(text=self.usage_meter.short_label())
+            extras = []
+            if self.attached_images:
+                extras.append(f"{len(self.attached_images)} image")
+            if self._memory_labels:
+                extras.append(f"{len(self._memory_labels)} memory")
+            if not self.plan_gate_enabled:
+                extras.append("plan auto")
+            if getattr(self, "queued_prompts", None):
+                extras.append(f"{len(self.queued_prompts)} queued")
+            if getattr(self, "active_agent_name", ""):
+                extras.append(f"agent {self.active_agent_name}")
+            if getattr(self, "_ui_busy", False):
+                elapsed = int(time.monotonic() - getattr(self, "_busy_started", time.monotonic()))
+                chars = getattr(self, "_stream_chars", 0)
+                extras.insert(0, f"working {elapsed}s" + (f" · {_usage.format_tokens(chars)} chars" if chars else ""))
+            self.status_extra_label.configure(text=" · ".join(extras))
+            connect = getattr(self, "prefs_connect_button", None)
+            if connect is not None and self.api_key and connect.winfo_manager():
+                connect.grid_remove()
+            fraction = self.usage_meter.context_fraction()
+            self._draw_context_meter(fraction)
+        except tk.TclError:
+            pass
+
+    def _draw_context_meter(self, fraction):
+        canvas = getattr(self, "status_meter", None)
+        if canvas is None:
+            return
+        c = PALETTE
+        width = int(canvas.cget("width"))
+        canvas.coords(self._status_meter_fill, 0, 0, max(0, int(width * fraction)), 4)
+        tone = c["success"] if fraction < 0.6 else (c["warning"] if fraction < 0.85 else c["danger"])
+        canvas.itemconfigure(self._status_meter_fill, fill=tone)
+
+    def _build_status_strip(self):
+        c = PALETTE
+        strip = tk.Frame(self._center_panel, bg=c["canvas"])
+        strip.grid(row=12, column=0, sticky="ew", pady=(self._px(6), 0))
+        self.status_strip = strip
+
+        def chip(text, command=None, hint=None, fg=None):
+            label = tk.Label(strip, text=text, bg=c["canvas"], fg=fg or c["text_subtle"], font=FONTS["small"], padx=self._px(6))
+            label.pack(side=tk.LEFT)
+            if command:
+                label.configure(cursor="hand2")
+                label.bind("<ButtonRelease-1>", lambda _e: command(), add="+")
+                label.bind("<Enter>", lambda _e: label.configure(fg=c["text"]), add="+")
+                label.bind("<Leave>", lambda _e: label.configure(fg=fg or c["text_subtle"]), add="+")
+            if hint:
+                self._attach_tooltip(label, hint)
+            return label
+
+        self.status_approval_label = chip("Suggest", self._cycle_approval_mode, "Approval mode · click to cycle (Shift+Tab)")
+        tk.Frame(strip, bg=c["border"], width=1, height=self._px(12)).pack(side=tk.LEFT, padx=self._px(2))
+        self.status_git_label = chip("no git", lambda: self._show_command_result(self.run_slash_command("/git")), "Git branch and changes · click for details")
+        tk.Frame(strip, bg=c["border"], width=1, height=self._px(12)).pack(side=tk.LEFT, padx=self._px(2))
+        self.status_extra_label = chip("")
+        self.status_usage_label = chip("0 tokens · $0", lambda: self._show_command_result(self.run_slash_command("/cost")), "Session tokens, context use and cost")
+        self.status_usage_label.pack_configure(side=tk.RIGHT)
+        meter = tk.Canvas(strip, width=self._px(44), height=4, bg=c["surface_raised"], highlightthickness=0, borderwidth=0)
+        meter.pack(side=tk.RIGHT, padx=(self._px(6), 0))
+        self.status_meter = meter
+        self._status_meter_fill = meter.create_rectangle(0, 0, 0, 4, fill=c["success"], width=0)
+        self._attach_tooltip(meter, "Context window used by the last prompt")
+        self._refresh_status_strip()
+
+    STATUSLINE_INTERVAL_MS = 10_000
+
+    def _start_statusline(self):
+        argv = self.config_data.get("statusline_command")
+        if isinstance(argv, str):
+            argv = argv.split()
+        if not isinstance(argv, list) or not argv or _hooks.hook_problem(argv):
+            return
+        self._statusline_argv = [str(part) for part in argv]
+        self._statusline_label = tk.Label(self.status_strip, text="", bg=PALETTE["canvas"], fg=PALETTE["text_muted"],
+                                          font=FONTS["small"], padx=self._px(6))
+        self._statusline_label.pack(side=tk.LEFT)
+        self._tick_statusline()
+
+    def _tick_statusline(self):
+        if self.lifecycle.closed:
+            return
+        folder = self.selected_folder.get().strip() or None
+        argv = self._statusline_argv
+        payload = json.dumps({"project": folder, "state": TASK_STATE_LABELS.get(self.task_state, ""),
+                              "approval": self.approval_mode_value, "model": self.usage_meter.last_model})
+
+        def work():
+            try:
+                completed = subprocess.run(argv, input=payload, capture_output=True, text=True, timeout=5,
+                                           cwd=folder, env=build_verification_environment(), shell=False)
+                text = (completed.stdout or "").strip().splitlines()[0][:120] if completed.stdout.strip() else ""
+            except (OSError, subprocess.TimeoutExpired, IndexError):
+                text = ""
+            self._parity_queue.put(("statusline", text))
+
+        threading.Thread(target=work, daemon=True).start()
+        try:
+            self._statusline_after_id = self.after(self.STATUSLINE_INTERVAL_MS, self._tick_statusline)
+        except tk.TclError:
+            pass
+
+    def _cycle_approval_mode(self, _event=None):
+        modes = _approval.APPROVAL_MODES
+        current = modes.index(self.approval_mode_value)
+        self.set_approval_mode(modes[(current + 1) % len(modes)])
+        return "break"
+
+    def _show_command_result(self, result):
+        _handled, ok, message = result
+        if message:
+            self._toast(message, "success" if ok else "danger")
+
+    # Toasts ----------------------------------------------------------------------
+
+    def _toast(self, text, tone="info"):
+        if self.lifecycle.closed or not getattr(self, "_parity_ready", False):
+            return
+        c = PALETTE
+        accent = {"success": c["success"], "danger": c["danger"], "warning": c["warning"]}.get(tone, c["accent"])
+        toast = getattr(self, "_toast_frame", None)
+        try:
+            if toast is None:
+                toast = tk.Frame(self, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+                self._toast_bar = tk.Frame(toast, bg=accent, width=3)
+                self._toast_bar.pack(side=tk.LEFT, fill=tk.Y)
+                self._toast_label = tk.Label(toast, text="", bg=c["surface_raised"], fg=c["text"], font=FONTS["small"],
+                                             padx=self._px(12), pady=self._px(8), wraplength=self._px(360), justify=tk.LEFT)
+                self._toast_label.pack(side=tk.LEFT)
+                self._toast_frame = toast
+            self._toast_bar.configure(bg=accent)
+            self._toast_label.configure(text=self._redact_sensitive(str(text))[:300], fg=c["text_subtle"])
+            target_y = -self._px(20)
+            start_y = target_y + self._px(14)
+            toast.place(relx=1.0, rely=1.0, x=-self._px(20), y=start_y, anchor="se")
+            toast.lift()
+
+            def apply(t):
+                toast.place_configure(y=int(start_y + (target_y - start_y) * t))
+                self._toast_label.configure(fg=ui_kit.mix(c["text_subtle"], c["text"], t))
+
+            self.animator.tween("toast", 0.24, apply, easing=ui_kit.ease_out_expo)
+            if self._toast_after_id is not None:
+                self.after_cancel(self._toast_after_id)
+            self._toast_after_id = self.after(3200, self._hide_toast)
+        except tk.TclError:
+            pass
+
+    def _hide_toast(self):
+        self._toast_after_id = None
+        toast = getattr(self, "_toast_frame", None)
+        if toast is None or self.lifecycle.closed:
+            return
+        c = PALETTE
+
+        def apply(t):
+            self._toast_label.configure(fg=ui_kit.mix(c["text"], c["surface_raised"], t))
+
+        self.animator.tween("toast", 0.2, apply, easing=ui_kit.ease_in_out, done=lambda: toast.place_forget())
+
+    # Composer suggestions: /commands and @files -----------------------------------
+
+    def _build_composer_suggestions(self):
+        c = PALETTE
+        popup = tk.Frame(self._center_panel, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+        self.suggest_popup = popup
+        self.suggest_list = tk.Listbox(
+            popup, bg=c["surface_raised"], fg=c["text"], font=FONTS["small"], activestyle="none",
+            selectbackground=c["border_strong"], selectforeground=c["text"], highlightthickness=0,
+            borderwidth=0, height=6, exportselection=False,
+        )
+        self.suggest_list.pack(fill=tk.BOTH, expand=True, padx=self._px(4), pady=self._px(4))
+        self.suggest_list.bind("<ButtonRelease-1>", lambda _e: self._accept_suggestion(), add="+")
+        self.instructions.bind("<KeyRelease>", self._on_composer_key, add="+")
+        for key in ("<Tab>", "<Down>", "<Up>", "<Escape>"):
+            self.instructions.bind(key, self._on_composer_nav, add="+")
+        self.instructions.bind("<Return>", self._on_composer_return, add="+")
+        self.instructions.bind("<Up>", self._on_history_up, add="+")
+        self.instructions.bind("<Down>", self._on_history_down, add="+")
+        self._prompt_history_index = None
+
+    PROMPT_HISTORY_MAX = 50
+
+    def _remember_prompt(self, text):
+        history = getattr(self, "prompt_history", [])
+        if text and (not history or history[-1] != text):
+            history.append(text)
+        self.prompt_history = history[-self.PROMPT_HISTORY_MAX:]
+        self._prompt_history_index = None
+
+    def _on_history_up(self, _event=None):
+        if self._suggestions_visible():
+            return None
+        try:
+            if self.instructions.compare(tk.INSERT, ">=", "2.0"):
+                return None  # moving inside a multi-line prompt
+        except tk.TclError:
+            return None
+        history = getattr(self, "prompt_history", [])
+        if not history:
+            return None
+        if self._prompt_history_index is None:
+            self._prompt_draft = self.instructions.get("1.0", "end-1c")
+            self._prompt_history_index = len(history)
+        if self._prompt_history_index == 0:
+            return "break"
+        self._prompt_history_index -= 1
+        self._set_prompt_text(history[self._prompt_history_index])
+        self.instructions.mark_set(tk.INSERT, "1.end")
+        return "break"
+
+    def _on_history_down(self, _event=None):
+        if self._suggestions_visible() or self._prompt_history_index is None:
+            return None
+        try:
+            if self.instructions.compare("insert lineend", "<", "end-1c"):
+                return None
+        except tk.TclError:
+            return None
+        history = getattr(self, "prompt_history", [])
+        self._prompt_history_index += 1
+        if self._prompt_history_index >= len(history):
+            self._prompt_history_index = None
+            self._set_prompt_text(getattr(self, "_prompt_draft", ""))
+        else:
+            self._set_prompt_text(history[self._prompt_history_index])
+        self.instructions.mark_set(tk.INSERT, tk.END)
+        return "break"
+
+    def _known_project_paths(self):
+        return list(getattr(self, "_scanned_context_paths", ()) or ())
+
+    def _on_composer_key(self, event=None):
+        if event is not None and event.keysym in {"Up", "Down", "Tab", "Escape", "Return"}:
+            return None
+        try:
+            before = self.instructions.get("1.0", tk.INSERT)
+        except tk.TclError:
+            return None
+        items, kind = [], None
+        stripped = before.lstrip()
+        if stripped.startswith("/") and "\n" not in stripped and " " not in stripped:
+            items = [(f"/{cmd.name}", cmd.description) for cmd in self.command_registry.complete(stripped)]
+            kind = "command"
+        else:
+            prefix = _mentions.current_mention_prefix(before)
+            if prefix is not None:
+                items = [(f"@{path}", "") for path in _mentions.complete_mention(prefix, self._known_project_paths())]
+                kind = "mention"
+        self._show_suggestions(items, kind)
+        return None
+
+    def _show_suggestions(self, items, kind):
+        popup = getattr(self, "suggest_popup", None)
+        if popup is None:
+            return
+        self._suggest_items, self._suggest_kind = items, kind
+        if not items:
+            popup.place_forget()
+            return
+        listbox = self.suggest_list
+        listbox.delete(0, tk.END)
+        width = 0
+        for label, description in items:
+            text = f"{label}   {description}" if description else label
+            width = max(width, len(text))
+            listbox.insert(tk.END, text)
+        listbox.selection_clear(0, tk.END)
+        listbox.selection_set(0)
+        listbox.configure(height=min(8, len(items)), width=min(90, max(24, width)))
+        try:
+            card = self.composer_card
+            popup.place(in_=card, x=0, y=-self._px(6), anchor="sw")
+            popup.lift()
+        except tk.TclError:
+            pass
+
+    def _suggestions_visible(self):
+        popup = getattr(self, "suggest_popup", None)
+        return bool(popup is not None and popup.winfo_manager() and self._suggest_items)
+
+    def _on_composer_nav(self, event):
+        if not self._suggestions_visible():
+            return None
+        listbox = self.suggest_list
+        current = listbox.curselection()
+        index = current[0] if current else 0
+        if event.keysym == "Escape":
+            self._show_suggestions([], None)
+            return "break"
+        if event.keysym == "Tab":
+            self._accept_suggestion()
+            return "break"
+        index = (index + (1 if event.keysym == "Down" else -1)) % len(self._suggest_items)
+        listbox.selection_clear(0, tk.END)
+        listbox.selection_set(index)
+        listbox.see(index)
+        return "break"
+
+    def _on_composer_return(self, event):
+        if self._suggestions_visible() and not (event.state & 0x4):
+            self._accept_suggestion()
+            return "break"
+        return None
+
+    def _accept_suggestion(self):
+        if not self._suggest_items:
+            return
+        current = self.suggest_list.curselection()
+        label = self._suggest_items[current[0] if current else 0][0]
+        try:
+            before = self.instructions.get("1.0", tk.INSERT)
+            if self._suggest_kind == "command":
+                start = f"1.0+{len(before) - len(before.lstrip())}c"
+                self.instructions.delete(start, tk.INSERT)
+                self.instructions.insert(start, label + " ")
+            else:
+                prefix = _mentions.current_mention_prefix(before) or ""
+                self.instructions.delete(f"{tk.INSERT}-{len(prefix) + 1}c", tk.INSERT)
+                self.instructions.insert(tk.INSERT, label + " ")
+        except tk.TclError:
+            pass
+        self._show_suggestions([], None)
+        self._sync_prompt_placeholder()
+
+    # Settings drawer: agent preferences --------------------------------------------
+
+    def _build_agent_preferences(self):
+        c = PALETTE
+        sidebar = self._legacy_sidebar
+        frame = tk.Frame(sidebar, bg=c["canvas"])
+        frame.grid(row=12, column=0, sticky="ew", pady=(0, 0))
+        frame.columnconfigure(0, weight=1)
+        self._sidebar_rows[frame] = 12
+        self.agent_preferences_frame = frame
+        row = 0
+        self.prefs_connect_button = ttk.Button(frame, text="Connect OpenRouter", command=self._start_openrouter_login,
+                                               style="Primary.TButton", takefocus=True)
+        self.prefs_connect_button.grid(row=row, column=0, sticky="ew", pady=(self._px(4), 0))
+        if self.api_key:
+            self.prefs_connect_button.grid_remove()
+        row += 1
+
+        def heading(text):
+            nonlocal row
+            ttk.Label(frame, text=text, style="Section.TLabel").grid(row=row, column=0, sticky="w", pady=(self._px(8), self._px(3)))
+            row += 1
+
+        def segmented(variable, options, command):
+            nonlocal row
+            group = tk.Frame(frame, bg=c["surface_alt"], padx=2, pady=2)
+            group.grid(row=row, column=0, sticky="ew")
+            row += 1
+            buttons = []
+            for index, (value, label) in enumerate(options):
+                group.columnconfigure(index, weight=1, uniform="seg")
+                button = tk.Label(group, text=label, bg=c["surface_alt"], fg=c["text_muted"], font=FONTS["small"],
+                                  padx=self._px(6), pady=self._px(5), cursor="hand2", takefocus=1,
+                                  highlightthickness=1, highlightbackground=c["surface_alt"], highlightcolor=c["focus"])
+                button.bind("<FocusIn>", lambda _e, b=button: b.configure(highlightbackground=c["focus"]), add="+")
+                button.bind("<FocusOut>", lambda _e, b=button: b.configure(highlightbackground=b.cget("bg")), add="+")
+                button.bind("<Left>", lambda _e, b=button: (b.tk_focusPrev().focus_set(), "break")[1], add="+")
+                button.bind("<Right>", lambda _e, b=button: (b.tk_focusNext().focus_set(), "break")[1], add="+")
+                button.grid(row=0, column=index, sticky="ew")
+                button.bind("<ButtonRelease-1>", lambda _e, v=value: command(v), add="+")
+                button.bind("<Return>", lambda _e, v=value: command(v), add="+")
+                button.bind("<space>", lambda _e, v=value: command(v), add="+")
+                buttons.append((value, button))
+
+            def sync(*_args):
+                current = variable.get()
+                for value, button in buttons:
+                    selected = value == current
+                    target_bg = c["surface_raised"] if selected else c["surface_alt"]
+                    self._tween_color(("seg", str(button)), button, "bg", target_bg, 0.14)
+                    button.configure(fg=c["text"] if selected else c["text_muted"])
+
+            variable.trace_add("write", sync)
+            sync()
+            return buttons
+
+        heading("Approval")
+        segmented(self.approval_mode_var, (("suggest", "Suggest"), ("auto-edit", "Auto-edit"), ("full-auto", "Full auto")),
+                  lambda v: self.set_approval_mode(v))
+        self.approval_note_label = tk.Label(frame, text="", bg=c["canvas"], fg=c["text_subtle"], font=FONTS["small"],
+                                            wraplength=self._px(250), justify=tk.LEFT, anchor="w")
+        self.approval_note_label.grid(row=row, column=0, sticky="ew", pady=(self._px(6), 0))
+        row += 1
+        self.approval_mode_var.trace_add("write", lambda *_a: self.approval_note_label.configure(
+            text=_approval.APPROVAL_LABELS.get(self.approval_mode_var.get(), "")))
+        self.approval_note_label.configure(text=_approval.APPROVAL_LABELS[self.approval_mode_value])
+
+        heading("Output style")
+        segmented(self.style_var, (("concise", "Concise"), ("default", "Default"), ("explanatory", "Explain")),
+                  lambda v: self.set_output_style(v))
+        heading("Reasoning effort")
+        segmented(self.effort_var, (("default", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                  lambda v: self.set_reasoning_effort(v))
+        self.sandbox_var = tk.StringVar(master=self, value=SANDBOX_SETTINGS["mode"])
+        heading("Commands")
+        segmented(self.sandbox_var, (("off", "Network on"), ("network-off", "No network")), self._on_sandbox_choice)
+        heading("Theme")
+        segmented(self.theme_var, (("dark", "Dark"), ("light", "Light"), ("system", "System")),
+                  self._on_theme_choice)
+
+        toggle = ttk.Checkbutton(frame, text="Approve each plan (plan gate)", variable=self.plan_gate_var,
+                                 command=lambda: self.set_plan_gate(self.plan_gate_var.get()), style="Mode.TCheckbutton", takefocus=True)
+        toggle.grid(row=row, column=0, sticky="w", pady=(self._px(10), 0))
+        row += 1
+        self.plan_gate_button = toggle
+        self.auto_commit_var = tk.BooleanVar(master=self, value=bool(self.config_data.get("auto_commit")))
+        self.notify_var = tk.BooleanVar(master=self, value=self.config_data.get("notify", True) is not False)
+        for text, variable, key in (("Commit after each apply", self.auto_commit_var, "auto_commit"),
+                                    ("Ring when work needs me", self.notify_var, "notify")):
+            check = ttk.Checkbutton(frame, text=text, variable=variable, style="Mode.TCheckbutton", takefocus=True,
+                                    command=lambda v=variable, k=key: self._set_config_flag(k, v.get()))
+            check.grid(row=row, column=0, sticky="w", pady=(self._px(2), 0))
+            row += 1
+
+        open_config = ttk.Button(frame, text="Open config file", command=self._open_config_file, style="Secondary.TButton", takefocus=True)
+        open_config.grid(row=row, column=0, sticky="w", pady=(self._px(8), 0))
+        self._attach_tooltip(open_config, "Rules, hooks, temperature and more · /allow /deny /hooks /temperature")
+        self._sidebar_rows[frame] = 12
+
+    def _on_sandbox_choice(self, value):
+        ok, message = self._cmd_sandbox(value)
+        self.sandbox_var.set(SANDBOX_SETTINGS["mode"])
+        self._toast(message, "success" if ok else "danger")
+
+    def _on_theme_choice(self, value):
+        self.set_theme(value)
+        if _theme.resolve_theme(value) == self.theme_name:
+            return
+        if not self._run_in_progress() and messagebox.askyesno(APP_TITLE, "Restart now to apply the theme?", parent=self):
+            self.run_slash_command("/restart")
+        else:
+            self._toast("Theme applies on next start")
+
+    def _set_config_flag(self, key, value):
+        self.config_data[key] = bool(value)
+        self._save_config_quietly()
+
+    def _open_config_file(self):
+        if not CONFIG_PATH.exists():
+            self._save_config_quietly()
+        try:
+            if os.name == "nt":
+                os.startfile(str(CONFIG_PATH))  # noqa: S606 - local file the user owns
+            else:
+                webbrowser.open(CONFIG_PATH.as_uri())
+        except OSError as exc:
+            self._toast(f"Could not open config: {short_error(exc)}", "danger")
+
+    def _build_always_allow_buttons(self):
+        specs = (
+            ("always_allow_inspect_button", self.allow_inspect_button, self.always_allow_inspect,
+             "Allow now and save Read rules for these folders"),
+            ("always_allow_verification_button", self.allow_verification_button, self.always_allow_verification,
+             "Allow now and save a Bash rule for this command"),
+        )
+        for name, allow_button, command, hint in specs:
+            button = ttk.Button(allow_button.master, text="Always allow", command=command, style="Secondary.TButton", takefocus=True)
+            button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(self._px(6), 0))
+            self._attach_tooltip(button, hint)
+            setattr(self, name, button)
+        self._sync_always_allow_buttons()
+
+    def _sync_always_allow_buttons(self):
+        for name, source in (("always_allow_inspect_button", "allow_inspect_button"),
+                             ("always_allow_verification_button", "allow_verification_button")):
+            button, allow = getattr(self, name, None), getattr(self, source, None)
+            if button is None or allow is None:
+                continue
+            try:
+                state = str(allow.cget("state"))
+                if str(button.cget("state")) != state:
+                    button.configure(state=state)
+            except tk.TclError:
+                pass
+
+    def _sync_request_panels(self):
+        """Show the read and command request panels only while a request waits."""
+        if not self._disclosure_expanded.get("task_tools"):
+            return
+        for button, active in ((self.allow_inspect_button, self.inspect_request),
+                               (self.allow_verification_button, self.verification_request)):
+            panel = button.master.master
+            try:
+                if active and not panel.winfo_manager():
+                    panel.grid()
+                elif not active and panel.winfo_manager():
+                    panel.grid_remove()
+            except tk.TclError:
+                pass
+
+    def always_allow_inspect(self):
+        request = self.inspect_request
+        if request is None:
+            return False
+        rules = list(dict.fromkeys(
+            f"Read({path.rsplit('/', 1)[0]}/**)" if "/" in path else f"Read({path})" for path in request.paths
+        ))
+        for rule in rules:
+            self.approval_rules.add("allow", rule)
+        self.config_data["permissions"] = self.approval_rules.to_config()
+        self._save_config_quietly()
+        self._toast("Saved: " + ", ".join(rules), "success")
+        return self.allow_inspect()
+
+    def always_allow_verification(self):
+        request = self.verification_request
+        if request is None:
+            return False
+        rule = _approval.command_rule_for(request.command)
+        if rule:
+            self.approval_rules.add("allow", rule)
+            self.config_data["permissions"] = self.approval_rules.to_config()
+            self._save_config_quietly()
+            self._toast(f"Saved: {rule}", "success")
+        return self.allow_verification()
+
+    def _build_changes_menu(self):
+        c = PALETTE
+        menu = tk.Menu(self, tearoff=False, bg=c["surface_raised"], fg=c["text"], activebackground=c["border_strong"],
+                       activeforeground=c["text"], borderwidth=0, font=FONTS["small"])
+        menu.add_command(label="Apply selected", command=self.apply_selected)
+        menu.add_command(label="Reject selected", command=self.reject_selected)
+        menu.add_separator()
+        menu.add_command(label="Copy path", command=self._copy_selected_paths)
+        menu.add_command(label="Mention in prompt", command=self._mention_selected_paths)
+        self.changes_menu = menu
+
+        def popup(event):
+            row = self.edited_files.identify_row(event.y)
+            if row and row not in self.edited_files.selection():
+                self.edited_files.selection_set(row)
+            if self.edited_files.selection():
+                menu.tk_popup(event.x_root, event.y_root)
+            return "break"
+
+        mac = os.name != "nt" and os.uname().sysname == "Darwin"
+        for sequence in ("<Button-3>", "<Button-2>" if mac else "<Control-Button-1>"):
+            self.edited_files.bind(sequence, popup, add="+")
+
+    def _copy_selected_paths(self):
+        paths = list(self.edited_files.selection())
+        if paths:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(paths))
+            self._toast(f"Copied {len(paths)} path(s)")
+
+    def _mention_selected_paths(self):
+        for path in self.edited_files.selection():
+            self.instructions.insert(tk.END, f" @{path}")
+        self._sync_prompt_placeholder()
+        self.instructions.focus_set()
+
+    def _finish_parity_ui(self):
+        self.transcript = []
+        self._build_changes_menu()
+        self._style_activity_log()
+        try:
+            self.instructions.configure(undo=True, maxundo=200, autoseparators=True)
+        except tk.TclError:
+            pass
+        self._style_transcript()
+        self._build_status_strip()
+        self._start_statusline()
+        self._build_composer_suggestions()
+        self._build_agent_preferences()
+        self._build_command_palette()
+        self._build_rail_palette_button()
+        self._build_always_allow_buttons()
+        try:
+            self.activity.configure(height=6)
+            self.plan_preview.configure(font=FONTS["small"], height=6)
+        except tk.TclError:
+            pass
+        label = getattr(self, "review_selection_meta_label", None)
+        if label is not None:
+            try:
+                label.configure(font=FONTS["small"])
+            except tk.TclError:
+                try:
+                    ttk.Style(self).configure("ReviewMeta.TLabel", font=FONTS["small"], foreground=PALETTE["text_subtle"], background=PALETTE["canvas"])
+                    label.configure(style="ReviewMeta.TLabel")
+                except tk.TclError:
+                    pass
+        self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
+        self._apply_keybindings()
+        self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
+        try:
+            self.bind_all("<ISO_Left_Tab>", self._on_shift_tab, add="+")  # X11 reports Shift+Tab this way
+        except tk.TclError:
+            pass
+        self._parity_ready = True
+        self._start_mcp_servers()
+        self._run_event_hook("SessionStart", {"source": "startup"})
+        global USAGE_SINK
+        USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
+        self._refresh_git_status_async()
+        self._refresh_status_strip()
+
+    # Command palette (Ctrl+Shift+P) ----------------------------------------------
+
+    def _build_command_palette(self):
+        c = PALETTE
+        shell = tk.Frame(self, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+        self.palette_frame = shell
+        entry = tk.Entry(shell, bg=c["surface_raised"], fg=c["text"], insertbackground=c["text"], relief="flat",
+                         font=(FONTS["body"][0], 12), highlightthickness=0, borderwidth=0)
+        entry.pack(fill=tk.X, padx=self._px(14), pady=(self._px(12), self._px(8)))
+        tk.Frame(shell, bg=c["border"], height=1).pack(fill=tk.X)
+        listbox = tk.Listbox(shell, bg=c["surface_raised"], fg=c["text"], font=FONTS["body"], activestyle="none",
+                             selectbackground=c["border_strong"], selectforeground=c["text"], highlightthickness=0,
+                             borderwidth=0, height=10, exportselection=False)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=self._px(6), pady=self._px(6))
+        hint = tk.Label(shell, text="Enter run · Tab fill composer · Esc close", bg=c["surface_raised"],
+                        fg=c["text_subtle"], font=FONTS["small"], anchor="w")
+        hint.pack(fill=tk.X, padx=self._px(14), pady=(0, self._px(10)))
+        self.palette_entry, self.palette_list = entry, listbox
+        self._palette_items = []
+        entry.bind("<KeyRelease>", self._palette_filter)
+        entry.bind("<Down>", lambda _e: self._palette_move(1))
+        entry.bind("<Up>", lambda _e: self._palette_move(-1))
+        entry.bind("<Return>", lambda _e: self._palette_run())
+        entry.bind("<Tab>", lambda _e: self._palette_run(fill_only=True))
+        entry.bind("<Escape>", lambda _e: self.close_command_palette())
+        listbox.bind("<Double-Button-1>", lambda _e: self._palette_run())
+        self.bind_all("<Control-Shift-P>", self.open_command_palette, add="+")
+        self.bind_all("<Control-P>", self.open_command_palette, add="+")
+        self.bind_all("<F1>", self.open_command_palette, add="+")
+
+    def _build_rail_palette_button(self):
+        c = PALETTE
+        button = tk.Button(self.icon_rail, command=self.open_command_palette, relief="flat", borderwidth=0,
+                           highlightthickness=0, bg=c["canvas"], activebackground=c["surface_raised"], cursor="hand2",
+                           width=self._px(40), height=self._px(36), takefocus=1)
+        button.configure(image=self._icon("search", 20, c["text_muted"], c["canvas"]))
+        button.grid(row=8, column=0, pady=2)
+
+        def hover(active):
+            background = c["surface_raised"] if active else c["canvas"]
+            button.configure(bg=background, image=self._icon("search", 20, c["text"] if active else c["text_muted"], background))
+
+        button.bind("<Enter>", lambda _e: hover(True), add="+")
+        button.bind("<Leave>", lambda _e: hover(False), add="+")
+        self._attach_tooltip(button, "Commands · Ctrl+Shift+P")
+        self.rail_palette_button = button
+
+    def open_command_palette(self, _event=None):
+        frame = getattr(self, "palette_frame", None)
+        if frame is None or self.lifecycle.closed:
+            return "break"
+        self.palette_entry.delete(0, tk.END)
+        self._palette_filter()
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        window_width = max(self.winfo_width(), self.winfo_reqwidth())
+        width = min(self._px(640), max(self._px(360), window_width - self._px(80)))
+        target = self._px(64)
+        frame.place(relx=0.5, y=target - self._px(10), anchor="n", width=width)
+        frame.lift()
+        c = PALETTE
+
+        def apply(t):
+            frame.place_configure(y=int(target - self._px(10) * (1 - t)))
+            frame.configure(highlightbackground=ui_kit.mix(c["surface_raised"], c["border_strong"], t))
+
+        self.animator.tween("palette", ui_kit.DURATION["panel"], apply, easing=ui_kit.EASE_UI)
+        self.palette_entry.focus_set()
+        return "break"
+
+    def close_command_palette(self):
+        frame = getattr(self, "palette_frame", None)
+        if frame is not None and frame.winfo_manager():
+            frame.place_forget()
+            try:
+                self.instructions.focus_set()
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _palette_filter(self, event=None):
+        if event is not None and event.keysym in {"Up", "Down", "Return", "Tab", "Escape"}:
+            return None
+        query = self.palette_entry.get().lstrip("/")
+        self._palette_items = _slash.palette_matches(query, self.command_registry.all())
+        if len(query) >= 2:
+            folder = self.selected_folder.get().strip() or None
+            for conversation in self.session_store.list(folder, limit=20):
+                if _slash.fuzzy_score(query, conversation.title or "") is not None and len(self._palette_items) < 14:
+                    self._palette_items.append(_slash.SlashCommand(
+                        name=f"resume {conversation.session_id}", description=f"Resume · {conversation.title}", kind="session"))
+        self.palette_list.delete(0, tk.END)
+        for command in self._palette_items:
+            usage = f" {command.usage}" if command.usage else ""
+            self.palette_list.insert(tk.END, f"  /{command.name}{usage}    {command.description}")
+        if self._palette_items:
+            self.palette_list.selection_set(0)
+        return None
+
+    def _palette_move(self, step):
+        if not self._palette_items:
+            return "break"
+        current = self.palette_list.curselection()
+        index = ((current[0] if current else 0) + step) % len(self._palette_items)
+        self.palette_list.selection_clear(0, tk.END)
+        self.palette_list.selection_set(index)
+        self.palette_list.see(index)
+        return "break"
+
+    def _palette_run(self, fill_only=False):
+        if not self._palette_items:
+            return "break"
+        current = self.palette_list.curselection()
+        command = self._palette_items[current[0] if current else 0]
+        self.close_command_palette()
+        if command.kind == "session":
+            self._show_command_result(self.run_slash_command(f"/{command.name}"))
+            return "break"
+        needs_args = bool(command.usage) and command.usage.startswith("<")
+        if fill_only or needs_args or command.kind == "custom":
+            self._set_prompt_text(f"/{command.name} ")
+            self.instructions.mark_set(tk.INSERT, tk.END)
+            self.instructions.focus_set()
+            return "break"
+        self._show_command_result(self.run_slash_command(f"/{command.name}"))
+        return "break"
+
+    KEYBINDING_ACTIONS = {
+        "palette": "open_command_palette",
+        "run": "_on_run_shortcut",
+        "new_chat": "_on_clear_shortcut",
+        "approval_mode": "_cycle_approval_mode",
+        "command_field": "_on_local_command_shortcut",
+        "stop": "_keybinding_stop",
+        "settings": "_keybinding_settings",
+        "focus_prompt": "_keybinding_focus_prompt",
+    }
+
+    def _apply_keybindings(self):
+        """Extra shortcuts from config: {"keybindings": {"palette": "<Control-space>"}}."""
+        bindings = self.config_data.get("keybindings") or {}
+        applied = []
+        for action, sequence in bindings.items() if isinstance(bindings, dict) else ():
+            method = self.KEYBINDING_ACTIONS.get(action)
+            if not method or not isinstance(sequence, str) or not sequence.startswith("<"):
+                continue
+            handler = getattr(self, method)
+            try:
+                self.bind_all(sequence, lambda event, h=handler: (h(event), "break")[1], add="+")
+                applied.append(action)
+            except tk.TclError:
+                self.log(f"! keybinding {action}: invalid sequence {sequence}")
+        return applied
+
+    def _keybinding_stop(self, _event=None):
+        if self._run_in_progress():
+            self.cancel_active_run()
+
+    def _keybinding_settings(self, _event=None):
+        self._show_utility_view("settings")
+
+    def _keybinding_focus_prompt(self, _event=None):
+        self.instructions.focus_set()
+
+    def _on_clear_shortcut(self, _event=None):
+        if not self._run_in_progress():
+            self.reset_session()
+        return "break"
+
+    def _on_shift_tab(self, event=None):
+        if event is not None and event.widget is self.instructions:
+            return self._cycle_approval_mode()
+        return None
 
     def _validate_folder(self, show_error=True):
         folder_text = self.selected_folder.get().strip()
@@ -10316,6 +13198,7 @@ def collect_files(root, max_files, max_file_kb, requested_paths=None, max_total_
     max_bytes = max_file_kb * 1024
     requested = set(requested_paths) if requested_paths is not None else None
     total_bytes = 0
+    ignore = _ignore.load_ignore_rules(root)
 
     for path in sorted(root.rglob("*")):
         if len(files) >= max_files:
@@ -10326,6 +13209,8 @@ def collect_files(root, max_files, max_file_kb, requested_paths=None, max_total_
         if any(part in DEFAULT_IGNORE_DIRS for part in relative_parts[:-1]):
             continue
         relative_path = path.relative_to(root).as_posix()
+        if ignore and ignore.ignored(relative_path):
+            continue
         if requested is not None and relative_path not in requested:
             continue
         if not is_context_file_allowed(path):
@@ -11739,6 +14624,160 @@ def assemble_openrouter_stream(response, is_current=None, emit_chunk=None, chunk
     return "".join(assembled)
 
 
+OUTPUT_STYLES = {
+    "default": "",
+    "concise": " Keep every summary and plan step terse: short sentences, no filler.",
+    "explanatory": (
+        " In summaries, briefly explain why each change is made and the trade-offs, "
+        "so the user learns the codebase."
+    ),
+}
+REASONING_EFFORTS = ("low", "medium", "high")
+# Set by the app (or CLI) before a run; read by provider calls.
+GENERATION_SETTINGS = {"temperature": None, "style": "default", "reasoning_effort": "", "images": ()}
+
+
+def configure_generation(temperature=None, style=None, reasoning_effort=None):
+    if temperature is not None:
+        try:
+            value = float(temperature)
+        except (TypeError, ValueError):
+            value = None
+        GENERATION_SETTINGS["temperature"] = None if value is None else max(0.0, min(1.0, value))
+    if style is not None:
+        GENERATION_SETTINGS["style"] = style if style in OUTPUT_STYLES else "default"
+    if reasoning_effort is not None:
+        GENERATION_SETTINGS["reasoning_effort"] = reasoning_effort if reasoning_effort in REASONING_EFFORTS else ""
+    return dict(GENERATION_SETTINGS)
+
+
+def generation_style_suffix():
+    return OUTPUT_STYLES.get(GENERATION_SETTINGS.get("style") or "default", "")
+
+
+def apply_generation_settings(payload, attach_images=True):
+    temperature = GENERATION_SETTINGS.get("temperature")
+    if temperature is not None:
+        payload["temperature"] = temperature
+    effort = GENERATION_SETTINGS.get("reasoning_effort")
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+    images = (GENERATION_SETTINGS.get("images") or ()) if attach_images else ()
+    messages = payload.get("messages") or []
+    if images and messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
+        messages[-1] = {
+            "role": "user",
+            "content": [{"type": "text", "text": messages[-1]["content"]}]
+            + [{"type": "image_url", "image_url": {"url": url}} for url in images],
+        }
+    return payload
+
+
+IMAGE_MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _encode_images(paths):
+    urls = []
+    for path in list(paths or ())[:IMAGE_MAX_COUNT]:
+        mime = IMAGE_MIME_TYPES.get(Path(path).suffix.casefold())
+        if not mime:
+            continue
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        if len(data) <= IMAGE_MAX_BYTES:
+            urls.append(f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}")
+    return tuple(urls)
+
+
+STOP_HOOK_STATES = (TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR)
+class mock_dialog:
+    """Temporarily answer one tkinter dialog function with a fixed value."""
+
+    def __init__(self, module, name, value):
+        self.module, self.name, self.value = module, name, value
+
+    def __enter__(self):
+        self.original = getattr(self.module, self.name)
+        setattr(self.module, self.name, lambda *_a, **_k: self.value)
+        return self
+
+    def __exit__(self, *_exc):
+        setattr(self.module, self.name, self.original)
+        return False
+
+
+SANDBOX_SETTINGS = {"mode": "off"}
+
+
+def _sandboxed(argv):
+    return _sandbox.wrap(argv, SANDBOX_SETTINGS["mode"])
+
+
+def context_budget_for(host):
+    config = getattr(host, "config_data", None) or {}
+    try:
+        return max(4000, int(config.get("context_budget_tokens", _budget.DEFAULT_BUDGET_TOKENS)))
+    except (TypeError, ValueError, AttributeError):
+        return _budget.DEFAULT_BUDGET_TOKENS
+
+
+# Optional callable(dict) receiving token estimates for each provider call.
+USAGE_SINK = None
+
+
+def _emit_usage(log_queue, run_id, event_is_current, api_key, model, prompt_text, completion_text):
+    sink = USAGE_SINK
+    if sink is None:
+        return
+    try:
+        sink({
+            "model": str(model),
+            "prompt_tokens": (len(prompt_text or "") + 3) // 4,
+            "completion_tokens": (len(str(completion_text or "")) + 3) // 4,
+            "context_window": getattr(model, "context_length", None) or 0,
+        })
+    except Exception:
+        pass
+
+
+def complete_text(api_key, prompt, model_queue=None, system="You are a concise assistant.", timeout=None):
+    """One plain-text completion from the first free model that answers."""
+    queue_models = list(model_queue or MODEL_FALLBACKS)
+    last_error = None
+    for model in queue_models[:4]:
+        payload = apply_generation_settings({
+            "model": str(model),
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "stream": True,
+        }, attach_images=False)
+        request = Request(
+            OPENROUTER_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://local.coderouter",
+                "X-Title": APP_TITLE,
+            },
+            method="POST",
+        )
+        response = None
+        try:
+            response = urlopen(request, timeout=timeout or PROVIDER_REQUEST_TIMEOUT_SECONDS)
+            text = assemble_openrouter_stream(response)
+            if str(text or "").strip():
+                return str(text).strip(), str(model)
+        except Exception as exc:  # try the next free model
+            last_error = exc
+        finally:
+            if response is not None:
+                _close_provider_response(response)
+    raise RuntimeError(f"No free model answered: {short_error(last_error) if last_error else 'empty response'}")
+
+
 def call_openrouter(
     api_key,
     model,
@@ -11817,11 +14856,21 @@ def call_openrouter(
         "Return exactly one of these JSON shapes: "
         "{\"action\":\"final\",\"summary\":\"...\",\"files\":[{\"path\":\"relative/path.ext\",\"content\":\"complete content\"}]} "
         "or {\"action\":\"inspect\",\"summary\":\"...\",\"paths\":[\"relative/path.ext\"]} "
-        "or {\"action\":\"verify\",\"command\":\"bounded command\"}. "
+        "or {\"action\":\"verify\",\"command\":\"bounded command\"} "
+        "or {\"action\":\"search\",\"pattern\":\"regex\",\"glob\":\"optional *.py\"} "
+        "or {\"action\":\"list\",\"path\":\"relative/dir\"}" + (" or an mcp action" if MCP_CATALOG.get("text") else "") + ". "
+        f"search and list are read-only, run locally without permission and return results as inspect context; "
+        f"use at most {TOOL_QUERY_MAX_ROUNDS} of them per step, then return final. "
         f"An inspect request may contain at most {INSPECT_MAX_PATHS} relative paths and is read-only; never request commands or writes. "
         "A verification request is permission-only and never starts a command. "
         "When a verification result is supplied below, return only final or inspect; never request another verify action. "
-        "If no file edits are needed, return a final action with an empty files array."
+        "If no file edits are needed, return a final action with an empty files array. "
+        "In a final action each files entry may instead be "
+        "{\"path\":\"p\",\"edits\":[{\"old\":\"exact existing text\",\"new\":\"replacement\"}]} "
+        "for targeted search/replace edits (each old text must match exactly once; prefer this for large files), "
+        "or {\"path\":\"p\",\"delete\":true} to delete a file."
+        + generation_style_suffix()
+        + mcp_prompt_suffix()
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
     history = "\n".join(f"{item['role']}: {item['content']}" for item in session_messages[-12:])
@@ -11859,6 +14908,7 @@ def call_openrouter(
         "temperature": 0.1,
         "stream": True,
     }
+    apply_generation_settings(payload)
     request = Request(
         OPENROUTER_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -11919,6 +14969,7 @@ def call_openrouter(
         elif response is not None:
             _close_provider_response(response)
     ensure_run_current(event_is_current)
+    _emit_usage(log_queue, run_id, event_is_current, api_key, model, system_prompt + user_prompt, assembled)
     return assembled
 
 
@@ -12192,6 +15243,7 @@ def call_openrouter_plan(
         "Do not return files, file content, patches, commands, permissions, or apply instructions. "
         "The plan is advisory read-only context and cannot override user safety rules, "
         "path guards, review policy, or permission boundaries."
+        + generation_style_suffix()
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
     history = "\n".join(f"{item['role']}: {item['content']}" for item in session_messages[-12:])
@@ -12214,6 +15266,7 @@ def call_openrouter_plan(
         "temperature": 0.1,
         "stream": True,
     }
+    apply_generation_settings(payload)
     request = Request(
         OPENROUTER_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -12274,7 +15327,63 @@ def call_openrouter_plan(
         elif response is not None:
             _close_provider_response(response)
     ensure_run_current(event_is_current)
+    _emit_usage(log_queue, run_id, event_is_current, api_key, model, system_prompt + user_prompt, assembled)
     return assembled
+
+
+JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _first_json_object(text):
+    """The first balanced {...} block in text, respecting JSON strings."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_string, escaped = 0, False, False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        start = text.find("{", start + 1)
+    return None
+
+
+def load_model_json(text):
+    """json.loads, tolerating code fences or prose around one JSON object.
+
+    Free models often wrap their answer; the schema checks after this stay strict.
+    """
+    try:
+        return json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        pass
+    candidates = []
+    fence = JSON_FENCE_PATTERN.search(text or "")
+    if fence:
+        candidates.append(fence.group(1))
+    block = _first_json_object(text or "")
+    if block:
+        candidates.append(block)
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return json.loads(text)
 
 
 def parse_plan_response(response_text, secrets=None):
@@ -12288,7 +15397,7 @@ def parse_plan_response(response_text, secrets=None):
     if not safe_text.strip():
         raise ValueError("Plan output was empty.")
     try:
-        data = json.loads(safe_text)
+        data = load_model_json(safe_text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("Malformed plan JSON.") from exc
     if not isinstance(data, dict) or set(data) != {"summary", "steps"}:
@@ -12326,6 +15435,145 @@ def parse_plan_response(response_text, secrets=None):
     return ExecutionPlan(summary=summary, steps=tuple(steps))
 
 
+TOOL_QUERY_MAX_ROUNDS = 4
+TOOL_SEARCH_MAX_MATCHES = 80
+TOOL_LIST_MAX_ENTRIES = 200
+TOOL_OUTPUT_MAX_CHARS = 16 * 1024
+
+
+@dataclass(frozen=True)
+class ToolQuery:
+    """A read-only, local search or directory listing requested by the model."""
+
+    action: str
+    pattern: str = ""
+    path: str = ""
+    glob: str = ""
+
+    def label(self):
+        if self.action == "search":
+            return f"search {self.pattern!r}" + (f" in {self.glob}" if self.glob else "")
+        return f"list {self.path or '.'}"
+
+
+@dataclass(frozen=True)
+class McpCall:
+    tool: str
+    arguments: tuple = ()  # (json text,) to stay hashable
+
+    def label(self):
+        return f"mcp {self.tool}"
+
+    def argument_dict(self):
+        return json.loads(self.arguments[0]) if self.arguments else {}
+
+
+# Text catalog of connected MCP tools, set by the app or CLI.
+MCP_CATALOG = {"text": ""}
+
+
+def mcp_prompt_suffix():
+    catalog = MCP_CATALOG.get("text") or ""
+    if not catalog:
+        return ""
+    return (
+        " MCP tools are available: return {\"action\":\"mcp\",\"tool\":\"server.tool\",\"arguments\":{...}} "
+        "to call one; the result comes back as inspect context and may be refused by the user's approval policy. "
+        "Available tools:\n" + catalog
+    )
+
+
+def parse_tool_query(data):
+    action = data.get("action")
+    allowed = {"action", "pattern", "glob"} if action == "search" else {"action", "path"}
+    if not set(data) <= allowed:
+        raise ValueError(f"{action} response contains unknown fields.")
+    if action == "search":
+        pattern = data.get("pattern")
+        glob = data.get("glob") or ""
+        if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 200 or not isinstance(glob, str) or len(glob) > 120:
+            raise ValueError("Search response needs a short pattern.")
+        return ToolQuery("search", pattern=pattern, glob=glob.strip())
+    path = data.get("path") or ""
+    if not isinstance(path, str) or len(path) > INSPECT_MAX_PATH_CHARS:
+        raise ValueError("List response path is invalid.")
+    path = path.strip().strip("/").replace("\\", "/")
+    if path in {"", "."}:
+        path = ""
+    else:
+        path = normalize_inspect_path(path)
+    return ToolQuery("list", path=path)
+
+
+def _tool_walk(root):
+    ignore = _ignore.load_ignore_rules(root)
+    for current, directories, filenames in os.walk(str(root)):
+        base = Path(current)
+        directories[:] = sorted(
+            name for name in directories
+            if name.casefold() not in DEFAULT_IGNORE_DIRS and not name.startswith(".")
+            and not (ignore and ignore.ignored((base / name).relative_to(root).as_posix(), is_dir=True))
+        )
+        for name in sorted(filenames):
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            if is_secret_like_relative_path(relative) or path.is_symlink():
+                continue
+            if ignore and ignore.ignored(relative):
+                continue
+            yield path, relative
+
+
+def run_tool_query(root, query, secrets=None):
+    """Run a ToolQuery inside root and return it as a read-only SourceFile."""
+    import fnmatch
+
+    root = Path(root).resolve()
+    lines = []
+    if query.action == "search":
+        try:
+            matcher = re.compile(query.pattern, re.IGNORECASE)
+        except re.error:
+            matcher = re.compile(re.escape(query.pattern), re.IGNORECASE)
+        matches = 0
+        for path, relative in _tool_walk(root):
+            if query.glob and not fnmatch.fnmatch(relative, query.glob) and not fnmatch.fnmatch(path.name, query.glob):
+                continue
+            try:
+                if path.stat().st_size > 512 * 1024:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for number, line in enumerate(text.splitlines(), 1):
+                if matcher.search(line):
+                    lines.append(f"{relative}:{number}: {line.strip()[:200]}")
+                    matches += 1
+                    if matches >= TOOL_SEARCH_MAX_MATCHES:
+                        break
+            if matches >= TOOL_SEARCH_MAX_MATCHES:
+                lines.append(f"(stopped at {TOOL_SEARCH_MAX_MATCHES} matches)")
+                break
+        if not lines:
+            lines.append("(no matches)")
+    else:
+        base = (root / query.path).resolve() if query.path else root
+        if base != root and root not in base.parents:
+            raise ValueError("List path leaves the project.")
+        if not base.is_dir():
+            lines.append("(not a directory)")
+        else:
+            for count, child in enumerate(sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))):
+                if count >= TOOL_LIST_MAX_ENTRIES:
+                    lines.append("(truncated)")
+                    break
+                if child.name.casefold() in DEFAULT_IGNORE_DIRS or is_secret_like_relative_path(child.name):
+                    continue
+                lines.append(child.name + ("/" if child.is_dir() else ""))
+    content = redact_sensitive_text("\n".join(lines), list(secrets or ()))[:TOOL_OUTPUT_MAX_CHARS]
+    return SourceFile(path=root, relative_path=f"[{query.label()}]", content=content)
+
+
 def parse_executor_response(response_text, secrets=None):
     """Parse the strict final/inspect union used by the edit executor."""
     if not isinstance(response_text, str) or not response_text.strip():
@@ -12335,12 +15583,25 @@ def parse_executor_response(response_text, secrets=None):
     if redact_sensitive_text(raw_text, event_secrets) != raw_text or SECRET_PATTERN.search(raw_text):
         raise ValueError("Executor response contained credential-shaped content and was rejected.")
     try:
-        data = json.loads(raw_text)
+        data = load_model_json(raw_text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("Malformed executor JSON.") from exc
     if not isinstance(data, dict):
         raise ValueError("Executor response must be a JSON object.")
     action = data.get("action")
+    if action in {"search", "list"}:
+        return parse_tool_query(data)
+    if action == "mcp":
+        if not set(data) <= {"action", "tool", "arguments"}:
+            raise ValueError("MCP response contains unknown fields.")
+        tool = data.get("tool")
+        arguments = data.get("arguments") or {}
+        if not isinstance(tool, str) or "." not in tool or len(tool) > 160 or not isinstance(arguments, dict):
+            raise ValueError("MCP response needs tool as server.tool and an arguments object.")
+        encoded = json.dumps(arguments, ensure_ascii=False)
+        if len(encoded) > 32 * 1024:
+            raise ValueError("MCP arguments are too large.")
+        return McpCall(tool=tool.strip(), arguments=(encoded,))
     if action not in {"final", "inspect", "verify"}:
         raise ValueError("Executor response action must be final, inspect, or verify.")
 
@@ -12385,18 +15646,31 @@ def parse_executor_response(response_text, secrets=None):
     edits = []
     seen = set()
     for item in files:
-        if not isinstance(item, dict) or set(item) != {"path", "content"}:
+        if not isinstance(item, dict) or set(item) not in ({"path", "content"}, {"path", "edits"}, {"path", "delete"}):
             raise ValueError("Final response file entries contain unknown or missing fields.")
         raw_path = item.get("path")
-        content = item.get("content")
-        if not isinstance(raw_path, str) or not raw_path.strip() or not isinstance(content, str):
+        if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("Final response file entries must contain text path and content.")
         normalized = normalize_edit_path(raw_path)
         if normalized.casefold() in seen:
             raise ValueError("Final response contains duplicate paths.")
+        seen.add(normalized.casefold())
+        if "delete" in item:
+            if item["delete"] is not True:
+                raise ValueError("Final response delete flag must be true.")
+            edits.append({"path": normalized, "content": None})
+            continue
+        if "edits" in item:
+            hunks = item["edits"]
+            if not isinstance(hunks, list) or not hunks or len(json.dumps(hunks).encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
+                raise ValueError("Final response edits must be a bounded non-empty list.")
+            edits.append({"path": normalized, "edits": hunks})
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            raise ValueError("Final response file entries must contain text path and content.")
         if len(content.encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
             raise ValueError("Final response file content is too large.")
-        seen.add(normalized.casefold())
         edits.append({"path": normalized, "content": content})
     return {"action": "final", "summary": summary.strip(), "files": edits}
 
@@ -12431,6 +15705,29 @@ def parse_model_response(response_text):
     return {"summary": data.get("summary", "").strip(), "files": edits}
 
 
+def resolve_edit_hunks(root, edits):
+    """Turn {"path","edits"} search/replace entries into full-content edits."""
+    root = Path(root).resolve()
+    resolved = []
+    for edit in edits:
+        if "edits" not in edit:
+            resolved.append(edit)
+            continue
+        _normalized, target = resolve_edit_target(root, edit["path"])
+        original = ""
+        if target.is_file():
+            raw = target.read_bytes()
+            try:
+                original = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{edit['path']}: search/replace edits need a UTF-8 file.") from exc
+        content = _edit_ops.apply_hunks(original, edit["edits"], edit["path"])
+        if len(content.encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
+            raise ValueError("Final response file content is too large.")
+        resolved.append({"path": edit["path"], "content": content})
+    return resolved
+
+
 def render_diff_by_path(root, edits):
     root = Path(root).resolve()
     result = {}
@@ -12444,15 +15741,17 @@ def render_diff_by_path(root, edits):
         else:
             old_content = ""
         old_lines = old_content.splitlines(keepends=True)
-        new_lines = edit["content"].splitlines(keepends=True)
+        new_content = edit.get("content")
+        new_lines = [] if new_content is None else new_content.splitlines(keepends=True)
         diff = difflib.unified_diff(
             old_lines,
             new_lines,
             fromfile=f"a/{edit['path']}",
-            tofile=f"b/{edit['path']}",
+            tofile="/dev/null" if new_content is None else f"b/{edit['path']}",
             lineterm="",
         )
-        lines = [f"--- FILE {edit['path']} ---\n"]
+        marker = " (deleted)" if new_content is None else ""
+        lines = [f"--- FILE {edit['path']}{marker} ---\n"]
         for line in diff:
             lines.append(line if line.endswith("\n") else line + "\n")
         result[edit["path"]] = "".join(lines)
@@ -12499,10 +15798,10 @@ def build_undo_transaction(proposal):
             raise ValueError(f"Undo original content is invalid: {normalized}")
         if _sha256_bytes(original) != precondition.original_sha256:
             raise ValueError(f"Undo original precondition is invalid: {normalized}")
-        new_bytes = edit.content.encode("utf-8")
+        new_bytes = None if edit.content is None else edit.content.encode("utf-8")
         if original == new_bytes:
             continue
-        total_bytes += len(original or b"") + len(new_bytes)
+        total_bytes += len(original or b"") + len(new_bytes or b"")
         if total_bytes > UNDO_MAX_TOTAL_BYTES:
             raise ValueError("Undo capture exceeds the bounded byte limit.")
         states.append(
@@ -12687,7 +15986,9 @@ def create_pending_proposal(snapshot, edits):
         normalized, target = resolve_edit_target(project_root, relative_path)
         if normalized in seen_paths:
             raise ValueError(f"Duplicate proposal path: {normalized}")
-        if not isinstance(content, str):
+        if content is None and not target.is_file():
+            raise ValueError(f"Cannot delete a missing file: {normalized}")
+        if content is not None and not isinstance(content, str):
             raise ValueError(f"Proposal content must be text: {normalized}")
         seen_paths.add(normalized)
         original_bytes = target.read_bytes() if target.exists() else None
@@ -12763,7 +16064,7 @@ def apply_proposal_transactionally(proposal, current_root, current_task_state, c
         current_bytes = target.read_bytes() if target.exists() else None
         if _sha256_bytes(current_bytes) != precondition.original_sha256 or current_bytes != precondition.original_bytes:
             raise ValueError(f"File changed since proposal was created: {edit.relative_path}")
-        new_bytes = edit.content.encode("utf-8")
+        new_bytes = None if edit.content is None else edit.content.encode("utf-8")
         if current_bytes != new_bytes:
             operations.append((target, current_bytes, new_bytes))
 
@@ -12773,6 +16074,10 @@ def apply_proposal_transactionally(proposal, current_root, current_task_state, c
     try:
         for target, original_bytes, new_bytes in operations:
             ensure_run_current(is_current)
+            if new_bytes is None:
+                target.unlink()
+                applied.append((target, original_bytes))
+                continue
             missing_directories = []
             parent = target.parent
             cursor = parent
@@ -12875,11 +16180,40 @@ def _enable_dpi_awareness():
             pass
 
 
-def main():
+def main(argv=None):
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"exec", "commands", "ask", "open", "-h", "--help"}:
+        import cli
+
+        raise SystemExit(cli.main(argv, sys.modules[__name__]))
+    if argv:
+        import cli
+
+        raise SystemExit(cli.main(["open", *argv], sys.modules[__name__]))
+    if not TK_AVAILABLE:
+        raise SystemExit("Tkinter is missing (install python3-tk). Headless commands: exec, ask, commands.")
+    launch_window()
+
+
+def launch_window(folder="", resume=False, prompt=""):
     _enable_dpi_awareness()
     app = CodeAgentApp()
+    if folder:
+        path = Path(folder).expanduser().resolve()
+        if path.is_dir():
+            app.selected_folder.set(str(path))
+            app.config_data["last_folder"] = str(path)
+            app.scan_folder(silent=True)
+            app._on_project_changed(str(path))
+    if resume:
+        app.after(300, lambda: app._show_command_result(app.run_slash_command("/resume")))
+    if prompt:
+        app._set_prompt_text(prompt)
     app.deiconify()
     app.mainloop()
+    return 0
 
 
 if __name__ == "__main__":

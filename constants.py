@@ -306,3 +306,6 @@ PROTECTED_EDIT_SUFFIXES = {
     ".key",
     ".pem",
 }
+
+IMAGE_MAX_BYTES = 5 * 1024 * 1024
+IMAGE_MAX_COUNT = 4

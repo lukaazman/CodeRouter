@@ -1,6 +1,5 @@
 import queue
 import os
-import subprocess
 import tempfile
 import threading
 import tkinter as tk

@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: xvfb-run -a python -m unittest discover -s tests
+
+  windows:
+    runs-on: windows-latest
+    env:
+      # Avoid 8.3 short temp paths (RUNNER~1) that differ from resolved paths.
+      TEMP: ${{ github.workspace }}\..\tmp
+      TMP: ${{ github.workspace }}\..\tmp
+    steps:
+      - run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\..\tmp"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests
