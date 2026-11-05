@@ -12173,7 +12173,13 @@ class CodeAgentApp(tk.Tk):
         self.mentioned_paths = mentions
         if not mentions:
             return ""
-        return "Files the user mentioned (prioritise them): " + ", ".join(mentions)
+        note = "Files the user mentioned (prioritise them): " + ", ".join(mentions)
+        folder = self.selected_folder.get().strip()
+        for path, start, end in _mentions.extract_ranges(prompt):
+            snippet = _mentions.read_range(folder, path, start, end) if folder else None
+            if snippet:
+                note += f"\n\nLines {start}-{end} of {path}:\n{self._redact_sensitive(snippet)}"
+        return note
 
     # Images -------------------------------------------------------------------------
 

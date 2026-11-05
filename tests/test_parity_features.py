@@ -302,6 +302,12 @@ class MemoryAndMentionTests(unittest.TestCase):
         self.assertEqual(resolved, ["src/app.py", "docs/a.md", "docs/b.md"])
         self.assertEqual(missing, ["nope.py"])
         self.assertEqual(mentions.current_mention_prefix("look at @src/a"), "src/a")
+        self.assertEqual(mentions.extract_mentions("see @a.py:3-4 and @b.py:9"), ["a.py", "b.py"])
+        self.assertEqual(mentions.extract_ranges("see @a.py:3-4 and @b.py:9 @c.py"), [("a.py", 3, 4), ("b.py", 9, 9)])
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.py").write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+            self.assertEqual(mentions.read_range(root, "a.py", 3, 4), "    3  three\n    4  four")
+            self.assertIsNone(mentions.read_range(root, "../x", 1, 2))
         self.assertIsNone(mentions.current_mention_prefix("mail a@b"))
 
 

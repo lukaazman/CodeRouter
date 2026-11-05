@@ -2,7 +2,8 @@
 
 import re
 
-MENTION_PATTERN = re.compile(r"(?<![\w@])@([\w./\\-]+[\w/\\-])")
+MENTION_PATTERN = re.compile(r"(?<![\w@])@([\w./\\-]+[\w/\\-])(?::(\d+)(?:-(\d+))?)?")
+RANGE_MAX_LINES = 200
 MENTION_MAX = 12
 
 
@@ -16,6 +17,36 @@ def extract_mentions(prompt):
         if len(seen) >= MENTION_MAX:
             break
     return seen
+
+
+def extract_ranges(prompt):
+    """[(path, start, end)] for mentions written as @path:10-40 or @path:12."""
+    ranges = []
+    for match in MENTION_PATTERN.finditer(prompt or ""):
+        if match.group(2):
+            start = int(match.group(2))
+            end = int(match.group(3) or start)
+            if end < start:
+                start, end = end, start
+            path = match.group(1).replace("\\", "/").lstrip("./")
+            if ".." not in path.split("/"):
+                ranges.append((path, start, min(end, start + RANGE_MAX_LINES - 1)))
+    return ranges[:MENTION_MAX]
+
+
+def read_range(root, path, start, end):
+    from pathlib import Path
+
+    root = Path(root).resolve()
+    target = (root / path).resolve()
+    if root not in target.parents or not target.is_file():
+        return None
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    chunk = lines[max(0, start - 1):end]
+    return "\n".join(f"{number:>5}  {line}" for number, line in enumerate(chunk, start))
 
 
 def resolve_mentions(mentions, known_paths):
