@@ -41,7 +41,7 @@ def _spec_from(name, data, source, cwd=""):
     if os.path.basename(command[0]).lower() in SHELLS:
         return None
     env = {str(k): str(v) for k, v in (data.get("env") or {}).items()} if isinstance(data.get("env"), dict) else {}
-    return ServerSpec(name=name, command=command, env=env, source=source, cwd=cwd)
+    return ServerSpec(name=name, command=command, env=env, source=source, cwd=cwd or str(data.get("_cwd", "")))
 
 
 def load_server_specs(config, project_root=None):
