@@ -26,6 +26,7 @@ python -m unittest discover -s tests
 - `approval.py` - approval modes and allow/deny rules
 - `memory_files.py`, `mentions.py`, `sessions.py` - memory files, `@file` mentions, saved conversations
 - `git_tools.py`, `hooks.py`, `edit_ops.py`, `usage.py` - git, lifecycle hooks, search/replace edits, token meter
+- `extensions.py`, `ignore_rules.py` - skills, agents and output styles from disk; `.gitignore` rules
 - `model_router.py` - prompt classification and free model ranking
 - `command_suggestions.py` - inline `/command` completions
 - `theme.py`, `ui_kit.py` - design tokens, icons, easing, timelines, motion preference
@@ -36,13 +37,22 @@ python -m unittest discover -s tests
 
 - Free-model fallback through OpenRouter, prompt-aware routing
 - Plan-first workflow (plan gate can be switched off), reviewable diffs
-- Whole-file, search/replace and delete edits; apply, apply selected, reject, undo
+- Whole-file, search/replace and delete edits; apply, apply selected, reject, undo, `/rewind` up to 10 applies
+- The model can `search` (regex, optional glob) and `list` folders locally, read-only, before it proposes changes
+- Context skips files matched by `.gitignore` and `.coderouterignore`
 - Approval modes: **Suggest** (review everything), **Auto-edit** (apply edits, ask for reads and commands), **Full auto** (also allow reads and allow-listed commands). `Shift+Tab` in the composer or the status bar cycles them
 - Persistent allow/deny rules: `Bash(pytest*)`, `Read(src/**)`, `Edit(docs/**)`; deny wins
 - Memory: `AGENTS.md` hierarchy plus `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.override.md` and user files `~/.coderouter/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`. Start a prompt with `#` to save a note
 - `@path` mentions with autocomplete; `/` autocomplete for every command
 - Custom commands from `.claude/commands`, `.coderouter/commands`, `~/.claude/commands`, `~/.coderouter/commands`, `~/.codex/prompts` (`$ARGUMENTS`, `$1`..`$9`, `description:` frontmatter, folders become `ns:name`)
-- Saved conversations: `/resume`, `/sessions`, `/compact` summarises older turns
+- Skills: `.claude/skills/<name>/SKILL.md`, `.coderouter/skills/…`, `~/.claude/skills/…`, `~/.codex/skills/…` join the context when the prompt matches their description; `/skill <name>` pins one
+- Agents: `.claude/agents/<name>.md` (or `.coderouter/agents`) act as personas; `/agent <name>`, `/agent off`
+- Output style files: `.claude/output-styles/<name>.md`; `/output-style <name>`
+- Conversation transcript with plans shown as checklists; prompts typed during a run are queued
+- Fuzzy command palette (`Ctrl+Shift+P`, `Ctrl+P` or `F1`); `Up`/`Down` recall earlier prompts
+- `/code-review [base]` reviews the working tree (untracked files included) or a branch with a free model
+- Saved conversations: `/resume`, `/sessions`, `/compact` summarises older turns, `/rename`, `/save` to Markdown, `/copy` the last reply
+- Rings and marks the title when a plan, review or error is waiting while the window is in the background (`"notify": false` turns it off)
 - Git: branch and changes in the status bar, `/git`, `/diff`, `/commit`
 - Hooks: `UserPromptSubmit`, `PreApply` (non-zero exit blocks), `PostApply`, `Stop`; argv only, no shell
 - Output style, reasoning effort and temperature per user; image attach for vision models
@@ -52,9 +62,9 @@ python -m unittest discover -s tests
 
 ## Commands
 
-`/help` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/stop` `/exit`
+`/help` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
-Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` commands, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Esc` cancel or close.
+Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 
 ## Headless mode
 
@@ -62,6 +72,7 @@ Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter`
 python CodeRouter.py exec "add tests for the parser"
 python CodeRouter.py exec --yes --no-plan "rename foo to bar in @src/util.py"
 python CodeRouter.py exec -a full-auto --json "fix the failing test" > result.json
+python CodeRouter.py exec --agent tester "cover the new parser"
 python CodeRouter.py exec /review-pr 42
 python CodeRouter.py commands
 ```
