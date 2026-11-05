@@ -482,7 +482,7 @@ class ExecutorExtensionTests(unittest.TestCase):
     def test_word_spans_pair_changed_lines(self):
         rows = [("", "-total = price * qty\n", "del"), ("", "+total = price * quantity\n", "add"), ("", " x\n", None)]
         spans = self.core.CodeAgentApp._word_spans(rows)
-        self.assertEqual(rows[1][1][spans[1][0][0]:spans[1][0][1]], "uantity")
+        self.assertEqual(rows[1][1][spans[1][0][0]:spans[1][0][1]], "quantity")
         self.assertIn(0, spans)
         unequal = [("", "-a\n", "del"), ("", "+b\n", "add"), ("", "+c\n", "add")]
         self.assertEqual(self.core.CodeAgentApp._word_spans(unequal), {})

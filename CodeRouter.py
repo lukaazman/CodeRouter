@@ -10534,16 +10534,22 @@ class CodeAgentApp(tk.Tk):
                 new = rows[adds + offset][1][1:].rstrip("\n")
                 if not old.strip() or not new.strip():
                     continue
-                matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+                old_tokens = [(m.group(), m.start()) for m in re.finditer(r"\w+|\s+|[^\w\s]", old)]
+                new_tokens = [(m.group(), m.start()) for m in re.finditer(r"\w+|\s+|[^\w\s]", new)]
+                matcher = difflib.SequenceMatcher(None, [t for t, _ in old_tokens], [t for t, _ in new_tokens], autojunk=False)
                 if matcher.ratio() < 0.4:
                     continue
+
+                def char_span(tokens, first, last):
+                    return tokens[first][1] + 1, tokens[last - 1][1] + len(tokens[last - 1][0]) + 1
+
                 for op, a0, a1, b0, b1 in matcher.get_opcodes():
                     if op == "equal":
                         continue
                     if a1 > a0:
-                        spans.setdefault(dels + offset, []).append((a0 + 1, a1 + 1))
+                        spans.setdefault(dels + offset, []).append(char_span(old_tokens, a0, a1))
                     if b1 > b0:
-                        spans.setdefault(adds + offset, []).append((b0 + 1, b1 + 1))
+                        spans.setdefault(adds + offset, []).append(char_span(new_tokens, b0, b1))
                 pairs += 1
         return spans
 
