@@ -17,6 +17,7 @@ from pathlib import Path
 
 import approval as _approval
 import extensions as _ext
+import mcp_client as _mcp
 import memory_files as _memory
 import mentions as _mentions
 import slash_commands as _slash
@@ -118,6 +119,10 @@ def run_exec(args, core):
     if args.model:
         model_mode, model_override = core.MODEL_SELECTION_OVERRIDE, core.normalize_model_override(args.model)
 
+    mcp = _mcp.McpManager(_mcp.load_server_specs(config, root), config.get("mcp_enabled_project", ()))
+    for error in mcp.start_all():
+        print(f"mcp: {error}", file=sys.stderr)
+    core.MCP_CATALOG["text"] = mcp.catalog_text()
     run_id = f"exec-{uuid.uuid4().hex[:10]}"
     events = queue.Queue()
     printer = _Printer(events, run_id, args.quiet or args.json)
@@ -151,12 +156,23 @@ def run_exec(args, core):
                 **common, approved_plan=plan, inspect_context=inspect_context, strict_actions=True,
             )
             result["model"] = str(model)
-            if isinstance(outcome, core.ToolQuery):
+            if isinstance(outcome, (core.ToolQuery, core.McpCall)):
                 tool_rounds += 1
                 if tool_rounds > core.TOOL_QUERY_MAX_ROUNDS:
                     result["summary"] = "The model kept searching without proposing changes."
                     break
-                inspect_context = tuple(inspect_context) + (core.run_tool_query(root, outcome, secrets=secrets),)
+                if isinstance(outcome, core.McpCall):
+                    if _approval.auto_decision(mode, "mcp", rules, outcome.tool) == "allow":
+                        try:
+                            text = mcp.call(outcome.tool, outcome.argument_dict())
+                        except (_mcp.McpError, ValueError) as exc:
+                            text = f"MCP call failed: {exc}"
+                    else:
+                        text = f"Refused: {outcome.tool} needs Mcp({outcome.tool}) in permissions.allow or --approval full-auto."
+                    item = core.SourceFile(path=root, relative_path=f"[{outcome.label()}]", content=core.redact_sensitive_text(text, secrets))
+                else:
+                    item = core.run_tool_query(root, outcome, secrets=secrets)
+                inspect_context = tuple(inspect_context) + (item,)
                 if not (args.quiet or args.json):
                     print(f"\n> {outcome.label()}", file=sys.stderr)
                 continue
@@ -188,6 +204,8 @@ def run_exec(args, core):
     finally:
         printer.stop.set()
         printer.join(timeout=2)
+        mcp.stop_all()
+        core.MCP_CATALOG["text"] = ""
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:

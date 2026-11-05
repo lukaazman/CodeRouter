@@ -41,7 +41,9 @@ python -m unittest discover -s tests
 - The model can `search` (regex, optional glob) and `list` folders locally, read-only, before it proposes changes
 - Context skips files matched by `.gitignore` and `.coderouterignore`
 - Approval modes: **Suggest** (review everything), **Auto-edit** (apply edits, ask for reads and commands), **Full auto** (also allow reads and allow-listed commands). `Shift+Tab` in the composer or the status bar cycles them
-- Persistent allow/deny rules: `Bash(pytest*)`, `Read(src/**)`, `Edit(docs/**)`; deny wins
+- Persistent allow/deny rules: `Bash(pytest*)`, `Read(src/**)`, `Edit(docs/**)`, `Mcp(server.*)`; deny wins; **Always allow** on a request saves the rule
+- MCP tool servers over stdio (see below)
+- `/fetch <url>` adds a web page as read-only context; `/test` finds the test command; `/security-review`, `/pr-description`
 - Memory: `AGENTS.md` hierarchy plus `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.override.md` and user files `~/.coderouter/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`. Start a prompt with `#` to save a note
 - `@path` mentions with autocomplete; `/` autocomplete for every command
 - Custom commands from `.claude/commands`, `.coderouter/commands`, `~/.claude/commands`, `~/.coderouter/commands`, `~/.codex/prompts` (`$ARGUMENTS`, `$1`..`$9`, `description:` frontmatter, folders become `ns:name`)
@@ -62,7 +64,7 @@ python -m unittest discover -s tests
 
 ## Commands
 
-`/help` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
+`/help` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
 Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 
@@ -83,7 +85,9 @@ Suggest mode prints the diff and exits with code 3 when changes are not applied;
 
 All keys are optional; see `local_config.example.json`. `approval_mode`, `plan_gate`, `style`, `reasoning_effort`, `temperature`, `theme` (`dark`, `light`, `system`), `motion`, `user_memory`, `permissions.allow/deny`, `hooks`. Conversations and history live in the per-user data folder (`%LOCALAPPDATA%\CodeRouter`, `~/.local/share/CodeRouter`, or `CODEROUTER_DATA_DIR`).
 
-Not supported: MCP servers and sandboxed shells; commands only run through the bounded, approved verification runner.
+MCP (tools over stdio): add servers to `local_config.json` as `"mcp_servers": {"name": {"command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]}}` or to a project `.mcp.json` (`{"mcpServers": {"name": {"command": "…", "args": []}}}`). Project servers only start after `/mcp enable <name>`. The model calls tools with an `mcp` action; each call needs an `Mcp(server.tool)` allow rule or Full auto, otherwise it is refused and the model continues without it. `/mcp` shows servers and tools, `/mcp restart` reloads them.
+
+Not supported: sandboxed shells; commands only run through the bounded, approved verification runner.
 
 ## Interface
 

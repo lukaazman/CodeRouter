@@ -33,6 +33,7 @@ import edit_ops as _edit_ops
 import ignore_rules as _ignore
 import extensions as _ext
 import web_fetch as _web
+import mcp_client as _mcp
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -9163,6 +9164,9 @@ class CodeAgentApp(tk.Tk):
     def on_close(self):
         if self.lifecycle.closed:
             return
+        manager = getattr(self, "mcp_manager", None)
+        if manager is not None:
+            manager.stop_all()
         self._dismiss_tooltips()
         self._clear_last_apply_undo()
         self._invalidate_handoff("application close")
@@ -9216,6 +9220,9 @@ class CodeAgentApp(tk.Tk):
             return
         self.command_registry.reload(folder)
         self._reload_extensions(folder)
+        self.mcp_manager.stop_all()
+        self.mcp_manager.specs = _mcp.load_server_specs(self.config_data, folder)
+        self._start_mcp_servers()
         self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder)
         self._refresh_git_status_async()
         custom = len(self.command_registry.custom)
@@ -9787,12 +9794,15 @@ class CodeAgentApp(tk.Tk):
                     model_selection_mode=snapshot.model_selection_mode,
                     model_override=snapshot.model_override,
                 )
-                if not isinstance(result, ToolQuery):
+                if not isinstance(result, (ToolQuery, McpCall)):
                     break
                 if tool_round >= TOOL_QUERY_MAX_ROUNDS:
                     raise ValueError("The model kept searching without proposing changes.")
                 ensure_run_current(is_current)
-                tool_context.append(run_tool_query(snapshot.project_root, result, secrets=[self.api_key]))
+                if isinstance(result, McpCall):
+                    tool_context.append(self._run_mcp_call(result))
+                else:
+                    tool_context.append(run_tool_query(snapshot.project_root, result, secrets=[self.api_key]))
                 emit("timeline", f"Local {result.label()} ({tool_round + 1}/{TOOL_QUERY_MAX_ROUNDS})")
                 emit("task_state", (TASK_STATE_RUNNING, f"Model ran {result.label()}"))
             ensure_run_current(is_current)
@@ -10580,6 +10590,8 @@ class CodeAgentApp(tk.Tk):
                 self._show_output(payload)
             elif kind == "fetched":
                 self._finish_fetch(payload)
+            elif kind == "mcp":
+                self._finish_mcp_start(payload)
             elif kind == "usage":
                 self._record_usage(payload)
             elif kind == "log":
@@ -10619,6 +10631,9 @@ class CodeAgentApp(tk.Tk):
         self._suggest_items = []
         self._suggest_kind = None
         self._parity_ready = False
+        self.mcp_manager = _mcp.McpManager(
+            _mcp.load_server_specs(cfg, folder), cfg.get("mcp_enabled_project", ()),
+        )
         self.pinned_skills = []
         self.active_agent_name = cfg.get("agent", "")
         self.file_style_name = cfg.get("output_style_file", "")
@@ -11490,6 +11505,83 @@ class CodeAgentApp(tk.Tk):
         self._toast(f"Added {title[:60]} as context ({_usage.format_tokens(size)} chars)", "success")
         self.log(f"> fetched {title} into read-only context")
 
+    def _run_mcp_call(self, call):
+        """Worker thread: run one MCP call if the approval policy allows it."""
+        manager = getattr(self, "mcp_manager", None)
+        decision = _approval.auto_decision(self.approval_mode_value, "mcp", self.approval_rules, call.tool)
+        if manager is None:
+            text = "MCP is not configured."
+        elif decision != "allow":
+            text = (f"Refused: {call.tool} needs approval. The user can allow it with /allow Mcp({call.tool}) "
+                    "or Full auto. Continue without it.")
+        else:
+            try:
+                text = manager.call(call.tool, call.argument_dict())
+            except (_mcp.McpError, ValueError, OSError) as exc:
+                text = f"MCP call failed: {short_error(exc)}"
+        safe = redact_sensitive_text(text, [self.api_key])
+        return SourceFile(path=Path("."), relative_path=f"[{call.label()}]", content=safe)
+
+    def _start_mcp_servers(self):
+        manager = getattr(self, "mcp_manager", None)
+        if manager is None or not manager.specs:
+            MCP_CATALOG["text"] = ""
+            return
+
+        def work():
+            errors = manager.start_all()
+            self._parity_queue.put(("mcp", (manager.catalog_text(), errors)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_mcp_start(self, payload):
+        catalog, errors = payload
+        MCP_CATALOG["text"] = catalog
+        tools = len(self.mcp_manager.tool_names())
+        if tools:
+            self._toast(f"MCP ready · {tools} tool(s)", "success")
+        for error in errors[:3]:
+            self.log(f"! mcp: {self._redact_sensitive(error)}")
+        if errors:
+            self._toast(f"MCP: {len(errors)} server(s) failed to start · /mcp", "warning")
+
+    def _cmd_mcp(self, args):
+        manager = self.mcp_manager
+        words = args.split()
+        if words[:1] == ["enable"] and len(words) == 2:
+            name = words[1]
+            if name not in manager.specs:
+                return False, f"No MCP server named {name}"
+            enabled = set(self.config_data.get("mcp_enabled_project", []))
+            enabled.add(name)
+            self.config_data["mcp_enabled_project"] = sorted(enabled)
+            self._save_config_quietly()
+            manager.enabled_project.add(name)
+            self._start_mcp_servers()
+            return f"Starting {name}"
+        if words[:1] == ["restart"]:
+            manager.stop_all()
+            manager.specs = _mcp.load_server_specs(self.config_data, self.selected_folder.get().strip() or None)
+            self._start_mcp_servers()
+            return "Restarting MCP servers"
+        lines = ["MCP servers"]
+        if not manager.specs:
+            lines.append('  none · add "mcp_servers" to local_config.json or a project .mcp.json')
+        for name, spec in sorted(manager.specs.items()):
+            server = manager.servers.get(name)
+            if server and server.running:
+                state = f"connected · {len(server.tools)} tool(s)"
+            elif not manager.startable(name):
+                state = f"project server, disabled · /mcp enable {name}"
+            else:
+                state = "not running"
+            lines.append(f"  {name} ({spec.source}): {state}")
+        catalog = manager.catalog_text()
+        if catalog:
+            lines += ["", "Tools (allow with /allow Mcp(server.tool) or Full auto)", catalog]
+        self._show_output("\n".join(lines))
+        return f"{len(manager.specs)} MCP server(s)"
+
     def _cmd_models(self, _args):
         if not self.api_key:
             return False, "Connect OpenRouter first."
@@ -12114,6 +12206,7 @@ class CodeAgentApp(tk.Tk):
         except tk.TclError:
             pass
         self._parity_ready = True
+        self._start_mcp_servers()
         global USAGE_SINK
         USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
         self._refresh_git_status_async()
@@ -13916,7 +14009,7 @@ def call_openrouter(
         "or {\"action\":\"inspect\",\"summary\":\"...\",\"paths\":[\"relative/path.ext\"]} "
         "or {\"action\":\"verify\",\"command\":\"bounded command\"} "
         "or {\"action\":\"search\",\"pattern\":\"regex\",\"glob\":\"optional *.py\"} "
-        "or {\"action\":\"list\",\"path\":\"relative/dir\"}. "
+        "or {\"action\":\"list\",\"path\":\"relative/dir\"}" + (" or an mcp action" if MCP_CATALOG.get("text") else "") + ". "
         f"search and list are read-only, run locally without permission and return results as inspect context; "
         f"use at most {TOOL_QUERY_MAX_ROUNDS} of them per step, then return final. "
         f"An inspect request may contain at most {INSPECT_MAX_PATHS} relative paths and is read-only; never request commands or writes. "
@@ -13928,6 +14021,7 @@ def call_openrouter(
         "for targeted search/replace edits (each old text must match exactly once; prefer this for large files), "
         "or {\"path\":\"p\",\"delete\":true} to delete a file."
         + generation_style_suffix()
+        + mcp_prompt_suffix()
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
     history = "\n".join(f"{item['role']}: {item['content']}" for item in session_messages[-12:])
@@ -14458,6 +14552,33 @@ class ToolQuery:
         return f"list {self.path or '.'}"
 
 
+@dataclass(frozen=True)
+class McpCall:
+    tool: str
+    arguments: tuple = ()  # (json text,) to stay hashable
+
+    def label(self):
+        return f"mcp {self.tool}"
+
+    def argument_dict(self):
+        return json.loads(self.arguments[0]) if self.arguments else {}
+
+
+# Text catalog of connected MCP tools, set by the app or CLI.
+MCP_CATALOG = {"text": ""}
+
+
+def mcp_prompt_suffix():
+    catalog = MCP_CATALOG.get("text") or ""
+    if not catalog:
+        return ""
+    return (
+        " MCP tools are available: return {\"action\":\"mcp\",\"tool\":\"server.tool\",\"arguments\":{...}} "
+        "to call one; the result comes back as inspect context and may be refused by the user's approval policy. "
+        "Available tools:\n" + catalog
+    )
+
+
 def parse_tool_query(data):
     action = data.get("action")
     allowed = {"action", "pattern", "glob"} if action == "search" else {"action", "path"}
@@ -14566,6 +14687,17 @@ def parse_executor_response(response_text, secrets=None):
     action = data.get("action")
     if action in {"search", "list"}:
         return parse_tool_query(data)
+    if action == "mcp":
+        if not set(data) <= {"action", "tool", "arguments"}:
+            raise ValueError("MCP response contains unknown fields.")
+        tool = data.get("tool")
+        arguments = data.get("arguments") or {}
+        if not isinstance(tool, str) or "." not in tool or len(tool) > 160 or not isinstance(arguments, dict):
+            raise ValueError("MCP response needs tool as server.tool and an arguments object.")
+        encoded = json.dumps(arguments, ensure_ascii=False)
+        if len(encoded) > 32 * 1024:
+            raise ValueError("MCP arguments are too large.")
+        return McpCall(tool=tool.strip(), arguments=(encoded,))
     if action not in {"final", "inspect", "verify"}:
         raise ValueError("Executor response action must be final, inspect, or verify.")
 

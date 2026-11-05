@@ -93,6 +93,7 @@ BUILTIN_COMMANDS = (
     SlashCommand("output-style", "List file output styles or pick one", "[name]"),
     SlashCommand("models", "List the free models found on OpenRouter"),
     SlashCommand("fetch", "Add a web page as read-only context", "<url>"),
+    SlashCommand("mcp", "MCP servers and tools; /mcp enable <name>, /mcp restart", "[enable <name>|restart]"),
     SlashCommand("stop", "Stop the active run"),
     SlashCommand("exit", "Close CodeRouter", aliases=("quit",)),
 )

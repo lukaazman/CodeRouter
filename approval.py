@@ -22,8 +22,8 @@ APPROVAL_LABELS = {
     APPROVAL_AUTO_EDIT: "Auto-edit · apply edits, ask for commands",
     APPROVAL_FULL_AUTO: "Full auto · apply edits, allow reads and safe commands",
 }
-RULE_TOOLS = ("Bash", "Read", "Edit")
-RULE_PATTERN = re.compile(r"^(Bash|Read|Edit)(?:\((.*)\))?$")
+RULE_TOOLS = ("Bash", "Read", "Edit", "Mcp")
+RULE_PATTERN = re.compile(r"^(Bash|Read|Edit|Mcp)(?:\((.*)\))?$")
 MAX_RULES = 100
 
 
@@ -44,7 +44,7 @@ def apply_mode_for(approval_mode):
 def parse_rule(rule):
     match = RULE_PATTERN.match(str(rule or "").strip())
     if not match:
-        raise ValueError("Rules look like Bash(pytest*), Read(src/**) or Edit(docs/**).")
+        raise ValueError("Rules look like Bash(pytest*), Read(src/**), Edit(docs/**) or Mcp(server.*).")
     tool, pattern = match.group(1), (match.group(2) or "*").strip()
     if not pattern:
         pattern = "*"
@@ -71,6 +71,8 @@ def _command_text(argv_or_text):
 
 
 def _matches(tool, pattern, subject):
+    if tool == "Mcp":
+        return fnmatch.fnmatchcase(subject, pattern)
     if tool == "Bash":
         # "npm run test:*" (Claude prefix syntax) == "npm run test*"
         if pattern.endswith(":*"):
@@ -154,6 +156,11 @@ def auto_decision(mode, kind, rules, subject, command_policy_allowed=False):
     rules = rules or RuleSet()
     if kind == "inspect":
         decision = rules.decide_paths("Read", subject)
+        if decision:
+            return decision
+        return "allow" if mode == APPROVAL_FULL_AUTO else None
+    if kind == "mcp":
+        decision = rules.decide("Mcp", subject)
         if decision:
             return decision
         return "allow" if mode == APPROVAL_FULL_AUTO else None

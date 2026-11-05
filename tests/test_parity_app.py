@@ -331,6 +331,23 @@ class ParityAppTests(unittest.TestCase):
         self.app.inspect_request = None
         self.app.verification_request = None
 
+    def test_worker_mcp_call_respects_policy(self):
+        import sys as _sys
+
+        server_script = str(Path(__file__).resolve().parent / "fake_mcp_server.py")
+        self.app.mcp_manager = wrapper._mcp.McpManager(wrapper._mcp.load_server_specs(
+            {"mcp_servers": {"fake": {"command": [_sys.executable, server_script]}}}))
+        try:
+            self.app.mcp_manager.start_all()
+            call = wrapper.McpCall("fake.echo", ('{"text": "yo"}',))
+            self.assertIn("Refused", self.app._run_mcp_call(call).content)
+            self.app.run_slash_command("/allow Mcp(fake.*)")
+            self.assertEqual(self.app._run_mcp_call(call).content, "echo: yo")
+            self.app.run_slash_command("/mcp")
+            self.assertIn("fake (user): connected", self.app.summary.get("1.0", tk.END))
+        finally:
+            self.app.mcp_manager.stop_all()
+
 
 if __name__ == "__main__":
     unittest.main()

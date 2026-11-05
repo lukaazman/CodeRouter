@@ -171,6 +171,47 @@ class WebFetchTests(unittest.TestCase):
             self.assertEqual(path.name, "example-com-x.md")
 
 
+class McpTests(unittest.TestCase):
+    def test_client_roundtrip_and_specs(self):
+        import mcp_client
+
+        server_script = str(Path(__file__).resolve().parent / "fake_mcp_server.py")
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "proj": {"command": sys.executable, "args": [server_script]},
+                "evil": {"command": "bash", "args": ["-c", "x"]},
+            }}), encoding="utf-8")
+            specs = mcp_client.load_server_specs({"mcp_servers": {"fake": {"command": [sys.executable, server_script]}}}, root)
+            self.assertEqual(set(specs), {"fake", "proj"})
+            manager = mcp_client.McpManager(specs)
+            try:
+                self.assertEqual(manager.start_all(), [])
+                self.assertEqual(manager.tool_names(), ["fake.echo"])
+                self.assertIn("fake.echo: Echo text back", manager.catalog_text())
+                self.assertEqual(manager.call("fake.echo", {"text": "hi"}), "echo: hi")
+                with self.assertRaises(mcp_client.McpError):
+                    manager.call("fake.nope", {})
+                with self.assertRaises(mcp_client.McpError):
+                    manager.start("proj")
+                manager.enabled_project.add("proj")
+                manager.start("proj")
+                self.assertIn("proj.echo", manager.tool_names())
+            finally:
+                manager.stop_all()
+
+    def test_parser_and_rules(self):
+        import CodeRouter as core
+
+        call = core.parse_executor_response(json.dumps({"action": "mcp", "tool": "fake.echo", "arguments": {"text": "x"}}))
+        self.assertEqual(call.argument_dict(), {"text": "x"})
+        with self.assertRaises(ValueError):
+            core.parse_executor_response(json.dumps({"action": "mcp", "tool": "noserver", "arguments": {}}))
+        rules = approval.RuleSet(allow=["Mcp(fake.*)"])
+        self.assertEqual(approval.auto_decision("suggest", "mcp", rules, "fake.echo"), "allow")
+        self.assertIsNone(approval.auto_decision("suggest", "mcp", rules, "other.x"))
+        self.assertEqual(approval.auto_decision("full-auto", "mcp", None, "other.x"), "allow")
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))
