@@ -203,6 +203,25 @@ class ParityAppTests(unittest.TestCase):
             start.assert_called_once()
         self.assertEqual(self.app.queued_prompts, [])
 
+    def test_skills_and_agents_join_run_context(self):
+        skill = Path(self.project.name, ".claude", "skills", "sql-migrations")
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\ndescription: Write safe SQL migrations with rollback\n---\nAlways add a down migration.", encoding="utf-8")
+        agents = Path(self.project.name, ".claude", "agents")
+        agents.mkdir(parents=True)
+        (agents / "tester.md").write_text("Write tests first.", encoding="utf-8")
+        self.app._on_project_changed(self.project.name)
+        self.assertTrue(self.app.run_slash_command("/agent tester")[1])
+        self.app.api_key = "sk-or-test"
+        self.app._set_prompt_text("add a SQL migration with rollback for users")
+        with mock.patch.object(self.app, "_start_run_worker") as start:
+            self.app.run_agent()
+        context = start.call_args[0][0].project_instructions
+        self.assertIn("Always add a down migration.", context)
+        self.assertIn("Write tests first.", context)
+        self.assertFalse(self.app.run_slash_command("/skill nope")[1])
+        self.app.run_slash_command("/agent off")
+
 
 if __name__ == "__main__":
     unittest.main()

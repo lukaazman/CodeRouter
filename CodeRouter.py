@@ -31,6 +31,7 @@ import command_suggestions as _command_suggestions
 import ui_kit
 import edit_ops as _edit_ops
 import ignore_rules as _ignore
+import extensions as _ext
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -9137,6 +9138,7 @@ class CodeAgentApp(tk.Tk):
         if not getattr(self, "_parity_ready", False):
             return
         self.command_registry.reload(folder)
+        self._reload_extensions(folder)
         self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder)
         self._refresh_git_status_async()
         custom = len(self.command_registry.custom)
@@ -9439,6 +9441,9 @@ class CodeAgentApp(tk.Tk):
         if getattr(self, "_parity_ready", False):
             memory_text, memory_labels = self._extra_instruction_context(folder)
             project_instructions = _memory.combine_instructions(project_instructions, memory_text)
+            extension_text, extension_labels = self._extension_context(instructions)
+            project_instructions = _memory.combine_instructions(project_instructions, extension_text)
+            memory_labels = list(memory_labels) + extension_labels
             if memory_labels:
                 project_instructions_status = (project_instructions_status + "; memory: " + ", ".join(memory_labels)).lstrip("; ")
             mention_note = self._mention_context(instructions)
@@ -10458,6 +10463,8 @@ class CodeAgentApp(tk.Tk):
                 self._finish_compact(payload)
             elif kind == "review":
                 self._finish_review(payload)
+            elif kind == "models":
+                self._show_output(payload)
             elif kind == "usage":
                 self._record_usage(payload)
             elif kind == "log":
@@ -10497,6 +10504,17 @@ class CodeAgentApp(tk.Tk):
         self._suggest_items = []
         self._suggest_kind = None
         self._parity_ready = False
+        self.pinned_skills = []
+        self.active_agent_name = cfg.get("agent", "")
+        self.file_style_name = cfg.get("output_style_file", "")
+        self._reload_extensions(folder)
+
+    def _reload_extensions(self, folder=None):
+        folder = folder or self.selected_folder.get().strip() or None
+        self.skills = _ext.load_extensions("skill", folder)
+        self.agents = _ext.load_extensions("agent", folder)
+        self.file_styles = _ext.load_extensions("style", folder)
+        self.pinned_skills = [name for name in self.pinned_skills if name in self.skills]
 
     # Configuration helpers ------------------------------------------------------
 
@@ -11204,6 +11222,102 @@ class CodeAgentApp(tk.Tk):
         self._refresh_status_strip()
         self.run_agent()
 
+    def _extension_context(self, prompt):
+        """Skills matched to the prompt, the active agent and a file output style."""
+        parts, labels = [], []
+        skills = _ext.match_skills(self.skills, prompt, self.pinned_skills)
+        if skills:
+            parts.append(_ext.skills_context(skills))
+            labels += [f"skill:{skill.name}" for skill in skills]
+        agent = self.agents.get(self.active_agent_name)
+        if agent:
+            parts.append(_ext.agent_context(agent))
+            labels.append(f"agent:{agent.name}")
+        style = self.file_styles.get(self.file_style_name)
+        if style:
+            parts.append(f"=== OUTPUT STYLE: {style.name} ===\n{style.body}")
+            labels.append(f"style:{style.name}")
+        return "\n\n".join(parts), labels
+
+    def _cmd_skills(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "clear"}:
+            self.pinned_skills = []
+            return "Pinned skills cleared"
+        if name:
+            if name not in self.skills:
+                return False, f"No skill named {name} · /skills lists them"
+            if name not in self.pinned_skills:
+                self.pinned_skills.append(name)
+            return f"Skill {name} pinned for the next runs"
+        self._show_output("Skills (auto-added when the prompt matches; /skill <name> pins one)\n"
+                          + _ext.describe(self.skills, "  none · add .claude/skills/<name>/SKILL.md")
+                          + ("\n\nPinned: " + ", ".join(self.pinned_skills) if self.pinned_skills else ""))
+        return f"{len(self.skills)} skill(s)"
+
+    def _cmd_agents(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "default"}:
+            self.active_agent_name = ""
+            self.config_data["agent"] = ""
+            self._save_config_quietly()
+            return "Default agent"
+        if name:
+            if name not in self.agents:
+                return False, f"No agent named {name} · /agents lists them"
+            self.active_agent_name = name
+            self.config_data["agent"] = name
+            self._save_config_quietly()
+            self._refresh_status_strip()
+            return f"Agent {name} active"
+        self._show_output("Agents (/agent <name> to activate, /agent off)\n"
+                          + _ext.describe(self.agents, "  none · add .claude/agents/<name>.md")
+                          + (f"\n\nActive: {self.active_agent_name}" if self.active_agent_name else ""))
+        return f"{len(self.agents)} agent(s)"
+
+    def _cmd_output_style(self, args):
+        self._reload_extensions()
+        name = args.strip().lower()
+        if name in {"off", "none", "default"}:
+            self.file_style_name = ""
+            self.config_data["output_style_file"] = ""
+            self._save_config_quietly()
+            return "File output style off"
+        if name:
+            if name not in self.file_styles:
+                return False, f"No output style file named {name}"
+            self.file_style_name = name
+            self.config_data["output_style_file"] = name
+            self._save_config_quietly()
+            return f"Output style {name}"
+        self._show_output("Output style files (/output-style <name>, /output-style off)\n"
+                          + _ext.describe(self.file_styles, "  none · add .claude/output-styles/<name>.md")
+                          + "\n\nBuilt-in styles: /style concise | default | explanatory")
+        return f"{len(self.file_styles)} style file(s)"
+
+    def _cmd_models(self, _args):
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        api_key = self.api_key
+
+        def work():
+            try:
+                result = discover_free_models(api_key)
+                models = list(getattr(result, "candidates", None) or result or [])
+            except Exception as exc:
+                self._parity_queue.put(("models", f"Could not list models: {short_error(exc)}"))
+                return
+            lines = ["Free models (use /model <id> to pin one)"]
+            for model in models[:60]:
+                context = getattr(model, "context_length", None)
+                lines.append(f"  {model}" + (f"  · {_usage.format_tokens(context)} context" if context else ""))
+            self._parity_queue.put(("models", "\n".join(lines)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return "Listing free models"
+
     def _extra_instruction_context(self, folder):
         text, labels = _memory.load_memory_files(
             folder, secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
@@ -11337,6 +11451,8 @@ class CodeAgentApp(tk.Tk):
                 extras.append("plan auto")
             if getattr(self, "queued_prompts", None):
                 extras.append(f"{len(self.queued_prompts)} queued")
+            if getattr(self, "active_agent_name", ""):
+                extras.append(f"agent {self.active_agent_name}")
             self.status_extra_label.configure(text=" · ".join(extras))
             fraction = self.usage_meter.context_fraction()
             self._draw_context_meter(fraction)

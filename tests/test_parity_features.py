@@ -110,6 +110,32 @@ class IgnoreRuleTests(unittest.TestCase):
             self.assertNotIn("big.txt", names)
 
 
+class ExtensionTests(unittest.TestCase):
+    def test_skills_agents_styles(self):
+        import extensions
+
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root:
+            skill = Path(root, ".claude", "skills", "pdf-forms")
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: pdf-forms\ndescription: Fill PDF forms and extract fields\n---\nUse pypdf.", encoding="utf-8")
+            user_skill = Path(home, ".claude", "skills", "tkinter-motion")
+            user_skill.mkdir(parents=True)
+            (user_skill / "SKILL.md").write_text("---\ndescription: Animate tkinter widgets smoothly\n---\nUse after().", encoding="utf-8")
+            agents = Path(root, ".coderouter", "agents")
+            agents.mkdir(parents=True)
+            (agents / "reviewer.md").write_text("---\ndescription: Strict reviewer\n---\nBe strict.", encoding="utf-8")
+            skills = extensions.load_extensions("skill", root, home)
+            self.assertEqual(set(skills), {"pdf-forms", "tkinter-motion"})
+            matched = extensions.match_skills(skills, "please extract the fields from this PDF form")
+            self.assertEqual([item.name for item in matched], ["pdf-forms"])
+            self.assertEqual(extensions.match_skills(skills, "rename a variable"), [])
+            forced = extensions.match_skills(skills, "rename", forced=["tkinter-motion"])
+            self.assertEqual([item.name for item in forced], ["tkinter-motion"])
+            self.assertIn("Use pypdf.", extensions.skills_context(matched))
+            agent = extensions.load_extensions("agent", root, home)["reviewer"]
+            self.assertIn("Be strict.", extensions.agent_context(agent))
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))

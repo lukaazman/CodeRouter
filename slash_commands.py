@@ -83,6 +83,10 @@ BUILTIN_COMMANDS = (
     SlashCommand("save", "Save this conversation as Markdown", "[file]"),
     SlashCommand("rename", "Rename this conversation", "<title>"),
     SlashCommand("doctor", "Check Python, Tk, git, key and config"),
+    SlashCommand("skills", "List skills; /skill <name> pins one for the next runs", aliases=("skill",)),
+    SlashCommand("agents", "List agents; /agent <name> activates a persona, /agent off", aliases=("agent",)),
+    SlashCommand("output-style", "List file output styles or pick one", "[name]"),
+    SlashCommand("models", "List the free models found on OpenRouter"),
     SlashCommand("stop", "Stop the active run"),
     SlashCommand("exit", "Close CodeRouter", aliases=("quit",)),
 )
