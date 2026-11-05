@@ -6,6 +6,8 @@ state; the app wires these into its existing widgets.
 """
 
 import ctypes
+import hashlib
+import json
 import math
 import os
 import time
@@ -361,6 +363,13 @@ def _bounds(shape, pad):
 
 def render_primitives(master, primitives, size, color, background, stroke=1.7, tones=None, grid=24.0):
     """Rasterise primitives into an opaque PhotoImage blended over background."""
+    image = tk.PhotoImage(master=master, width=size, height=size)
+    image.put(render_primitives_data(primitives, size, color, background, stroke, tones, grid), to=(0, 0))
+    return image
+
+
+def render_primitives_data(primitives, size, color, background, stroke=1.7, tones=None, grid=24.0):
+    """Pixel data string for PhotoImage.put (cacheable)."""
     scale = size / grid
     half_stroke = (stroke * scale) / 2.0
     bg = hex_to_rgb(background)
@@ -381,7 +390,6 @@ def render_primitives(master, primitives, size, color, background, stroke=1.7, t
         else:
             scaled = ("box",) + tuple(value * scale for value in primitive[1:5])
         compiled.append((scaled, hex_to_rgb(tone), _bounds(scaled, half_stroke + 1.0)))
-    image = tk.PhotoImage(master=master, width=size, height=size)
     rows = []
     for y in range(size):
         row = []
@@ -400,17 +408,55 @@ def render_primitives(master, primitives, size, color, background, stroke=1.7, t
                 pixel = tuple(pixel[i] + (rgb[i] - pixel[i]) * alpha for i in range(3))
             row.append(rgb_to_hex(pixel))
         rows.append("{" + " ".join(row) + "}")
-    image.put(" ".join(rows), to=(0, 0))
-    return image
+    return " ".join(rows)
 
 
 class IconFactory:
-    """Caches anti-aliased icon images by (name, size, colour, background)."""
+    """Caches anti-aliased icon images by (name, size, colour, background).
 
-    def __init__(self, master, scale=1.0):
+    Pixel data can also persist on disk (``cache_path``) so later starts skip
+    rasterising; the file is keyed by a hash of the icon geometry.
+    """
+
+    def __init__(self, master, scale=1.0, cache_path=None):
         self.master = master
         self.scale = scale
         self._cache = {}
+        self.cache_path = cache_path
+        self._disk = {}
+        self._disk_dirty = False
+        self._version = hashlib.sha256(repr(sorted(ICONS.items())).encode("utf-8")).hexdigest()[:16]
+        if cache_path:
+            try:
+                data = json.loads(open(cache_path, encoding="utf-8").read())
+                if data.get("version") == self._version:
+                    self._disk = dict(data.get("icons") or {})
+            except (OSError, ValueError, AttributeError):
+                self._disk = {}
+
+    def _image(self, disk_key, size, render):
+        data = self._disk.get(disk_key)
+        if data is None:
+            data = render()
+            if len(self._disk) < 2000:
+                self._disk[disk_key] = data
+                self._disk_dirty = True
+        image = tk.PhotoImage(master=self.master, width=size, height=size)
+        image.put(data, to=(0, 0))
+        return image
+
+    def save(self):
+        if not self.cache_path or not self._disk_dirty:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+            temp = self.cache_path + ".tmp"
+            with open(temp, "w", encoding="utf-8") as stream:
+                json.dump({"version": self._version, "icons": self._disk}, stream)
+            os.replace(temp, self.cache_path)
+            self._disk_dirty = False
+        except OSError:
+            pass
 
     def px(self, value):
         return max(1, int(round(value * self.scale)))
@@ -430,7 +476,11 @@ class IconFactory:
         key = (name, pixels, color, background, stroke)
         image = self._cache.get(key)
         if image is None:
-            image = self._remember(key, render_primitives(self.master, ICONS[name], pixels, color, background, stroke=stroke))
+            disk_key = f"{name}|{pixels}|{color}|{background}|{stroke}"
+            image = self._remember(key, self._image(
+                disk_key, pixels,
+                lambda: render_primitives_data(ICONS[name], pixels, color, background, stroke=stroke),
+            ))
         return image
 
     def custom(self, key, primitives, size, color, background, stroke=1.7, tones=None, grid=24.0):
@@ -438,9 +488,10 @@ class IconFactory:
         cache_key = ("custom", key, pixels, color, background, stroke)
         image = self._cache.get(cache_key)
         if image is None:
-            image = self._remember(cache_key, render_primitives(
-                self.master, primitives, pixels, color, background,
-                stroke=stroke, tones=tones, grid=grid,
+            disk_key = f"custom|{key}|{pixels}|{color}|{background}|{stroke}|{grid}|{sorted((tones or {}).items())}"
+            image = self._remember(cache_key, self._image(
+                disk_key, pixels,
+                lambda: render_primitives_data(primitives, pixels, color, background, stroke=stroke, tones=tones, grid=grid),
             ))
         return image
 

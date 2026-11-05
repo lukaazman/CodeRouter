@@ -2397,7 +2397,9 @@ class CodeAgentApp(tk.Tk):
         self._configure_typography()
         self._ui_scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
         self.animator = ui_kit.Animator(self)
-        self.icons = ui_kit.IconFactory(self, self._ui_scale)
+        from history import user_data_dir
+
+        self.icons = ui_kit.IconFactory(self, self._ui_scale, cache_path=str(user_data_dir() / "icon-cache.json"))
         self._ui_heartbeat_after_id = None
         self._setup_window_icon()
 
@@ -9176,6 +9178,9 @@ class CodeAgentApp(tk.Tk):
         manager = getattr(self, "mcp_manager", None)
         if manager is not None:
             manager.stop_all()
+        icons = getattr(self, "icons", None)
+        if icons is not None:
+            icons.save()
         self._dismiss_tooltips()
         self._clear_last_apply_undo()
         self._invalidate_handoff("application close")
