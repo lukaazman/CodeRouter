@@ -12737,6 +12737,7 @@ class CodeAgentApp(tk.Tk):
         self._build_composer_suggestions()
         self._build_agent_preferences()
         self._build_command_palette()
+        self._build_rail_palette_button()
         self._build_always_allow_buttons()
         try:
             self.activity.configure(height=6)
@@ -12796,6 +12797,23 @@ class CodeAgentApp(tk.Tk):
         self.bind_all("<Control-Shift-P>", self.open_command_palette, add="+")
         self.bind_all("<Control-P>", self.open_command_palette, add="+")
         self.bind_all("<F1>", self.open_command_palette, add="+")
+
+    def _build_rail_palette_button(self):
+        c = PALETTE
+        button = tk.Button(self.icon_rail, command=self.open_command_palette, relief="flat", borderwidth=0,
+                           highlightthickness=0, bg=c["canvas"], activebackground=c["surface_raised"], cursor="hand2",
+                           width=self._px(40), height=self._px(36), takefocus=1)
+        button.configure(image=self._icon("search", 20, c["text_muted"], c["canvas"]))
+        button.grid(row=8, column=0, pady=2)
+
+        def hover(active):
+            background = c["surface_raised"] if active else c["canvas"]
+            button.configure(bg=background, image=self._icon("search", 20, c["text"] if active else c["text_muted"], background))
+
+        button.bind("<Enter>", lambda _e: hover(True), add="+")
+        button.bind("<Leave>", lambda _e: hover(False), add="+")
+        self._attach_tooltip(button, "Commands · Ctrl+Shift+P")
+        self.rail_palette_button = button
 
     def open_command_palette(self, _event=None):
         frame = getattr(self, "palette_frame", None)
