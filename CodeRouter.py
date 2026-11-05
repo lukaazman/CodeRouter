@@ -4772,8 +4772,13 @@ class CodeAgentApp(tk.Tk):
             border=False,
         )
 
+        self.empty_hint_label = tk.Label(
+            inner, text="Type / for commands, @ to mention a file, ? to ask, # to remember",
+            bg=c["canvas"], fg=c["text_subtle"], font=FONTS["small"],
+        )
+        self.empty_hint_label.pack(pady=(self._px(4), 0))
         tiles = tk.Frame(inner, bg=c["canvas"])
-        tiles.pack(pady=(self._px(22), 0))
+        tiles.pack(pady=(self._px(20), 0))
         self.empty_tiles_frame = tiles
         self._empty_tiles = []
         self._empty_tile_parts = []
