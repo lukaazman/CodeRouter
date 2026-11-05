@@ -6,7 +6,6 @@ deny-network profile. When the platform has no supported tool, commands are
 refused rather than silently run with network access.
 """
 
-import os
 import shutil
 import sys
 
