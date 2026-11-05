@@ -212,6 +212,23 @@ class McpTests(unittest.TestCase):
         self.assertEqual(approval.auto_decision("full-auto", "mcp", None, "other.x"), "allow")
 
 
+class ContextBudgetTests(unittest.TestCase):
+    def test_fit_context_prefers_relevant_files(self):
+        import context_budget
+        from run_types import SourceFile
+
+        files = [SourceFile(Path(f"f{i}.py"), f"pkg/module{i}.py", "x = 1\n" * 400) for i in range(20)]
+        files.append(SourceFile(Path("p.py"), "pkg/parser.py", "def parse_config(): pass\n" * 10))
+        whole, note = context_budget.fit_context(files, "anything", budget_tokens=1_000_000)
+        self.assertEqual((len(whole), note), (21, ""))
+        lean, note = context_budget.fit_context(files, "fix parse_config in the parser", budget_tokens=2500, mentioned=["pkg/module7.py"])
+        names = [item.relative_path for item in lean]
+        self.assertEqual(names[:3], ["[file tree]", "pkg/module7.py", "pkg/parser.py"])
+        self.assertIn("pkg/module19.py", lean[0].content)
+        self.assertIn("lean context", note)
+        self.assertLessEqual(sum(context_budget.estimate(item.content) for item in lean), 2500)
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))

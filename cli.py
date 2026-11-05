@@ -169,6 +169,9 @@ def run_exec(args, core):
         max_files, max_file_kb = core.choose_context_limits(root)
         files = core.collect_files(root, max_files=max_files, max_file_kb=max_file_kb)
         files = _mentions.prioritise_files(files, _mentions.resolve_mentions(mentions, [f.relative_path for f in files])[0])
+        files, lean_note = core._budget.fit_context(files, prompt, int(config.get("context_budget_tokens", core._budget.DEFAULT_BUDGET_TOKENS)), mentions)
+        if lean_note and not (args.quiet or args.json):
+            print(f"> {lean_note}", file=sys.stderr)
         category = core.classify_prompt_category(prompt)
         model_queue, _note = core.build_free_model_queue(api_key)
         tokens = core.estimate_task_context_tokens(prompt + "\n\n" + project_instructions, files, ())

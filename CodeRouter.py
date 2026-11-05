@@ -34,6 +34,7 @@ import ignore_rules as _ignore
 import extensions as _ext
 import web_fetch as _web
 import mcp_client as _mcp
+import context_budget as _budget
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -9682,6 +9683,11 @@ class CodeAgentApp(tk.Tk):
             files = collect_files(snapshot.project_root, max_files=max_files, max_file_kb=max_file_kb)
             ensure_run_current(is_current)
             files.extend(collect_extra_context_files(snapshot.extra_context_paths, max_file_kb=max_file_kb))
+            files, lean_note = _budget.fit_context(
+                files, instructions, context_budget_for(self), _mentions.extract_mentions(instructions),
+            )
+            if lean_note:
+                emit("log", f"> {lean_note}")
             ensure_run_current(is_current)
             emit("log", f"> plan context: {len(files)} files, max {max_file_kb} KB/file")
             emit("summary", "Snapshot collected. Selecting an explicitly free model for planning.")
@@ -9786,6 +9792,11 @@ class CodeAgentApp(tk.Tk):
             files = collect_files(snapshot.project_root, max_files=max_files, max_file_kb=max_file_kb)
             ensure_run_current(is_current)
             files.extend(collect_extra_context_files(snapshot.extra_context_paths, max_file_kb=max_file_kb))
+            files, lean_note = _budget.fit_context(
+                files, instructions, context_budget_for(self), _mentions.extract_mentions(instructions),
+            )
+            if lean_note:
+                emit("log", f"> {lean_note}")
             ensure_run_current(is_current)
             emit("log", f"> context: {len(files)} files, max {max_file_kb} KB/file")
             emit("summary", "Snapshot collected. Selecting an explicitly free coding model.")
@@ -10856,6 +10867,10 @@ class CodeAgentApp(tk.Tk):
 
     def _show_output(self, text):
         """Show a local command result in the conversation pane."""
+        if text.startswith("```"):
+            self._transcript_add("agent", text)
+            self.set_summary("")
+            return
         self.set_summary(text)
 
     ASK_CONTEXT_MAX_CHARS = 120_000
@@ -11219,6 +11234,46 @@ class CodeAgentApp(tk.Tk):
         self._show_output(self.usage_meter.report())
         return self.usage_meter.short_label()
 
+    def _cmd_context(self, _args):
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        secrets = [self.api_key]
+        instructions, _status = load_project_instructions(folder, secrets=secrets)
+        memory_text, _labels = self._extra_instruction_context(folder)
+        extension_text, _ext_labels = self._extension_context("")
+        max_files, max_file_kb = choose_context_limits(folder)
+        files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+        extra = collect_extra_context_files(self.extra_context_paths, max_file_kb=max_file_kb)
+        history = "\n".join(f"{m['role']}: {m['content']}" for m in self.session_messages[-12:])
+        rows = [
+            ("System prompt", 900),
+            ("AGENTS.md", _usage.estimate_tokens(instructions)),
+            ("Memory files", _usage.estimate_tokens(memory_text)),
+            ("Skills / agent", _usage.estimate_tokens(extension_text)),
+            ("Conversation", _usage.estimate_tokens(history)),
+            ("Project files", sum(_usage.estimate_tokens(f.content) for f in files)),
+            ("Extra context", sum(_usage.estimate_tokens(f.content) for f in extra)),
+            ("MCP tools", _usage.estimate_tokens(MCP_CATALOG.get("text", ""))),
+        ]
+        total = sum(value for _name, value in rows)
+        window = self.usage_meter.last_context_window or _usage.DEFAULT_CONTEXT_WINDOW
+        lines = [f"Context estimate · {_usage.format_tokens(total)} of {_usage.format_tokens(window)} tokens ({min(999, int(total * 100 / window))}%)", ""]
+        width = 28
+        for name, value in rows:
+            share = value / total if total else 0
+            bar = "█" * max(1 if value else 0, round(share * width))
+            lines.append(f"{name:<15} {bar:<{width}} {_usage.format_tokens(value):>6}")
+        largest = sorted(files, key=lambda f: len(f.content), reverse=True)[:5]
+        if largest:
+            lines += ["", "Largest files: " + ", ".join(f"{f.relative_path} ({_usage.format_tokens(_usage.estimate_tokens(f.content))})" for f in largest)]
+        sent, lean_note = _budget.fit_context(files, " ".join(m["content"] for m in self.session_messages[-2:]), context_budget_for(self))
+        if lean_note:
+            lines += ["", f"Sent per run: {lean_note} (budget {_usage.format_tokens(context_budget_for(self))}, set context_budget_tokens)."]
+        lines += ["", "Trim with .coderouterignore, /compact or fewer context files."]
+        self._show_output("```\n" + "\n".join(lines[:2 + len(rows)]) + "\n```\n" + "\n".join(lines[2 + len(rows):]))
+        return f"{_usage.format_tokens(total)} tokens in context"
+
     def _cmd_approval(self, args):
         if not args:
             return True, f"Approval mode · {_approval.APPROVAL_LABELS[self.approval_mode_value]} · options: " + ", ".join(_approval.APPROVAL_MODES)
@@ -11571,6 +11626,20 @@ class CodeAgentApp(tk.Tk):
             if getattr(self, "queued_prompts", None):
                 self.after(400, self._run_queued_prompt)
 
+    def _run_event_hook(self, event, payload):
+        if not getattr(self, "_parity_ready", False) or not self.hooks_config.get(event):
+            return
+        folder = self.selected_folder.get().strip()
+        if not folder:
+            return
+        hooks_config = self.hooks_config
+
+        def work():
+            for argv, code, _output in _hooks.run_hooks(hooks_config, event, folder, payload, env=build_verification_environment()):
+                self._parity_queue.put(("log", f"> hook {event} {' '.join(argv)} → {code}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _signal_attention(self, state):
         """Ring and mark the title when the window is in the background."""
         try:
@@ -11580,6 +11649,7 @@ class CodeAgentApp(tk.Tk):
             return
         if self.config_data.get("notify", True) is False:
             return
+        self._run_event_hook("Notification", {"state": TASK_STATE_LABELS.get(state, state)})
         try:
             self.bell()
             self.title(f"● {APP_TITLE} · {TASK_STATE_LABELS.get(state, '').title()}")
@@ -12496,6 +12566,7 @@ class CodeAgentApp(tk.Tk):
             pass
         self._parity_ready = True
         self._start_mcp_servers()
+        self._run_event_hook("SessionStart", {"source": "startup"})
         global USAGE_SINK
         USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
         self._refresh_git_status_async()
@@ -14172,6 +14243,14 @@ def _encode_images(paths):
 
 
 STOP_HOOK_STATES = (TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR)
+def context_budget_for(host):
+    config = getattr(host, "config_data", None) or {}
+    try:
+        return max(4000, int(config.get("context_budget_tokens", _budget.DEFAULT_BUDGET_TOKENS)))
+    except (TypeError, ValueError, AttributeError):
+        return _budget.DEFAULT_BUDGET_TOKENS
+
+
 # Optional callable(dict) receiving token estimates for each provider call.
 USAGE_SINK = None
 

@@ -39,7 +39,7 @@ python -m unittest discover -s tests
 - Plan-first workflow (plan gate can be switched off), reviewable diffs
 - Whole-file, search/replace and delete edits; apply, apply selected, reject, undo, `/rewind` up to 10 applies
 - The model can `search` (regex, optional glob) and `list` folders locally, read-only, before it proposes changes
-- Context skips files matched by `.gitignore` and `.coderouterignore`
+- Context skips files matched by `.gitignore` and `.coderouterignore`; projects over the budget (`context_budget_tokens`, default 60k) send a file tree plus the files most relevant to the prompt, and `/context` shows what fills the window
 - Approval modes: **Suggest** (review everything), **Auto-edit** (apply edits, ask for reads and commands), **Full auto** (also allow reads and allow-listed commands). `Shift+Tab` in the composer or the status bar cycles them
 - Persistent allow/deny rules: `Bash(pytest*)`, `Read(src/**)`, `Edit(docs/**)`, `Mcp(server.*)`; deny wins; **Always allow** on a request saves the rule
 - MCP tool servers over stdio (see below)
