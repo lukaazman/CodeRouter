@@ -425,6 +425,14 @@ class ParityAppTests(unittest.TestCase):
         self.app.set_plan_gate(True)
         self.app.set_output_style("default")
 
+    def test_stream_preview_extracts_summary(self):
+        self.app._stream_buffer = '{"action":"final","summary":"Guard the loader agai'
+        self.app._show_stream_preview()
+        self.assertIn("Writing · Guard the loader agai", self.app.summary.get("1.0", tk.END))
+        self.app._stream_buffer = '{"summary":"p","steps":[{"id":"1","title":"Read the \\"config\\" file'
+        self.app._show_stream_preview()
+        self.assertIn('Planning · Read the "config" file', self.app.summary.get("1.0", tk.END))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5248,6 +5248,8 @@ class CodeAgentApp(tk.Tk):
             if busy:
                 self._busy_started = time.monotonic()
                 self._stream_chars = 0
+                self._stream_buffer = ""
+                self._stream_preview = ""
             else:
                 self._paint_state_marker(0.0)
             self._refresh_status_strip()
@@ -5314,6 +5316,7 @@ class CodeAgentApp(tk.Tk):
             self._sync_empty_state()
             if getattr(self, "_ui_busy", False):
                 self._refresh_status_strip()
+                self._show_stream_preview()
         except tk.TclError:
             return
         self._start_ui_heartbeat()
@@ -9373,6 +9376,25 @@ class CodeAgentApp(tk.Tk):
         self.activity.see(tk.END)
         self._refresh_activity_digest()
 
+    STREAM_FIELD_PATTERN = re.compile(r'"(summary|title)"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+    def _show_stream_preview(self):
+        """While the model writes JSON, show the summary it is writing."""
+        if not getattr(self, "_parity_ready", False):
+            return
+        matches = self.STREAM_FIELD_PATTERN.findall(getattr(self, "_stream_buffer", ""))
+        if not matches:
+            return
+        field, raw = matches[-1]
+        try:
+            text = json.loads(f'"{raw}"') if not raw.endswith("\\") else raw
+        except ValueError:
+            text = raw
+        preview = ("Writing · " if field == "summary" else "Planning · ") + " ".join(str(text).split())[:240]
+        if preview != getattr(self, "_stream_preview", ""):
+            self._stream_preview = preview
+            self.set_summary(preview)
+
     def _log_stream(self, text):
         """Model output streams inline instead of one line per chunk."""
         safe_text = self._redact_sensitive(text)
@@ -10690,6 +10712,7 @@ class CodeAgentApp(tk.Tk):
                 elif kind == "stream_delta":
                     self._log_stream(payload)
                     self._stream_chars = getattr(self, "_stream_chars", 0) + len(str(payload or ""))
+                    self._stream_buffer = (getattr(self, "_stream_buffer", "") + str(payload or ""))[-20000:]
                 elif kind == "timeline":
                     self.log(payload)
                 elif kind == "session":
