@@ -352,6 +352,9 @@ class ParityAppTests(unittest.TestCase):
             self.assertEqual(self.app._run_mcp_call(call).content, "echo: yo")
             self.app.run_slash_command("/mcp")
             self.assertIn("fake (user): connected", self.app.summary.get("1.0", tk.END))
+            self.app.hooks_config = {"PreToolUse": [[_sys.executable, "-c", "import sys; sys.exit(2)"]]}
+            self.assertIn("PreToolUse hook", self.app._run_mcp_call(call).content)
+            self.app.hooks_config = {}
         finally:
             self.app.mcp_manager.stop_all()
 

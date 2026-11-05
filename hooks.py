@@ -17,8 +17,8 @@ import json
 import os
 import subprocess
 
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PreApply", "PostApply", "Notification", "Stop")
-BLOCKING_EVENTS = ("UserPromptSubmit", "PreApply")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreApply", "PostApply", "Notification", "Stop")
+BLOCKING_EVENTS = ("UserPromptSubmit", "PreToolUse", "PreApply")
 HOOK_TIMEOUT_SECONDS = 30
 HOOK_MAX_OUTPUT = 8 * 1024
 HOOK_MAX_PER_EVENT = 8

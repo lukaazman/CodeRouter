@@ -11962,10 +11962,18 @@ class CodeAgentApp(tk.Tk):
             text = (f"Refused: {call.tool} needs approval. The user can allow it with /allow Mcp({call.tool}) "
                     "or Full auto. Continue without it.")
         else:
-            try:
-                text = manager.call(call.tool, call.argument_dict())
-            except (_mcp.McpError, ValueError, OSError) as exc:
-                text = f"MCP call failed: {short_error(exc)}"
+            folder = self.selected_folder.get().strip() or "."
+            payload = {"tool": call.tool, "arguments": call.argument_dict()}
+            pre = _hooks.run_hooks(self.hooks_config, "PreToolUse", folder, payload, env=build_verification_environment())
+            if _hooks.blocked("PreToolUse", pre):
+                text = f"Refused by a PreToolUse hook: {call.tool}."
+            else:
+                try:
+                    text = manager.call(call.tool, call.argument_dict())
+                except (_mcp.McpError, ValueError, OSError) as exc:
+                    text = f"MCP call failed: {short_error(exc)}"
+                _hooks.run_hooks(self.hooks_config, "PostToolUse", folder, {**payload, "result": text[:2000]},
+                                 env=build_verification_environment())
         safe = redact_sensitive_text(text, [self.api_key])
         return SourceFile(path=Path("."), relative_path=f"[{call.label()}]", content=safe)
 

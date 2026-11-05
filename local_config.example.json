@@ -26,6 +26,7 @@
   "notify": true,
   "hooks": {
     "UserPromptSubmit": [],
+    "PreToolUse": [],
     "PreApply": [],
     "PostApply": [["python", "-m", "pytest", "-q"]],
     "Stop": []
