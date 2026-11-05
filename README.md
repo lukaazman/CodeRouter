@@ -26,7 +26,8 @@ python -m unittest discover -s tests
 - `approval.py` - approval modes and allow/deny rules
 - `memory_files.py`, `mentions.py`, `sessions.py` - memory files, `@file` mentions, saved conversations
 - `git_tools.py`, `hooks.py`, `edit_ops.py`, `usage.py` - git, lifecycle hooks, search/replace edits, token meter
-- `extensions.py`, `ignore_rules.py` - skills, agents and output styles from disk; `.gitignore` rules
+- `extensions.py`, `plugins.py`, `ignore_rules.py` - skills, agents, output styles and plugins from disk; `.gitignore` rules
+- `mcp_client.py`, `sandbox.py`, `web_fetch.py`, `context_budget.py` - MCP over stdio, network-off sandbox, `/fetch`, context budget
 - `model_router.py` - prompt classification and free model ranking
 - `command_suggestions.py` - inline `/command` completions
 - `theme.py`, `ui_kit.py` - design tokens, icons, easing, timelines, motion preference
@@ -50,6 +51,7 @@ python -m unittest discover -s tests
 - Skills: `.claude/skills/<name>/SKILL.md`, `.coderouter/skills/…`, `~/.claude/skills/…`, `~/.codex/skills/…` join the context when the prompt matches their description; `/skill <name>` pins one
 - Agents: `.claude/agents/<name>.md` (or `.coderouter/agents`) act as personas; `/agent <name>`, `/agent off`
 - Output style files: `.claude/output-styles/<name>.md`; `/output-style <name>`
+- Plugins: `~/.coderouter/plugins/<name>/` (or `.coderouter/plugins/` in a project) bundle `commands/`, `skills/`, `agents/`, `output-styles/`, `hooks.json` and `.mcp.json`; only user plugins may add hooks or MCP servers; `/plugins`, `/plugins disable <name>`
 - Conversation transcript with plans shown as checklists; prompts typed during a run are queued
 - Ask mode: start a prompt with `?` (or `/ask`) for an answer about the project with no plan and no edits
 - Fuzzy command palette (`Ctrl+Shift+P`, `Ctrl+P` or `F1`); `Up`/`Down` recall earlier prompts
@@ -68,7 +70,7 @@ python -m unittest discover -s tests
 
 ## Commands
 
-`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/sandbox [mode]` `/profile [name]` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
+`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/plugins` `/rules [remove <rule>]` `/sandbox [mode]` `/profile [name]` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
 Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 

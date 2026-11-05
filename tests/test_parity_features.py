@@ -229,6 +229,34 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertLessEqual(sum(context_budget.estimate(item.content) for item in lean), 2500)
 
 
+class PluginTests(unittest.TestCase):
+    def test_discover_and_contents(self):
+        import plugins
+
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root:
+            base = Path(home, ".coderouter", "plugins", "review-kit")
+            (base / "commands").mkdir(parents=True)
+            (base / "commands" / "triage.md").write_text("Triage $ARGUMENTS", encoding="utf-8")
+            (base / "skills" / "owasp").mkdir(parents=True)
+            (base / "skills" / "owasp" / "SKILL.md").write_text("---\ndescription: OWASP web security checks\n---\nCheck XSS.", encoding="utf-8")
+            (base / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [["echo", "done"]]}}), encoding="utf-8")
+            (base / ".mcp.json").write_text(json.dumps({"mcpServers": {"db": {"command": "dbserver"}}}), encoding="utf-8")
+            (base / "plugin.json").write_text(json.dumps({"description": "Review tools", "version": "1.2"}), encoding="utf-8")
+            Path(home, ".coderouter", "plugins", "off-one").mkdir()
+            found = plugins.discover_plugins(root, home, disabled=["off-one"])
+            self.assertEqual([(p.name, enabled) for p, enabled in found], [("off-one", False), ("review-kit", True)])
+            enabled = plugins.enabled_plugins(root, home, disabled=["off-one"])
+            registry = slash_commands.CommandRegistry(root, home=home, extra_dirs=plugins.plugin_dirs(enabled, "commands"))
+            self.assertIn("plugin:review-kit", registry.resolve("triage").description)
+            import extensions
+
+            skills = extensions.load_extensions("skill", root, home, extra_dirs=plugins.plugin_dirs(enabled, "skills"))
+            self.assertIn("owasp", skills)
+            self.assertEqual(plugins.plugin_hooks(enabled), {"Stop": [["echo", "done"]]})
+            self.assertEqual(plugins.plugin_mcp_servers(enabled)["review-kit-db"]["command"], "dbserver")
+            self.assertEqual(enabled[0].version, "1.2")
+
+
 class SandboxTests(unittest.TestCase):
     def test_wrap_and_network_isolation(self):
         import sandbox

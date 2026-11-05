@@ -58,10 +58,10 @@ def _read(path):
         return None
 
 
-def load_extensions(kind, project_root=None, home=None):
-    """name -> Extension; project entries override user entries."""
+def load_extensions(kind, project_root=None, home=None, extra_dirs=()):
+    """name -> Extension; project entries override user and plugin entries."""
     items = {}
-    for scope, base in _dirs(kind, project_root, home):
+    for scope, base in list(extra_dirs) + _dirs(kind, project_root, home):
         if not base.is_dir():
             continue
         candidates = sorted(base.glob("*/SKILL.md")) if kind == "skill" else sorted(base.glob("*.md"))

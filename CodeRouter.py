@@ -36,6 +36,7 @@ import web_fetch as _web
 import mcp_client as _mcp
 import context_budget as _budget
 import sandbox as _sandbox
+import plugins as _plugins
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -9289,12 +9290,13 @@ class CodeAgentApp(tk.Tk):
         if not getattr(self, "_parity_ready", False):
             return
         self._remember_folder(folder)
+        self._reload_extensions(folder)
         self._base_title = f"{Path(folder).name} · {APP_TITLE}"
         self.title(self._base_title)
         self.command_registry.reload(folder)
         self._reload_extensions(folder)
         self.mcp_manager.stop_all()
-        self.mcp_manager.specs = _mcp.load_server_specs(self.config_data, folder)
+        self.mcp_manager.specs = _mcp.load_server_specs(self._mcp_config(), folder)
         self._start_mcp_servers()
         self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder)
         self._refresh_git_status_async()
@@ -10816,19 +10818,34 @@ class CodeAgentApp(tk.Tk):
         self._suggest_kind = None
         self._parity_ready = False
         SANDBOX_SETTINGS["mode"] = _sandbox.normalize_mode(cfg.get("sandbox"))
-        self.mcp_manager = _mcp.McpManager(
-            _mcp.load_server_specs(cfg, folder), cfg.get("mcp_enabled_project", ()),
-        )
         self.pinned_skills = []
         self.active_agent_name = cfg.get("agent", "")
         self.file_style_name = cfg.get("output_style_file", "")
         self._reload_extensions(folder)
+        self.mcp_manager = _mcp.McpManager(
+            _mcp.load_server_specs(self._mcp_config(), folder), cfg.get("mcp_enabled_project", ()),
+        )
+
+    def _mcp_config(self):
+        servers = dict(self.config_data.get("mcp_servers") or {})
+        for name, spec in getattr(self, "_plugin_mcp", {}).items():
+            servers.setdefault(name, spec)
+        return {**self.config_data, "mcp_servers": servers}
 
     def _reload_extensions(self, folder=None):
         folder = folder or self.selected_folder.get().strip() or None
-        self.skills = _ext.load_extensions("skill", folder)
-        self.agents = _ext.load_extensions("agent", folder)
-        self.file_styles = _ext.load_extensions("style", folder)
+        self.plugins = _plugins.enabled_plugins(folder, disabled=self.config_data.get("plugins_disabled", ()))
+        self.command_registry.reload(folder, _plugins.plugin_dirs(self.plugins, "commands"))
+        self.skills = _ext.load_extensions("skill", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "skills"))
+        self.agents = _ext.load_extensions("agent", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "agents"))
+        self.file_styles = _ext.load_extensions("style", folder, extra_dirs=_plugins.plugin_dirs(self.plugins, "output-styles"))
+        # Hooks and MCP servers run programs, so only user-level plugins may add them.
+        trusted = [plugin for plugin in self.plugins if plugin.scope == "user"]
+        merged = dict(self.config_data.get("hooks") or {})
+        for event, entries in _plugins.plugin_hooks(trusted).items():
+            merged[event] = list(merged.get(event, [])) + list(entries)
+        self.hooks_config = _hooks.normalize_hooks(merged)
+        self._plugin_mcp = _plugins.plugin_mcp_servers(trusted)
         self.pinned_skills = [name for name in self.pinned_skills if name in self.skills]
 
     # Configuration helpers ------------------------------------------------------
@@ -11506,6 +11523,49 @@ class CodeAgentApp(tk.Tk):
             self._save_config_quietly()
         return True, "Sandbox · " + _sandbox.describe(SANDBOX_SETTINGS["mode"])
 
+    def _cmd_plugins(self, args):
+        folder = self.selected_folder.get().strip() or None
+        words = args.split()
+        if len(words) == 2 and words[0] in {"enable", "disable"}:
+            disabled = set(self.config_data.get("plugins_disabled", []))
+            (disabled.discard if words[0] == "enable" else disabled.add)(words[1])
+            self.config_data["plugins_disabled"] = sorted(disabled)
+            self._save_config_quietly()
+            self._reload_extensions(folder)
+            return f"Plugin {words[1]} {words[0]}d · /mcp restart to reload its servers"
+        found = _plugins.discover_plugins(folder, disabled=self.config_data.get("plugins_disabled", ()))
+        if not found:
+            return True, "No plugins · add folders under ~/.coderouter/plugins/<name>/ (commands/, skills/, agents/, hooks.json, .mcp.json)"
+        lines = ["Plugins"]
+        for plugin, enabled in found:
+            parts = [name for name in ("commands", "skills", "agents", "output-styles") if plugin.subdir(name)]
+            if (plugin.root / "hooks.json").is_file():
+                parts.append("hooks")
+            if (plugin.root / ".mcp.json").is_file():
+                parts.append("mcp")
+            version = f" {plugin.version}" if plugin.version else ""
+            lines.append(f"  {'on ' if enabled else 'off'} {plugin.name}{version} ({plugin.scope}) · {', '.join(parts) or 'empty'}"
+                         + (f" - {plugin.description}" if plugin.description else ""))
+        self._show_output("\n".join(lines))
+        return f"{len(found)} plugin(s)"
+
+    def _cmd_rules(self, args):
+        words = args.split(maxsplit=1)
+        if words[:1] == ["remove"] and len(words) == 2:
+            rule = words[1].strip()
+            removed = False
+            for bucket in (self.approval_rules.allow, self.approval_rules.deny):
+                if rule in bucket:
+                    bucket.remove(rule)
+                    removed = True
+            if not removed:
+                return False, f"No rule {rule}"
+            self.config_data["permissions"] = self.approval_rules.to_config()
+            self._save_config_quietly()
+            return f"Removed {rule}"
+        rules = self.approval_rules
+        return True, "Allow: " + (", ".join(rules.allow) or "none") + " · Deny: " + (", ".join(rules.deny) or "none")
+
     def _cmd_hooks(self, _args):
         self._show_output(_hooks.describe_hooks(self.hooks_config))
         return f"{sum(len(v) for v in self.hooks_config.values())} hook(s)"
@@ -12046,7 +12106,7 @@ class CodeAgentApp(tk.Tk):
             return f"Starting {name}"
         if words[:1] == ["restart"]:
             manager.stop_all()
-            manager.specs = _mcp.load_server_specs(self.config_data, self.selected_folder.get().strip() or None)
+            manager.specs = _mcp.load_server_specs(self._mcp_config(), self.selected_folder.get().strip() or None)
             self._start_mcp_servers()
             return "Restarting MCP servers"
         lines = ["MCP servers"]

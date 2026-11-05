@@ -459,6 +459,12 @@ class ParityAppTests(unittest.TestCase):
         digest = self.app._proposal_digest([{"path": "a.py", "stats": "+3 / -1"}, {"path": "b.py", "stats": "+2 / -0"}])
         self.assertEqual(digest, "Proposed 2 file(s) +5 −1: a.py, b.py · review on the right")
 
+    def test_rules_remove(self):
+        self.app.run_slash_command("/allow Bash(make*)")
+        self.assertTrue(self.app.run_slash_command("/rules remove Bash(make*)")[1])
+        self.assertNotIn("Bash(make*)", self.app.approval_rules.allow)
+        self.assertFalse(self.app.run_slash_command("/rules remove Bash(make*)")[1])
+
 
 if __name__ == "__main__":
     unittest.main()

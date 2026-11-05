@@ -76,6 +76,8 @@ BUILTIN_COMMANDS = (
     SlashCommand("motion", "Motion: full, reduced, system", "[mode]"),
     SlashCommand("plan", "Plan gate on or off (off = run straight to changes)", "[on|off]"),
     SlashCommand("hooks", "List configured hooks"),
+    SlashCommand("plugins", "List plugins; /plugins enable|disable <name>", "[enable|disable <name>]"),
+    SlashCommand("rules", "List allow/deny rules; /rules remove <rule>", "[remove <rule>]"),
     SlashCommand("sandbox", "Run commands without network: off or network-off", "[mode]"),
     SlashCommand("profile", "Apply a named settings profile from config", "[name]"),
     SlashCommand("config", "Open settings"),
@@ -156,11 +158,11 @@ def _command_name_for(base, path):
     return ":".join(parts)
 
 
-def load_custom_commands(project_root=None, home=None):
+def load_custom_commands(project_root=None, home=None, extra_dirs=()):
     """Load custom commands; later directories override earlier ones."""
     commands = {}
     loaded = 0
-    for scope, base in custom_command_dirs(project_root, home):
+    for scope, base in list(extra_dirs) + custom_command_dirs(project_root, home):
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.md")):
@@ -227,16 +229,19 @@ def expand_custom_command(command, arguments=""):
 
 
 class CommandRegistry:
-    def __init__(self, project_root=None, home=None):
+    def __init__(self, project_root=None, home=None, extra_dirs=()):
         self.project_root = project_root
         self.home = home
+        self.extra_dirs = list(extra_dirs)
         self.custom = {}
         self.reload(project_root)
 
-    def reload(self, project_root=None):
+    def reload(self, project_root=None, extra_dirs=None):
         if project_root is not None:
             self.project_root = project_root
-        self.custom = load_custom_commands(self.project_root, self.home)
+        if extra_dirs is not None:
+            self.extra_dirs = list(extra_dirs)
+        self.custom = load_custom_commands(self.project_root, self.home, self.extra_dirs)
         return self.custom
 
     def resolve(self, name):
