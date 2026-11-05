@@ -10737,6 +10737,8 @@ class CodeAgentApp(tk.Tk):
                     self.diff_by_path = payload
                 elif kind == "files":
                     self.populate_changed_files(payload)
+                    if getattr(self, "_parity_ready", False) and payload:
+                        self._transcript_add("event", self._proposal_digest(payload))
                 elif kind == "auto_apply":
                     self.apply_pending(explicit=False)
         except queue.Empty:
@@ -11187,6 +11189,17 @@ class CodeAgentApp(tk.Tk):
             return False, "Nothing pending."
         self.apply_pending()
         return "Applied"
+
+    @staticmethod
+    def _proposal_digest(rows):
+        additions = deletions = 0
+        for row in rows:
+            match = re.match(r"\+(\d+) / -(\d+)", str(row.get("stats", "")))
+            if match:
+                additions += int(match.group(1))
+                deletions += int(match.group(2))
+        names = ", ".join(str(row.get("path")) for row in rows[:6]) + (" …" if len(rows) > 6 else "")
+        return f"Proposed {len(rows)} file(s) +{additions} −{deletions}: {names} · review on the right"
 
     def _cmd_reject(self, args):
         if not self.pending_proposal:

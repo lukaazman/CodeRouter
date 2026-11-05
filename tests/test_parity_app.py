@@ -455,6 +455,10 @@ class ParityAppTests(unittest.TestCase):
         self.app._start_statusline()
         self.assertTrue(self._pump(lambda: self.app._statusline_label.cget("text") == "proj:suggest"))
 
+    def test_proposal_digest(self):
+        digest = self.app._proposal_digest([{"path": "a.py", "stats": "+3 / -1"}, {"path": "b.py", "stats": "+2 / -0"}])
+        self.assertEqual(digest, "Proposed 2 file(s) +5 −1: a.py, b.py · review on the right")
+
 
 if __name__ == "__main__":
     unittest.main()
