@@ -433,6 +433,12 @@ class HooksUsageThemeMotionTests(unittest.TestCase):
             self.assertGreaterEqual(theme.contrast(palette["text_muted"], palette["canvas"]), 4.5)
             self.assertGreaterEqual(theme.contrast(palette["accent_ink"], palette["accent"]), 4.5)
         self.assertEqual(theme.normalize_theme("neon"), "dark")
+        custom = theme.with_accent(theme.DARK, "#ff9f1c")
+        self.assertEqual(custom["accent"], "#ff9f1c")
+        self.assertGreaterEqual(theme.contrast(custom["accent_ink"], custom["accent"]), 4.5)
+        self.assertEqual(theme.with_accent(theme.DARK, "nope"), theme.DARK)
+        light = theme.with_accent(theme.LIGHT, "#0a7d5a")
+        self.assertEqual(light["accent_ink"], "#ffffff")
 
     def test_easing_and_stagger(self):
         ease = ui_kit.cubic_bezier(0.2, 0.8, 0.2, 1.0)

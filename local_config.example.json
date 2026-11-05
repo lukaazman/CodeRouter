@@ -10,6 +10,7 @@
   "reasoning_effort": "",
   "temperature": 0.1,
   "theme": "dark",
+  "accent": "",
   "motion": "full",
   "user_memory": true,
   "permissions": {

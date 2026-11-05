@@ -149,9 +149,9 @@ FONT_PREFERENCES = {
 DIFF_TONES = _theme.diff_tones_for("dark")
 
 
-def apply_theme_tokens(theme_name):
+def apply_theme_tokens(theme_name, accent=None):
     """Swap palette tokens in place so every module-level reference updates."""
-    PALETTE.update(_theme.palette_for(theme_name))
+    PALETTE.update(_theme.with_accent(_theme.palette_for(theme_name), accent))
     DIFF_TONES.update(_theme.diff_tones_for(theme_name))
     TASK_STATE_COLORS.update({
         TASK_STATE_IDLE: PALETTE["text_muted"],
@@ -2398,7 +2398,8 @@ class CodeAgentApp(tk.Tk):
     def __init__(self, history_path=None, overseer_adapter=None):
         super().__init__()
         self.withdraw()
-        self.theme_name = apply_theme_tokens(load_local_config().get("theme", "dark"))
+        early_config = load_local_config()
+        self.theme_name = apply_theme_tokens(early_config.get("theme", "dark"), early_config.get("accent"))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.title(APP_TITLE)
         self.geometry("1440x900")

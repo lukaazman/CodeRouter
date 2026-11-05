@@ -117,3 +117,28 @@ def _luminance(hex_color):
 def contrast(a, b):
     la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
     return (la + 0.05) / (lb + 0.05)
+
+
+def _mix(a, b, amount):
+    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(ca, cb))
+
+
+def with_accent(palette, accent):
+    """Swap in a custom accent; derive hover and ink colours with safe contrast."""
+    accent = str(accent or "").strip().lower()
+    if len(accent) != 7 or not accent.startswith("#"):
+        return palette
+    try:
+        int(accent[1:], 16)
+    except ValueError:
+        return palette
+    result = dict(palette)
+    dark_ground = _luminance(palette["canvas"]) < 0.2
+    result["accent"] = accent
+    result["focus"] = accent
+    result["accent_active"] = _mix(accent, "#ffffff" if dark_ground else "#000000", 0.2)
+    ink_dark, ink_light = "#0d1527", "#ffffff"
+    result["accent_ink"] = ink_dark if contrast(ink_dark, accent) >= contrast(ink_light, accent) else ink_light
+    return result
