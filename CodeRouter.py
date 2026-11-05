@@ -12065,7 +12065,7 @@ class CodeAgentApp(tk.Tk):
 
         def heading(text):
             nonlocal row
-            ttk.Label(frame, text=text, style="Section.TLabel").grid(row=row, column=0, sticky="w", pady=(self._px(10), self._px(4)))
+            ttk.Label(frame, text=text, style="Section.TLabel").grid(row=row, column=0, sticky="w", pady=(self._px(8), self._px(3)))
             row += 1
 
         def segmented(variable, options, command):
@@ -12077,7 +12077,12 @@ class CodeAgentApp(tk.Tk):
             for index, (value, label) in enumerate(options):
                 group.columnconfigure(index, weight=1, uniform="seg")
                 button = tk.Label(group, text=label, bg=c["surface_alt"], fg=c["text_muted"], font=FONTS["small"],
-                                  padx=self._px(6), pady=self._px(5), cursor="hand2", takefocus=1)
+                                  padx=self._px(6), pady=self._px(5), cursor="hand2", takefocus=1,
+                                  highlightthickness=1, highlightbackground=c["surface_alt"], highlightcolor=c["focus"])
+                button.bind("<FocusIn>", lambda _e, b=button: b.configure(highlightbackground=c["focus"]), add="+")
+                button.bind("<FocusOut>", lambda _e, b=button: b.configure(highlightbackground=b.cget("bg")), add="+")
+                button.bind("<Left>", lambda _e, b=button: (b.tk_focusPrev().focus_set(), "break")[1], add="+")
+                button.bind("<Right>", lambda _e, b=button: (b.tk_focusNext().focus_set(), "break")[1], add="+")
                 button.grid(row=0, column=index, sticky="ew")
                 button.bind("<ButtonRelease-1>", lambda _e, v=value: command(v), add="+")
                 button.bind("<Return>", lambda _e, v=value: command(v), add="+")
@@ -12119,12 +12124,20 @@ class CodeAgentApp(tk.Tk):
 
         toggle = ttk.Checkbutton(frame, text="Approve each plan (plan gate)", variable=self.plan_gate_var,
                                  command=lambda: self.set_plan_gate(self.plan_gate_var.get()), style="Mode.TCheckbutton", takefocus=True)
-        toggle.grid(row=row, column=0, sticky="w", pady=(self._px(14), 0))
+        toggle.grid(row=row, column=0, sticky="w", pady=(self._px(10), 0))
         row += 1
         self.plan_gate_button = toggle
+        self.auto_commit_var = tk.BooleanVar(master=self, value=bool(self.config_data.get("auto_commit")))
+        self.notify_var = tk.BooleanVar(master=self, value=self.config_data.get("notify", True) is not False)
+        for text, variable, key in (("Commit after each apply", self.auto_commit_var, "auto_commit"),
+                                    ("Ring when work needs me", self.notify_var, "notify")):
+            check = ttk.Checkbutton(frame, text=text, variable=variable, style="Mode.TCheckbutton", takefocus=True,
+                                    command=lambda v=variable, k=key: self._set_config_flag(k, v.get()))
+            check.grid(row=row, column=0, sticky="w", pady=(self._px(2), 0))
+            row += 1
 
         open_config = ttk.Button(frame, text="Open config file", command=self._open_config_file, style="Secondary.TButton", takefocus=True)
-        open_config.grid(row=row, column=0, sticky="w", pady=(self._px(10), 0))
+        open_config.grid(row=row, column=0, sticky="w", pady=(self._px(8), 0))
         self._attach_tooltip(open_config, "Rules, hooks, temperature and more · /allow /deny /hooks /temperature")
         self._sidebar_rows[frame] = 12
 
@@ -12136,6 +12149,10 @@ class CodeAgentApp(tk.Tk):
             self.run_slash_command("/restart")
         else:
             self._toast("Theme applies on next start")
+
+    def _set_config_flag(self, key, value):
+        self.config_data[key] = bool(value)
+        self._save_config_quietly()
 
     def _open_config_file(self):
         if not CONFIG_PATH.exists():
