@@ -348,6 +348,21 @@ class ParityAppTests(unittest.TestCase):
         finally:
             self.app.mcp_manager.stop_all()
 
+    def test_stream_log_inline_and_palette_sessions(self):
+        self.app._log_stream('{"action":')
+        self.app._log_stream('"final"}')
+        self.app.log("! failed")
+        text = self.app.activity.get("1.0", tk.END)
+        self.assertIn('[model] {"action":"final"}\n', text)
+        self.assertIn("log_error", self.app.activity.tag_names("end-3c"))
+        self.app._record_conversation_turn("Parser rewrite", "Done")
+        self.app.open_command_palette()
+        self.app.palette_entry.insert(0, "parser")
+        self.app._palette_filter()
+        sessions = [item for item in self.app._palette_items if item.kind == "session"]
+        self.assertEqual(len(sessions), 1)
+        self.app.close_command_palette()
+
 
 if __name__ == "__main__":
     unittest.main()

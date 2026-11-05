@@ -9300,9 +9300,31 @@ class CodeAgentApp(tk.Tk):
         state_name = state or self.task_state
         state_label = TASK_STATE_LABELS.get(state_name, TASK_STATE_LABELS[TASK_STATE_ERROR]).lower()
         safe_text = self._redact_sensitive(text)
-        self.activity.insert(tk.END, f"[{state_label}] {safe_text}\n")
+        if getattr(self, "_log_streaming", False):
+            self.activity.insert(tk.END, "\n")
+            self._log_streaming = False
+        tone = "log_error" if safe_text.startswith("!") else ("log_user" if safe_text.startswith("> user:") else "log_body")
+        self.activity.insert(tk.END, f"[{state_label}] ", ("log_state",))
+        self.activity.insert(tk.END, f"{safe_text}\n", (tone,))
         self.activity.see(tk.END)
         self._refresh_activity_digest()
+
+    def _log_stream(self, text):
+        """Model output streams inline instead of one line per chunk."""
+        safe_text = self._redact_sensitive(text)
+        if not getattr(self, "_log_streaming", False):
+            self.activity.insert(tk.END, "[model] ", ("log_state",))
+            self._log_streaming = True
+        self.activity.insert(tk.END, safe_text, ("log_stream",))
+        self.activity.see(tk.END)
+
+    def _style_activity_log(self):
+        c = PALETTE
+        self.activity.tag_configure("log_state", foreground=c["text_subtle"])
+        self.activity.tag_configure("log_body", foreground=c["text_muted"])
+        self.activity.tag_configure("log_user", foreground=c["text"])
+        self.activity.tag_configure("log_error", foreground=c["danger"])
+        self.activity.tag_configure("log_stream", foreground=ui_kit.mix(c["text_muted"], c["accent"], 0.35))
 
     def _reset_run_timeline(self, run_id=None):
         self.run_timeline = []
@@ -10544,7 +10566,7 @@ class CodeAgentApp(tk.Tk):
                 elif kind == "fallback":
                     self.log(payload)
                 elif kind == "stream_delta":
-                    self.log(payload, state=TASK_STATE_RUNNING)
+                    self._log_stream(payload)
                     self._stream_chars = getattr(self, "_stream_chars", 0) + len(str(payload or ""))
                 elif kind == "timeline":
                     self.log(payload)
@@ -12235,6 +12257,11 @@ class CodeAgentApp(tk.Tk):
 
     def _finish_parity_ui(self):
         self.transcript = []
+        self._style_activity_log()
+        try:
+            self.instructions.configure(undo=True, maxundo=200, autoseparators=True)
+        except tk.TclError:
+            pass
         self._style_transcript()
         self._build_status_strip()
         self._build_composer_suggestions()
@@ -12339,6 +12366,12 @@ class CodeAgentApp(tk.Tk):
             return None
         query = self.palette_entry.get().lstrip("/")
         self._palette_items = _slash.palette_matches(query, self.command_registry.all())
+        if len(query) >= 2:
+            folder = self.selected_folder.get().strip() or None
+            for conversation in self.session_store.list(folder, limit=20):
+                if _slash.fuzzy_score(query, conversation.title or "") is not None and len(self._palette_items) < 14:
+                    self._palette_items.append(_slash.SlashCommand(
+                        name=f"resume {conversation.session_id}", description=f"Resume · {conversation.title}", kind="session"))
         self.palette_list.delete(0, tk.END)
         for command in self._palette_items:
             usage = f" {command.usage}" if command.usage else ""
@@ -12363,6 +12396,9 @@ class CodeAgentApp(tk.Tk):
         current = self.palette_list.curselection()
         command = self._palette_items[current[0] if current else 0]
         self.close_command_palette()
+        if command.kind == "session":
+            self._show_command_result(self.run_slash_command(f"/{command.name}"))
+            return "break"
         needs_args = bool(command.usage) and command.usage.startswith("<")
         if fill_only or needs_args or command.kind == "custom":
             self._set_prompt_text(f"/{command.name} ")
