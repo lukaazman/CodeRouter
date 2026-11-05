@@ -9450,13 +9450,45 @@ class CodeAgentApp(tk.Tk):
         else:
             for role, body in transcript:
                 widget.insert(tk.END, self.TRANSCRIPT_ROLE_LABELS.get(role, role) + "\n", ("role",))
-                widget.insert(tk.END, body.strip() + "\n\n", ("body_user" if role == "user" else "body_agent",))
+                if role == "user":
+                    widget.insert(tk.END, body.strip() + "\n\n", ("body_user",))
+                else:
+                    self._insert_markdown(widget, body.strip())
+                    widget.insert(tk.END, "\n\n", ("body_agent",))
             if current != (transcript[-1][1].strip() if transcript[-1][0] == "agent" else None):
                 widget.insert(tk.END, "▍", ("live_bar",))
                 widget.insert(tk.END, current, ("live",))
             widget.see(tk.END)
         widget.configure(state=tk.DISABLED)
         self._sync_empty_state()
+
+    INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+)`")
+
+    def _insert_markdown(self, widget, text):
+        """Small Markdown subset: fenced code, headings, bullets, inline code."""
+        in_code = False
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            end = "" if index == len(lines) - 1 else "\n"
+            if line.strip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                widget.insert(tk.END, line + end, ("code_block",))
+                continue
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                widget.insert(tk.END, stripped.lstrip("#").strip() + end, ("md_heading",))
+                continue
+            tags = ("body_agent",)
+            if stripped[:2] in {"- ", "* "}:
+                line = "  • " + stripped[2:]
+            position = 0
+            for match in self.INLINE_CODE_PATTERN.finditer(line):
+                widget.insert(tk.END, line[position:match.start()], tags)
+                widget.insert(tk.END, match.group(1), ("code_inline",))
+                position = match.end()
+            widget.insert(tk.END, line[position:] + end, tags)
 
     def _transcript_add(self, role, text):
         if not hasattr(self, "transcript"):
@@ -9473,6 +9505,12 @@ class CodeAgentApp(tk.Tk):
         self.summary.tag_configure("role", foreground=c["text_subtle"], font=(sans, 9), spacing1=self._px(6), spacing3=self._px(2))
         self.summary.tag_configure("body_user", foreground=c["text_muted"], lmargin1=0, lmargin2=0, spacing3=self._px(4))
         self.summary.tag_configure("body_agent", foreground=c["text"], spacing3=self._px(4))
+        mono = FONTS["mono_small"]
+        self.summary.tag_configure("code_block", font=mono, foreground=c["text"], background=c["surface_alt"],
+                                   lmargin1=self._px(10), lmargin2=self._px(10), rmargin=self._px(10))
+        self.summary.tag_configure("code_inline", font=mono, foreground=c["accent"])
+        self.summary.tag_configure("md_heading", font=(FONTS["body"][0], 11, "bold"), foreground=c["text"],
+                                   spacing1=self._px(6), spacing3=self._px(2))
         self.summary.tag_configure("live", foreground=c["text"], lmargin2=self._px(14))
         self.summary.tag_configure("live_bar", foreground=c["accent"])
 
