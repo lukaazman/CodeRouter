@@ -57,7 +57,7 @@ python -m unittest discover -s tests
 - Saved conversations: `/resume`, `/sessions`, `/compact` summarises older turns, `/rename`, `/save` to Markdown, `/copy` the last reply
 - Rings and marks the title when a plan, review or error is waiting while the window is in the background (`"notify": false` turns it off)
 - Git: branch and changes in the status bar, `/git`, `/diff`, `/commit`
-- Hooks: `UserPromptSubmit`, `PreApply` (non-zero exit blocks), `PostApply`, `Stop`; argv only, no shell
+- Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse` (MCP calls), `PostToolUse`, `PreApply`, `PostApply`, `Notification`, `Stop`; a non-zero exit from `UserPromptSubmit`, `PreToolUse` or `PreApply` blocks; argv only, no shell, JSON context on stdin
 - Output style, reasoning effort and temperature per user; image attach for vision models
 - Token and context meter (cost is always $0)
 - Profiles: named setting sets in `"profiles"` switched with `/profile <name>`

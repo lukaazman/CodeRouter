@@ -11647,6 +11647,9 @@ class CodeAgentApp(tk.Tk):
             ("Data folder", str(self.session_store.directory.parent), True),
             ("Custom commands", str(len(self.command_registry.custom)), True),
             ("Hooks", str(sum(len(v) for v in self.hooks_config.values())), True),
+            ("Skills / agents", f"{len(self.skills)} / {len(self.agents)}", True),
+            ("MCP", f"{len(self.mcp_manager.specs)} server(s), {len(self.mcp_manager.tool_names())} tool(s)", True),
+            ("Context budget", _usage.format_tokens(context_budget_for(self)) + " tokens", True),
             ("Theme", self.theme_name, True),
         ]
         lines = ["Doctor"] + [f"  {'ok ' if ok else 'fix'}  {name}: {value}" for name, value, ok in checks]
