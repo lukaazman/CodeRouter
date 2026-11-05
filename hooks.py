@@ -15,6 +15,7 @@ action; other events only report.
 
 import json
 import os
+import shutil
 import subprocess
 
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreApply", "PostApply", "Notification", "Stop")
@@ -62,8 +63,9 @@ def run_hooks(hooks, event, root, payload=None, env=None, runner=subprocess.run,
             results.append((argv, 126, problem))
             continue
         try:
+            command = [shutil.which(argv[0]) or argv[0], *argv[1:]]
             completed = runner(
-                wrap(argv) if wrap else argv,
+                wrap(command) if wrap else command,
                 cwd=str(root),
                 input=stdin,
                 capture_output=True,

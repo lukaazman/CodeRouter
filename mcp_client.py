@@ -8,6 +8,7 @@ after ``/mcp enable <name>``. Each server is an argv command; no shell.
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -85,8 +86,10 @@ class McpServer:
     def start(self):
         env = dict(os.environ)
         env.update(self.spec.env)
+        command = list(self.spec.command)
+        command[0] = shutil.which(command[0]) or command[0]  # finds npx.cmd and friends on Windows
         self._process = self._popen(
-            self.spec.command,
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
