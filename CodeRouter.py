@@ -30,6 +30,7 @@ import model_router as _model_router
 import command_suggestions as _command_suggestions
 import ui_kit
 import edit_ops as _edit_ops
+import ignore_rules as _ignore
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -11740,6 +11741,7 @@ def collect_files(root, max_files, max_file_kb, requested_paths=None, max_total_
     max_bytes = max_file_kb * 1024
     requested = set(requested_paths) if requested_paths is not None else None
     total_bytes = 0
+    ignore = _ignore.load_ignore_rules(root)
 
     for path in sorted(root.rglob("*")):
         if len(files) >= max_files:
@@ -11750,6 +11752,8 @@ def collect_files(root, max_files, max_file_kb, requested_paths=None, max_total_
         if any(part in DEFAULT_IGNORE_DIRS for part in relative_parts[:-1]):
             continue
         relative_path = path.relative_to(root).as_posix()
+        if ignore and ignore.ignored(relative_path):
+            continue
         if requested is not None and relative_path not in requested:
             continue
         if not is_context_file_allowed(path):
@@ -13931,15 +13935,20 @@ def parse_tool_query(data):
 
 
 def _tool_walk(root):
+    ignore = _ignore.load_ignore_rules(root)
     for current, directories, filenames in os.walk(str(root)):
+        base = Path(current)
         directories[:] = sorted(
             name for name in directories
             if name.casefold() not in DEFAULT_IGNORE_DIRS and not name.startswith(".")
+            and not (ignore and ignore.ignored((base / name).relative_to(root).as_posix(), is_dir=True))
         )
         for name in sorted(filenames):
-            path = Path(current) / name
+            path = base / name
             relative = path.relative_to(root).as_posix()
             if is_secret_like_relative_path(relative) or path.is_symlink():
+                continue
+            if ignore and ignore.ignored(relative):
                 continue
             yield path, relative
 

@@ -78,6 +78,38 @@ class SlashCommandTests(unittest.TestCase):
             self.assertEqual([c.label for c in registry.complete("/front")], ["/frontend:review"])
 
 
+class IgnoreRuleTests(unittest.TestCase):
+    def test_gitignore_semantics(self):
+        import ignore_rules
+
+        rules = ignore_rules.IgnoreRules(["# c", "*.log", "build/", "/dist", "!keep.log", "docs/**/*.tmp", "a?c.txt"])
+        self.assertTrue(rules.ignored("x/y.log"))
+        self.assertFalse(rules.ignored("keep.log"))
+        self.assertTrue(rules.ignored("build/out.js"))
+        self.assertTrue(rules.ignored("sub/build/out.js"))
+        self.assertFalse(rules.ignored("build.py"))
+        self.assertTrue(rules.ignored("dist/a.js"))
+        self.assertFalse(rules.ignored("sub/dist/a.js"))
+        self.assertTrue(rules.ignored("docs/a/b/c.tmp"))
+        self.assertTrue(rules.ignored("abc.txt"))
+        self.assertFalse(rules.ignored("src/app.py"))
+
+    def test_collect_files_respects_ignore_files(self):
+        import CodeRouter as core
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".gitignore").write_text("generated/\n", encoding="utf-8")
+            Path(root, ".coderouterignore").write_text("big.txt\n", encoding="utf-8")
+            Path(root, "generated").mkdir()
+            Path(root, "generated", "x.py").write_text("x", encoding="utf-8")
+            Path(root, "big.txt").write_text("b", encoding="utf-8")
+            Path(root, "main.py").write_text("m", encoding="utf-8")
+            names = [f.relative_path for f in core.collect_files(root, 50, 64)]
+            self.assertIn("main.py", names)
+            self.assertNotIn("generated/x.py", names)
+            self.assertNotIn("big.txt", names)
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))
