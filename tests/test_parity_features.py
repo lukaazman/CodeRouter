@@ -136,6 +136,41 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("Be strict.", extensions.agent_context(agent))
 
 
+class WebFetchTests(unittest.TestCase):
+    def test_html_to_text_and_validation(self):
+        import web_fetch
+
+        title, text = web_fetch.html_to_text("<html><head><title>Docs</title><style>x{}</style></head><body><h1>API</h1><p>Use <b>get()</b> &amp; set().</p><script>bad()</script><ul><li>one</li></ul></body></html>")
+        self.assertEqual(title, "Docs")
+        self.assertIn("# API", text)
+        self.assertIn("Use get() & set().", text)
+        self.assertNotIn("bad()", text)
+        self.assertIn("- one", text)
+        with self.assertRaises(ValueError):
+            web_fetch.validate_url("file:///etc/passwd")
+
+    def test_fetch_with_fake_opener(self):
+        import web_fetch
+
+        class Response:
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, _n):
+                return b"<title>T</title><p>hello</p>"
+
+        title, text = web_fetch.fetch_text("https://example.com/x", opener=lambda *_a, **_k: Response())
+        self.assertEqual((title, text), ("T", "hello"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = web_fetch.save_fetched(directory, "https://example.com/x", title, text)
+            self.assertEqual(path.name, "example-com-x.md")
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))

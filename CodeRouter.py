@@ -32,6 +32,7 @@ import ui_kit
 import edit_ops as _edit_ops
 import ignore_rules as _ignore
 import extensions as _ext
+import web_fetch as _web
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -10528,6 +10529,8 @@ class CodeAgentApp(tk.Tk):
                 self._finish_review(payload)
             elif kind == "models":
                 self._show_output(payload)
+            elif kind == "fetched":
+                self._finish_fetch(payload)
             elif kind == "usage":
                 self._record_usage(payload)
             elif kind == "log":
@@ -11375,6 +11378,39 @@ class CodeAgentApp(tk.Tk):
                           + "\n\nBuilt-in styles: /style concise | default | explanatory")
         return f"{len(self.file_styles)} style file(s)"
 
+    def _cmd_fetch(self, args):
+        try:
+            url = _web.validate_url(args)
+        except ValueError as exc:
+            return False, str(exc)
+        if self._run_in_progress():
+            return False, "Wait for the active run to finish."
+        directory = self.session_store.directory.parent / "fetched"
+
+        def work():
+            try:
+                title, text = _web.fetch_text(url)
+                path = _web.save_fetched(directory, url, title, self._redact_sensitive(text))
+                self._parity_queue.put(("fetched", (str(path), title, len(text))))
+            except Exception as exc:
+                self._parity_queue.put(("fetched", (None, short_error(exc), 0)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return f"Fetching {url}"
+
+    def _finish_fetch(self, payload):
+        path, title, size = payload
+        if not path:
+            self._toast(f"Fetch failed: {title}", "danger")
+            return
+        if path not in self.extra_context_paths:
+            self.extra_context_paths.append(path)
+            self.config_data["extra_context_files"] = list(self.extra_context_paths)
+            self._save_config_quietly()
+        self.extra_context_count.set(self._extra_context_label())
+        self._toast(f"Added {title[:60]} as context ({_usage.format_tokens(size)} chars)", "success")
+        self.log(f"> fetched {title} into read-only context")
+
     def _cmd_models(self, _args):
         if not self.api_key:
             return False, "Connect OpenRouter first."
@@ -11510,6 +11546,12 @@ class CodeAgentApp(tk.Tk):
         )
         self.usage_text.set(self.usage_meter.short_label())
         self._refresh_status_strip()
+        fraction = self.usage_meter.context_fraction()
+        if fraction >= 0.85 and not getattr(self, "_context_warned", False):
+            self._context_warned = True
+            self._toast(f"Context is {int(fraction * 100)}% full · /compact frees space", "warning")
+        elif fraction < 0.6:
+            self._context_warned = False
 
     def _refresh_status_strip(self):
         strip = getattr(self, "status_strip", None)
