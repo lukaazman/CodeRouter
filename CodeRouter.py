@@ -4286,9 +4286,9 @@ class CodeAgentApp(tk.Tk):
         chevron.pack(side=tk.LEFT, padx=(self._px(6), 0))
         self._make_clickable(
             chip,
-            self.choose_folder,
+            lambda: self._open_project_menu(chip),
             icon_labels=((self.project_chip_icon, ("folder", 16, c["text_muted"])),),
-            hint="Open a project folder",
+            hint="Switch project · recent folders",
         )
 
         rail = self.workflow_rail
@@ -9235,9 +9235,45 @@ class CodeAgentApp(tk.Tk):
             self.scan_folder(preserve_task_state=False)
             self._on_project_changed(folder)
 
+    RECENT_FOLDERS_MAX = 8
+
+    def _remember_folder(self, folder):
+        recent = [item for item in self.config_data.get("recent_folders", []) if item != folder]
+        self.config_data["recent_folders"] = ([folder] + recent)[:self.RECENT_FOLDERS_MAX]
+        self._save_config_quietly()
+
+    def _open_project_menu(self, anchor):
+        recent = [item for item in self.config_data.get("recent_folders", []) if Path(item).is_dir()]
+        current = self.selected_folder.get().strip()
+        if not recent or recent == [current]:
+            self.choose_folder()
+            return
+        c = PALETTE
+        menu = tk.Menu(self, tearoff=False, bg=c["surface_raised"], fg=c["text"], activebackground=c["border_strong"],
+                       activeforeground=c["text"], borderwidth=0, font=FONTS["small"])
+        for folder in recent:
+            label = ("✓ " if folder == current else "   ") + f"{Path(folder).name}  ·  {folder}"
+            menu.add_command(label=label, command=lambda f=folder: self.open_folder(f))
+        menu.add_separator()
+        menu.add_command(label="Open folder…", command=self.choose_folder)
+        try:
+            menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def open_folder(self, folder):
+        """Switch to folder without the file dialog (recent projects)."""
+        if folder == self.selected_folder.get().strip():
+            return
+        with mock_dialog(filedialog, "askdirectory", folder):
+            self.choose_folder()
+
     def _on_project_changed(self, folder):
         if not getattr(self, "_parity_ready", False):
             return
+        self._remember_folder(folder)
+        self._base_title = f"{Path(folder).name} · {APP_TITLE}"
+        self.title(self._base_title)
         self.command_registry.reload(folder)
         self._reload_extensions(folder)
         self.mcp_manager.stop_all()
@@ -11652,9 +11688,10 @@ class CodeAgentApp(tk.Tk):
         self._run_event_hook("Notification", {"state": TASK_STATE_LABELS.get(state, state)})
         try:
             self.bell()
-            self.title(f"● {APP_TITLE} · {TASK_STATE_LABELS.get(state, '').title()}")
+            base = getattr(self, "_base_title", APP_TITLE)
+            self.title(f"● {TASK_STATE_LABELS.get(state, '').title()} · {base}")
             if not getattr(self, "_attention_bound", False):
-                self.bind("<FocusIn>", lambda _e: self.title(APP_TITLE), add="+")
+                self.bind("<FocusIn>", lambda _e: self.title(getattr(self, "_base_title", APP_TITLE)), add="+")
                 self._attention_bound = True
         except tk.TclError:
             pass
@@ -14243,6 +14280,22 @@ def _encode_images(paths):
 
 
 STOP_HOOK_STATES = (TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR)
+class mock_dialog:
+    """Temporarily answer one tkinter dialog function with a fixed value."""
+
+    def __init__(self, module, name, value):
+        self.module, self.name, self.value = module, name, value
+
+    def __enter__(self):
+        self.original = getattr(self.module, self.name)
+        setattr(self.module, self.name, lambda *_a, **_k: self.value)
+        return self
+
+    def __exit__(self, *_exc):
+        setattr(self.module, self.name, self.original)
+        return False
+
+
 def context_budget_for(host):
     config = getattr(host, "config_data", None) or {}
     try:

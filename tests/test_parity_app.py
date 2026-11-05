@@ -396,6 +396,18 @@ class ParityAppTests(unittest.TestCase):
         self.assertIn("def main()", complete.call_args[0][1])
         self.assertEqual(self.app.session_messages[-1]["content"], "In app.py.")
 
+    def test_recent_folders_and_title(self):
+        other = tempfile.TemporaryDirectory()
+        try:
+            with mock.patch.object(self.app, "scan_folder"):
+                self.app.open_folder(other.name)
+            self.assertEqual(self.app.selected_folder.get(), other.name)
+            self.assertEqual(self.app.config_data["recent_folders"][0], other.name)
+            self.assertTrue(self.app.title().startswith(Path(other.name).name))
+            self.assertIs(wrapper.filedialog.askdirectory.__name__ != "<lambda>", True)
+        finally:
+            other.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
