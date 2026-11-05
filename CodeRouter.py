@@ -5381,8 +5381,8 @@ class CodeAgentApp(tk.Tk):
             elif view == 'verification':
                 self._set_disclosure('verification', True)
             elif view == 'settings':
-                # Expanded only until OpenRouter is connected, so the drawer fits the window.
-                self._set_trust_settings_disclosure(not self.api_key)
+                # Details stay one click away so the drawer fits the window.
+                self._set_trust_settings_disclosure(False)
         if self._utility_drawer_view:
             allowed = {'workspace': {0, 1, 2, 3, 4, 14, 18},
                        'settings': {0, 11, 12},
@@ -12296,6 +12296,9 @@ class CodeAgentApp(tk.Tk):
                 chars = getattr(self, "_stream_chars", 0)
                 extras.insert(0, f"working {elapsed}s" + (f" · {_usage.format_tokens(chars)} chars" if chars else ""))
             self.status_extra_label.configure(text=" · ".join(extras))
+            connect = getattr(self, "prefs_connect_button", None)
+            if connect is not None and self.api_key and connect.winfo_manager():
+                connect.grid_remove()
             fraction = self.usage_meter.context_fraction()
             self._draw_context_meter(fraction)
         except tk.TclError:
@@ -12614,6 +12617,12 @@ class CodeAgentApp(tk.Tk):
         self._sidebar_rows[frame] = 12
         self.agent_preferences_frame = frame
         row = 0
+        self.prefs_connect_button = ttk.Button(frame, text="Connect OpenRouter", command=self._start_openrouter_login,
+                                               style="Primary.TButton", takefocus=True)
+        self.prefs_connect_button.grid(row=row, column=0, sticky="ew", pady=(self._px(4), 0))
+        if self.api_key:
+            self.prefs_connect_button.grid_remove()
+        row += 1
 
         def heading(text):
             nonlocal row
@@ -12670,6 +12679,9 @@ class CodeAgentApp(tk.Tk):
         heading("Reasoning effort")
         segmented(self.effort_var, (("default", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High")),
                   lambda v: self.set_reasoning_effort(v))
+        self.sandbox_var = tk.StringVar(master=self, value=SANDBOX_SETTINGS["mode"])
+        heading("Commands")
+        segmented(self.sandbox_var, (("off", "Network on"), ("network-off", "No network")), self._on_sandbox_choice)
         heading("Theme")
         segmented(self.theme_var, (("dark", "Dark"), ("light", "Light"), ("system", "System")),
                   self._on_theme_choice)
@@ -12692,6 +12704,11 @@ class CodeAgentApp(tk.Tk):
         open_config.grid(row=row, column=0, sticky="w", pady=(self._px(8), 0))
         self._attach_tooltip(open_config, "Rules, hooks, temperature and more · /allow /deny /hooks /temperature")
         self._sidebar_rows[frame] = 12
+
+    def _on_sandbox_choice(self, value):
+        ok, message = self._cmd_sandbox(value)
+        self.sandbox_var.set(SANDBOX_SETTINGS["mode"])
+        self._toast(message, "success" if ok else "danger")
 
     def _on_theme_choice(self, value):
         self.set_theme(value)
