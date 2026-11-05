@@ -94,7 +94,7 @@ Suggest mode prints the diff and exits with code 3 when changes are not applied;
 
 ## Configuration
 
-All keys are optional; see `local_config.example.json`. `approval_mode`, `plan_gate`, `style`, `reasoning_effort`, `temperature`, `theme` (`dark`, `light`, `system`), `motion`, `user_memory`, `permissions.allow/deny`, `hooks`. Conversations and history live in the per-user data folder (`%LOCALAPPDATA%\CodeRouter`, `~/.local/share/CodeRouter`, or `CODEROUTER_DATA_DIR`).
+All keys are optional; see `local_config.example.json`: `approval_mode`, `plan_gate`, `style`, `reasoning_effort`, `temperature`, `theme` (`dark`, `light`, `system`), `accent` (any `#rrggbb`; hover and text colours are derived with safe contrast), `motion`, `notify`, `user_memory`, `permissions.allow/deny`, `hooks`, `profiles`, `mcp_servers`, `sandbox`, `context_budget_tokens`, `auto_commit`, `test_after_apply`, `test_command`, `statusline_command`, `plugins_disabled`. Conversations and history live in the per-user data folder (`%LOCALAPPDATA%\CodeRouter`, `~/.local/share/CodeRouter`, or `CODEROUTER_DATA_DIR`).
 
 MCP (tools over stdio): add servers to `local_config.json` as `"mcp_servers": {"name": {"command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]}}` or to a project `.mcp.json` (`{"mcpServers": {"name": {"command": "…", "args": []}}}`). Project servers only start after `/mcp enable <name>`. The model calls tools with an `mcp` action; each call needs an `Mcp(server.tool)` allow rule or Full auto, otherwise it is refused and the model continues without it. `/mcp` shows servers and tools, `/mcp restart` reloads them.
 
