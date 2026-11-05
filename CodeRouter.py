@@ -35,6 +35,7 @@ import extensions as _ext
 import web_fetch as _web
 import mcp_client as _mcp
 import context_budget as _budget
+import sandbox as _sandbox
 import slash_commands as _slash
 import approval as _approval
 import hooks as _hooks
@@ -8830,7 +8831,7 @@ class CodeAgentApp(tk.Tk):
             if not work_is_current():
                 return
             root = validate_verification_root(root, cwd=root)
-            process = subprocess.Popen(list(argv), **verification_process_options(root))
+            process = subprocess.Popen(_sandbox.wrap(argv, SANDBOX_SETTINGS["mode"]), **verification_process_options(root))
             if owner is None or not owner.register_process(process):
                 raise RunCancelledError("Verification was cancelled before process registration.")
             containment = owner.process_containment(process) if owner is not None else None
@@ -10812,6 +10813,7 @@ class CodeAgentApp(tk.Tk):
         self._suggest_items = []
         self._suggest_kind = None
         self._parity_ready = False
+        SANDBOX_SETTINGS["mode"] = _sandbox.normalize_mode(cfg.get("sandbox"))
         self.mcp_manager = _mcp.McpManager(
             _mcp.load_server_specs(cfg, folder), cfg.get("mcp_enabled_project", ()),
         )
@@ -11479,6 +11481,18 @@ class CodeAgentApp(tk.Tk):
         self._refresh_status_strip()
         return True, f"Profile {name} · " + (", ".join(applied) or "no known keys")
 
+    def _cmd_sandbox(self, args):
+        value = args.strip().lower()
+        if value:
+            if value not in _sandbox.SANDBOX_MODES:
+                return False, "Sandbox: off or network-off"
+            if value != "off" and not _sandbox.sandbox_tool():
+                return False, "network-off needs unshare (Linux) or sandbox-exec (macOS)"
+            SANDBOX_SETTINGS["mode"] = value
+            self.config_data["sandbox"] = value
+            self._save_config_quietly()
+        return True, "Sandbox · " + _sandbox.describe(SANDBOX_SETTINGS["mode"])
+
     def _cmd_hooks(self, _args):
         self._show_output(_hooks.describe_hooks(self.hooks_config))
         return f"{sum(len(v) for v in self.hooks_config.values())} hook(s)"
@@ -11710,7 +11724,7 @@ class CodeAgentApp(tk.Tk):
         if not self.hooks_config.get("UserPromptSubmit"):
             return True
         results = _hooks.run_hooks(self.hooks_config, "UserPromptSubmit", folder, {"prompt": prompt},
-                                   env=build_verification_environment())
+                                   env=build_verification_environment(), wrap=_sandboxed)
         for argv, code, output in results:
             self.log(f"> hook UserPromptSubmit {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
         if _hooks.blocked("UserPromptSubmit", results):
@@ -11722,7 +11736,7 @@ class CodeAgentApp(tk.Tk):
         if not self.hooks_config.get(event):
             return True
         results = _hooks.run_hooks(self.hooks_config, event, folder, {"paths": list(paths)},
-                                   env=build_verification_environment())
+                                   env=build_verification_environment(), wrap=_sandboxed)
         for argv, code, output in results:
             self.log(f"> hook {event} {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
         if _hooks.blocked(event, results):
@@ -11742,7 +11756,7 @@ class CodeAgentApp(tk.Tk):
         hooks_config = self.hooks_config
 
         def work():
-            results = _hooks.run_hooks(hooks_config, "Stop", folder, payload, env=build_verification_environment())
+            results = _hooks.run_hooks(hooks_config, "Stop", folder, payload, env=build_verification_environment(), wrap=_sandboxed)
             for argv, code, _output in results:
                 self._parity_queue.put(("log", f"> hook Stop {' '.join(argv)} → {code}"))
 
@@ -11794,7 +11808,7 @@ class CodeAgentApp(tk.Tk):
         hooks_config = self.hooks_config
 
         def work():
-            for argv, code, _output in _hooks.run_hooks(hooks_config, event, folder, payload, env=build_verification_environment()):
+            for argv, code, _output in _hooks.run_hooks(hooks_config, event, folder, payload, env=build_verification_environment(), wrap=_sandboxed):
                 self._parity_queue.put(("log", f"> hook {event} {' '.join(argv)} → {code}"))
 
         threading.Thread(target=work, daemon=True).start()
@@ -11967,7 +11981,7 @@ class CodeAgentApp(tk.Tk):
         else:
             folder = self.selected_folder.get().strip() or "."
             payload = {"tool": call.tool, "arguments": call.argument_dict()}
-            pre = _hooks.run_hooks(self.hooks_config, "PreToolUse", folder, payload, env=build_verification_environment())
+            pre = _hooks.run_hooks(self.hooks_config, "PreToolUse", folder, payload, env=build_verification_environment(), wrap=_sandboxed)
             if _hooks.blocked("PreToolUse", pre):
                 text = f"Refused by a PreToolUse hook: {call.tool}."
             else:
@@ -11976,7 +11990,7 @@ class CodeAgentApp(tk.Tk):
                 except (_mcp.McpError, ValueError, OSError) as exc:
                     text = f"MCP call failed: {short_error(exc)}"
                 _hooks.run_hooks(self.hooks_config, "PostToolUse", folder, {**payload, "result": text[:2000]},
-                                 env=build_verification_environment())
+                                 env=build_verification_environment(), wrap=_sandboxed)
         safe = redact_sensitive_text(text, [self.api_key])
         return SourceFile(path=Path("."), relative_path=f"[{call.label()}]", content=safe)
 
@@ -14481,6 +14495,13 @@ class mock_dialog:
     def __exit__(self, *_exc):
         setattr(self.module, self.name, self.original)
         return False
+
+
+SANDBOX_SETTINGS = {"mode": "off"}
+
+
+def _sandboxed(argv):
+    return _sandbox.wrap(argv, SANDBOX_SETTINGS["mode"])
 
 
 def context_budget_for(host):

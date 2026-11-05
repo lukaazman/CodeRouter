@@ -76,6 +76,7 @@ BUILTIN_COMMANDS = (
     SlashCommand("motion", "Motion: full, reduced, system", "[mode]"),
     SlashCommand("plan", "Plan gate on or off (off = run straight to changes)", "[on|off]"),
     SlashCommand("hooks", "List configured hooks"),
+    SlashCommand("sandbox", "Run commands without network: off or network-off", "[mode]"),
     SlashCommand("profile", "Apply a named settings profile from config", "[name]"),
     SlashCommand("config", "Open settings"),
     SlashCommand("commands", "List custom commands and where they were loaded from"),

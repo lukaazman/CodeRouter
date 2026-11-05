@@ -68,7 +68,7 @@ python -m unittest discover -s tests
 
 ## Commands
 
-`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/profile [name]` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
+`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/sandbox [mode]` `/profile [name]` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
 Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 
@@ -96,7 +96,7 @@ All keys are optional; see `local_config.example.json`. `approval_mode`, `plan_g
 
 MCP (tools over stdio): add servers to `local_config.json` as `"mcp_servers": {"name": {"command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]}}` or to a project `.mcp.json` (`{"mcpServers": {"name": {"command": "…", "args": []}}}`). Project servers only start after `/mcp enable <name>`. The model calls tools with an `mcp` action; each call needs an `Mcp(server.tool)` allow rule or Full auto, otherwise it is refused and the model continues without it. `/mcp` shows servers and tools, `/mcp restart` reloads them.
 
-Not supported: sandboxed shells; commands only run through the bounded, approved verification runner.
+Sandbox: `"sandbox": "network-off"` (or `/sandbox network-off`) runs verification and hook commands without network access, using `unshare -rn` on Linux or `sandbox-exec` on macOS; when neither exists the command is refused. Commands never run through a shell, only through the bounded, approved verification runner.
 
 ## Interface
 

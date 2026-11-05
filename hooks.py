@@ -49,8 +49,11 @@ def hook_problem(argv):
     return ""
 
 
-def run_hooks(hooks, event, root, payload=None, env=None, runner=subprocess.run):
-    """Run every hook for event. Returns list of (argv, code, output)."""
+def run_hooks(hooks, event, root, payload=None, env=None, runner=subprocess.run, wrap=None):
+    """Run every hook for event. Returns list of (argv, code, output).
+
+    wrap(argv) may rewrite the command, e.g. to apply a sandbox.
+    """
     results = []
     stdin = json.dumps({"event": event, **(payload or {})}, ensure_ascii=False)
     for argv in hooks.get(event, ()):
@@ -60,7 +63,7 @@ def run_hooks(hooks, event, root, payload=None, env=None, runner=subprocess.run)
             continue
         try:
             completed = runner(
-                argv,
+                wrap(argv) if wrap else argv,
                 cwd=str(root),
                 input=stdin,
                 capture_output=True,
@@ -77,6 +80,8 @@ def run_hooks(hooks, event, root, payload=None, env=None, runner=subprocess.run)
             results.append((argv, 124, f"timed out after {HOOK_TIMEOUT_SECONDS}s"))
         except OSError as exc:
             results.append((argv, 127, str(exc)))
+        except RuntimeError as exc:  # e.g. the requested sandbox is unavailable
+            results.append((argv, 126, str(exc)))
     return results
 
 

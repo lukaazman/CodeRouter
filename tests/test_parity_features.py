@@ -229,6 +229,20 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertLessEqual(sum(context_budget.estimate(item.content) for item in lean), 2500)
 
 
+class SandboxTests(unittest.TestCase):
+    def test_wrap_and_network_isolation(self):
+        import sandbox
+
+        self.assertEqual(sandbox.wrap(["pytest"], "off"), ["pytest"])
+        self.assertEqual(sandbox.normalize_mode("bogus"), "off")
+        if sandbox.sandbox_tool() != "unshare":
+            self.skipTest("unshare unavailable")
+        argv = sandbox.wrap([sys.executable, "-c", "import socket; socket.create_connection(('1.1.1.1', 80), timeout=2)"], "network-off")
+        self.assertEqual(argv[:3], ["unshare", "-rn", "--"])
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(completed.returncode, 0)
+
+
 class FuzzyPaletteTests(unittest.TestCase):
     def test_fuzzy_ranking(self):
         self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))

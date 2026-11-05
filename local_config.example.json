@@ -23,6 +23,7 @@
   "mcp_servers": {},
   "context_budget_tokens": 60000,
   "auto_commit": false,
+  "sandbox": "off",
   "notify": true,
   "hooks": {
     "UserPromptSubmit": [],
