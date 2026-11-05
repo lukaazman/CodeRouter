@@ -9486,6 +9486,9 @@ class CodeAgentApp(tk.Tk):
             widget.insert("1.0", current)
         else:
             for role, body in transcript:
+                if role == "event":
+                    widget.insert(tk.END, "↳ " + body.strip() + "\n\n", ("event",))
+                    continue
                 widget.insert(tk.END, self.TRANSCRIPT_ROLE_LABELS.get(role, role) + "\n", ("role",))
                 if role == "user":
                     widget.insert(tk.END, body.strip() + "\n\n", ("body_user",))
@@ -9550,6 +9553,7 @@ class CodeAgentApp(tk.Tk):
                                    spacing1=self._px(6), spacing3=self._px(2))
         self.summary.tag_configure("live", foreground=c["text"], lmargin2=self._px(14))
         self.summary.tag_configure("live_bar", foreground=c["accent"])
+        self.summary.tag_configure("event", foreground=c["text_subtle"], font=FONTS["small"])
 
     def reset_session(self):
         self._clear_last_apply_undo()
@@ -10103,6 +10107,7 @@ class CodeAgentApp(tk.Tk):
         self.scan_folder(silent=True, preserve_task_state=True)
         self._run_apply_hooks("PostApply", folder, [edit.relative_path for edit in proposal.edits])
         self._auto_commit_after_apply(folder, [edit.relative_path for edit in proposal.edits])
+        self._transcript_add("event", f"Applied {changed} file(s): " + ", ".join(edit.relative_path for edit in proposal.edits[:8]))
         self._toast(f"Applied {changed} file(s) · /undo to revert" + ("" if self.config_data.get("auto_commit") else " · /commit to commit"), "success")
         self._refresh_git_status_async()
 
@@ -10315,6 +10320,8 @@ class CodeAgentApp(tk.Tk):
             self.set_task_state(TASK_STATE_IDLE, f"Last Apply undone ({restored} files)")
         if self._last_apply_undo is not None and hasattr(self, "undo_last_apply_button"):
             self.undo_last_apply_button.configure(state=tk.NORMAL)
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("event", f"Undid an apply ({restored} file(s))")
         self.set_summary("Last Apply was undone. No worker, command, proposal, or auto-apply action was started.")
         return True
 
@@ -10338,7 +10345,9 @@ class CodeAgentApp(tk.Tk):
         self._invalidate_run()
         self.session_messages.append({"role": "system", "content": f"User rejected {count} proposed files. Do not assume they were applied."})
         self._clear_pending_proposal()
-        self.set_summary("Changes rejected. Add a correction in Instructions and run again to continue the same chat.")
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("event", "Rejected the proposed changes")
+        self.set_summary("Changes rejected. Say what to do differently and run again; the chat continues.")
         self.set_task_state(TASK_STATE_REJECTED, f"Rejected {count} files")
         self.log(f"> rejected {count} pending files")
 
@@ -11177,6 +11186,7 @@ class CodeAgentApp(tk.Tk):
         self.session_messages.append({"role": "system", "content": f"User rejected {len(keys)} file(s): {', '.join(sorted(keys))}."})
         self.set_task_state(TASK_STATE_REVIEW, f"{len(remaining.edits)} files remain in review")
         self.log(f"> rejected {len(keys)} file(s); {len(remaining.edits)} remain", state=TASK_STATE_REVIEW)
+        self._transcript_add("event", "Rejected " + ", ".join(sorted(keys)))
         return True, f"Rejected {len(keys)} file(s) · {len(remaining.edits)} remain"
 
     def _cmd_undo(self, _args):
