@@ -479,6 +479,14 @@ class ExecutorExtensionTests(unittest.TestCase):
         plan = core.parse_plan_response('```\n{"summary": "s", "steps": [{"id": "1", "title": "t", "detail": "d"}]}\n```')
         self.assertEqual(plan.summary, "s")
 
+    def test_word_spans_pair_changed_lines(self):
+        rows = [("", "-total = price * qty\n", "del"), ("", "+total = price * quantity\n", "add"), ("", " x\n", None)]
+        spans = self.core.CodeAgentApp._word_spans(rows)
+        self.assertEqual(rows[1][1][spans[1][0][0]:spans[1][0][1]], "uantity")
+        self.assertIn(0, spans)
+        unequal = [("", "-a\n", "del"), ("", "+b\n", "add"), ("", "+c\n", "add")]
+        self.assertEqual(self.core.CodeAgentApp._word_spans(unequal), {})
+
     def test_parser_accepts_hunks_and_delete(self):
         text = json.dumps({"action": "final", "summary": "s", "files": [
             {"path": "a.py", "edits": [{"old": "1", "new": "2"}]},

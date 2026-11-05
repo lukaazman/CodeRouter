@@ -10459,14 +10459,19 @@ class CodeAgentApp(tk.Tk):
     DIFF_HUNK_PATTERN = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
     def write_diff(self, text):
-        """Render a unified diff with a line-number gutter and quiet headers."""
+        """Render a unified diff: line-number gutter, quiet headers, word-level changes."""
         self.diff.configure(state=tk.NORMAL)
         self.diff.delete("1.0", tk.END)
         try:
             self.diff.tag_configure("gutter", foreground=PALETTE["text_subtle"])
             self.diff.tag_configure("hunk", foreground=DIFF_TONES["hunk_fg"])
+            self.diff.tag_configure("add_word", background=ui_kit.mix(DIFF_TONES["add_bg"], DIFF_TONES["add_fg"], 0.28))
+            self.diff.tag_configure("del_word", background=ui_kit.mix(DIFF_TONES["del_bg"], DIFF_TONES["del_fg"], 0.28))
+            self.diff.tag_raise("add_word")
+            self.diff.tag_raise("del_word")
         except tk.TclError:
             pass
+        rows = []  # (gutter, line, tag)
         old_line = new_line = None
         for line in text.splitlines(True):
             tag = None
@@ -10495,10 +10500,52 @@ class CodeAgentApp(tk.Tk):
                 tag = "add"
             elif line.startswith("-") and not line.startswith("---"):
                 tag = "del"
+            rows.append((gutter, line, tag))
+        spans = self._word_spans(rows)
+        for index, (gutter, line, tag) in enumerate(rows):
             if gutter:
                 self.diff.insert(tk.END, gutter, ("gutter",))
+            start = self.diff.index("end-1c")
             self.diff.insert(tk.END, line, tag)
+            for begin, end in spans.get(index, ()):
+                word_tag = "add_word" if tag == "add" else "del_word"
+                self.diff.tag_add(word_tag, f"{start}+{begin}c", f"{start}+{end}c")
         self.diff.configure(state=tk.DISABLED)
+
+    @staticmethod
+    def _word_spans(rows, max_pairs=200):
+        """Changed character spans for paired -/+ lines (same-size blocks only)."""
+        spans, index, pairs = {}, 0, 0
+        while index < len(rows) and pairs < max_pairs:
+            if rows[index][2] != "del":
+                index += 1
+                continue
+            dels = index
+            while index < len(rows) and rows[index][2] == "del":
+                index += 1
+            adds = index
+            while index < len(rows) and rows[index][2] == "add":
+                index += 1
+            count = adds - dels
+            if count == 0 or index - adds != count:
+                continue
+            for offset in range(count):
+                old = rows[dels + offset][1][1:].rstrip("\n")
+                new = rows[adds + offset][1][1:].rstrip("\n")
+                if not old.strip() or not new.strip():
+                    continue
+                matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+                if matcher.ratio() < 0.4:
+                    continue
+                for op, a0, a1, b0, b1 in matcher.get_opcodes():
+                    if op == "equal":
+                        continue
+                    if a1 > a0:
+                        spans.setdefault(dels + offset, []).append((a0 + 1, a1 + 1))
+                    if b1 > b0:
+                        spans.setdefault(adds + offset, []).append((b0 + 1, b1 + 1))
+                pairs += 1
+        return spans
 
     def _cancel_poll_timer(self):
         after_id = self._poll_after_id
