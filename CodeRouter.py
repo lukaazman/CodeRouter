@@ -4810,6 +4810,10 @@ class CodeAgentApp(tk.Tk):
             starters += [("review", "Review my changes", "/code-review"), ("check", "Commit changes", "/commit")]
         if not (Path(folder) / PROJECT_INSTRUCTIONS_FILENAME).exists():
             starters.append(("doc", "Write AGENTS.md", "/init"))
+        store = getattr(self, "session_store", None)
+        latest = store.latest(folder) if store is not None else None
+        if latest is not None and latest.session_id != getattr(self.conversation, "session_id", None):
+            starters.insert(0, ("history", "Resume last chat", "/resume"))
         for starter in self.PROMPT_STARTERS:
             if len(starters) >= 4:
                 break
@@ -4820,6 +4824,10 @@ class CodeAgentApp(tk.Tk):
         parts = getattr(self, "_empty_tile_parts", None)
         if not parts:
             return
+        now = time.monotonic()
+        if now - getattr(self, "_starters_checked_at", 0.0) < 2.0:
+            return
+        self._starters_checked_at = now
         starters = self._starter_set()
         if starters == self._starter_signature:
             return

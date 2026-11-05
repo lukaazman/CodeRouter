@@ -316,8 +316,12 @@ class ParityAppTests(unittest.TestCase):
         self.app.git_state = wrapper._git.GitStatus(True, "main", 0, 0, ((" M", "a.py"),))
         labels = [item[1] for item in self.app._starter_set()]
         self.assertEqual(labels[:2], ["Review my changes", "Commit changes"])
+        self.app._starters_checked_at = 0.0
         self.app._refresh_starters()
         self.assertEqual(self.app._empty_tile_parts[0][1].cget("text"), "Review my changes")
+        self.app._record_conversation_turn("old", "chat")
+        self.app.conversation = wrapper._sessions.Conversation("s-new", self.project.name)
+        self.assertEqual(self.app._starter_set()[0][1], "Resume last chat")
 
     def test_always_allow_saves_rules(self):
         self.app.inspect_request = wrapper.InspectRequest("read", ("src/a.py", "README.md"), "r1")
