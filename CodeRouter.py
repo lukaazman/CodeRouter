@@ -4452,6 +4452,10 @@ class CodeAgentApp(tk.Tk):
 
     def _pulse_step(self, elapsed):
         if not self._ui_busy or self.lifecycle.closed:
+            try:
+                self.summary.tag_configure("live_bar", foreground=PALETTE["accent"])
+            except tk.TclError:
+                pass
             self._stepper_pulse = 0.0
             self._draw_stepper()
             self._paint_state_marker(0.0)
@@ -4460,6 +4464,10 @@ class CodeAgentApp(tk.Tk):
         self._stepper_pulse = round(ui_kit.pulse(elapsed, 1.6) * 12) / 12
         self._draw_stepper()
         self._paint_state_marker(self._stepper_pulse)
+        try:
+            self.summary.tag_configure("live_bar", foreground=ui_kit.mix(PALETTE["accent"], PALETTE["canvas"], 0.65 * self._stepper_pulse))
+        except tk.TclError:
+            pass
         return None
 
     def _paint_state_marker(self, amount):
@@ -5170,8 +5178,12 @@ class CodeAgentApp(tk.Tk):
         )
         if busy != self._ui_busy:
             self._ui_busy = busy
-            if not busy:
+            if busy:
+                self._busy_started = time.monotonic()
+                self._stream_chars = 0
+            else:
                 self._paint_state_marker(0.0)
+            self._refresh_status_strip()
         if busy and not self.animator.reduce:
             self.animator.loop("progress", self._progress_step)
             self.animator.loop("pulse", self._pulse_step)
@@ -5233,6 +5245,8 @@ class CodeAgentApp(tk.Tk):
             self._sync_motion()
             self._sync_prompt_placeholder()
             self._sync_empty_state()
+            if getattr(self, "_ui_busy", False):
+                self._refresh_status_strip()
         except tk.TclError:
             return
         self._start_ui_heartbeat()
@@ -10470,6 +10484,7 @@ class CodeAgentApp(tk.Tk):
                     self.log(payload)
                 elif kind == "stream_delta":
                     self.log(payload, state=TASK_STATE_RUNNING)
+                    self._stream_chars = getattr(self, "_stream_chars", 0) + len(str(payload or ""))
                 elif kind == "timeline":
                     self.log(payload)
                 elif kind == "session":
@@ -11516,6 +11531,10 @@ class CodeAgentApp(tk.Tk):
                 extras.append(f"{len(self.queued_prompts)} queued")
             if getattr(self, "active_agent_name", ""):
                 extras.append(f"agent {self.active_agent_name}")
+            if getattr(self, "_ui_busy", False):
+                elapsed = int(time.monotonic() - getattr(self, "_busy_started", time.monotonic()))
+                chars = getattr(self, "_stream_chars", 0)
+                extras.insert(0, f"working {elapsed}s" + (f" · {_usage.format_tokens(chars)} chars" if chars else ""))
             self.status_extra_label.configure(text=" · ".join(extras))
             fraction = self.usage_meter.context_fraction()
             self._draw_context_meter(fraction)
