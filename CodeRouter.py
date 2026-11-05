@@ -3335,8 +3335,8 @@ class CodeAgentApp(tk.Tk):
             activity_meta,
             textvariable=self.activity_digest,
             bg=PALETTE["surface"],
-            fg=PALETTE["text_muted"],
-            font=FONTS["mono_small"],
+            fg=PALETTE["text_subtle"],
+            font=FONTS["small"],
             anchor="w",
             justify=tk.LEFT,
             wraplength=720,
@@ -3572,7 +3572,7 @@ class CodeAgentApp(tk.Tk):
         handoff_panel = tk.Frame(right, bg=PALETTE["surface"])
         handoff_panel.grid(row=9, column=0, sticky="ew", pady=(12, 0))
         handoff_panel.columnconfigure(0, weight=1)
-        ttk.Label(handoff_panel, text="EXECUTOR → OVERSEER", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(handoff_panel, text="Second opinion", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.handoff_preview = scrolledtext.ScrolledText(
             handoff_panel,
             height=5,
@@ -11552,6 +11552,7 @@ class CodeAgentApp(tk.Tk):
         if not getattr(self, "_parity_ready", False) or self.lifecycle.closed:
             return
         self._sync_always_allow_buttons()
+        self._sync_request_panels()
         mode = self.approval_mode_value
         plan = self.pending_plan
         if plan is not None and not self.plan_gate_enabled and ("plan", id(plan)) not in self._auto_gate_seen:
@@ -12052,6 +12053,21 @@ class CodeAgentApp(tk.Tk):
             except tk.TclError:
                 pass
 
+    def _sync_request_panels(self):
+        """Show the read and command request panels only while a request waits."""
+        if not self._disclosure_expanded.get("task_tools"):
+            return
+        for button, active in ((self.allow_inspect_button, self.inspect_request),
+                               (self.allow_verification_button, self.verification_request)):
+            panel = button.master.master
+            try:
+                if active and not panel.winfo_manager():
+                    panel.grid()
+                elif not active and panel.winfo_manager():
+                    panel.grid_remove()
+            except tk.TclError:
+                pass
+
     def always_allow_inspect(self):
         request = self.inspect_request
         if request is None:
@@ -12086,6 +12102,11 @@ class CodeAgentApp(tk.Tk):
         self._build_agent_preferences()
         self._build_command_palette()
         self._build_always_allow_buttons()
+        try:
+            self.activity.configure(height=6)
+            self.plan_preview.configure(font=FONTS["small"], height=6)
+        except tk.TclError:
+            pass
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
         try:
