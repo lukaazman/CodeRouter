@@ -10177,19 +10177,47 @@ class CodeAgentApp(tk.Tk):
         self.write_diff(self.diff_by_path.get(path, ""))
         self._update_apply_controls()
 
+    DIFF_HUNK_PATTERN = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
     def write_diff(self, text):
+        """Render a unified diff with a line-number gutter and quiet headers."""
         self.diff.configure(state=tk.NORMAL)
         self.diff.delete("1.0", tk.END)
+        try:
+            self.diff.tag_configure("gutter", foreground=PALETTE["text_subtle"])
+            self.diff.tag_configure("hunk", foreground=DIFF_TONES["hunk_fg"])
+        except tk.TclError:
+            pass
+        old_line = new_line = None
         for line in text.splitlines(True):
             tag = None
+            gutter = ""
+            match = self.DIFF_HUNK_PATTERN.match(line)
+            if (line.startswith("--- a/") or line.startswith("+++ b/") or line.startswith("+++ /dev/null")) and new_line is None:
+                continue  # the FILE header already names the path
             if line.startswith("+++ ") or line.startswith("--- FILE"):
                 tag = "file"
+            elif match:
+                old_line, new_line = int(match.group(1)), int(match.group(2))
+                tag = "hunk"
+            elif line.startswith("--- "):
+                tag = "meta"
+            elif new_line is not None and line.startswith("+"):
+                tag, gutter = "add", f"{'':>4} {new_line:>4} "
+                new_line += 1
+            elif new_line is not None and line.startswith("-"):
+                tag, gutter = "del", f"{old_line:>4} {'':>4} "
+                old_line += 1
+            elif new_line is not None and line.startswith(" "):
+                gutter = f"{old_line:>4} {new_line:>4} "
+                old_line += 1
+                new_line += 1
             elif line.startswith("+") and not line.startswith("+++"):
                 tag = "add"
             elif line.startswith("-") and not line.startswith("---"):
                 tag = "del"
-            elif line.startswith("@@") or line.startswith("--- "):
-                tag = "meta"
+            if gutter:
+                self.diff.insert(tk.END, gutter, ("gutter",))
             self.diff.insert(tk.END, line, tag)
         self.diff.configure(state=tk.DISABLED)
 

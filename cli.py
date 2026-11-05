@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 import approval as _approval
+import extensions as _ext
 import memory_files as _memory
 import mentions as _mentions
 import slash_commands as _slash
@@ -36,6 +37,7 @@ def build_parser():
     run.add_argument("--effort", choices=("low", "medium", "high"), default=None)
     run.add_argument("--temperature", type=float, default=None)
     run.add_argument("--max-rounds", type=int, default=2, help="Read-only inspect rounds (default 2)")
+    run.add_argument("--agent", default="", help="Agent persona from .claude/agents or .coderouter/agents")
     run.add_argument("--json", action="store_true", help="Print a JSON result instead of text")
     run.add_argument("-q", "--quiet", action="store_true", help="Do not stream model output to stderr")
     sub.add_parser("commands", help="List slash commands, including custom ones").add_argument("-C", "--cwd", default=".")
@@ -104,6 +106,10 @@ def run_exec(args, core):
     instructions_text, _status = core.load_project_instructions(root, secrets=secrets)
     memory_text, _labels = _memory.load_memory_files(root, secrets=secrets)
     project_instructions = _memory.combine_instructions(instructions_text, memory_text)
+    skills = _ext.match_skills(_ext.load_extensions("skill", root), prompt)
+    agent = _ext.load_extensions("agent", root).get(args.agent or config.get("agent", ""))
+    extra = "\n\n".join(part for part in (_ext.skills_context(skills), _ext.agent_context(agent)) if part)
+    project_instructions = _memory.combine_instructions(project_instructions, extra)
     mentions = _mentions.extract_mentions(prompt)
     if mentions:
         prompt += "\n\n(Files the user mentioned (prioritise them): " + ", ".join(mentions) + ")"
