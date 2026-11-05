@@ -114,6 +114,16 @@ def git_diff(root, staged=False, max_chars=GIT_DIFF_MAX_CHARS):
     return out
 
 
+SECRET_NAME_TOKENS = ("secret", "credential", "token", "password", "apikey", "api_key", "id_rsa", "id_ed25519")
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+
+
+def looks_secret(path):
+    name = Path(path).name.lower()
+    return (name == ".env" or name.startswith(".env.") or name.endswith(SECRET_SUFFIXES)
+            or any(token in name for token in SECRET_NAME_TOKENS) or name in {"local_config.json", ".npmrc", ".pypirc", ".netrc"})
+
+
 def git_review_diff(root, base="", max_chars=GIT_DIFF_MAX_CHARS):
     """Diff to review: against base (merge-base) or the working tree incl. untracked files."""
     if base:
@@ -127,6 +137,9 @@ def git_review_diff(root, base="", max_chars=GIT_DIFF_MAX_CHARS):
             code, out, err = run_git(root, "diff", "--no-color", "--no-ext-diff")
         _c, untracked, _e = run_git(root, "ls-files", "--others", "--exclude-standard")
         for path in untracked.splitlines()[:40]:
+            if looks_secret(path):
+                out += f"\n(skipped untracked secret-like file {path})\n"
+                continue
             target = Path(root) / path
             try:
                 if target.stat().st_size <= 64 * 1024:
