@@ -431,7 +431,8 @@ class IconFactory:
         self._version = hashlib.sha256(repr(sorted(ICONS.items())).encode("utf-8")).hexdigest()[:16]
         if cache_path:
             try:
-                data = json.loads(open(cache_path, encoding="utf-8").read())
+                with open(cache_path, encoding="utf-8") as stream:
+                    data = json.load(stream)
                 if data.get("version") == self._version:
                     self._disk = dict(data.get("icons") or {})
             except (OSError, ValueError, AttributeError):
