@@ -9593,6 +9593,7 @@ class CodeAgentApp(tk.Tk):
                 return
             if not self._run_prompt_hooks(folder, instructions):
                 return
+        display_prompt = instructions
 
         self._discard_pending_proposal("new run")
         self._discard_pending_plan("new run")
@@ -9649,7 +9650,7 @@ class CodeAgentApp(tk.Tk):
         self.overseer_review = None
         self._reset_run_timeline(snapshot.run_id)
         self._clear_pending_proposal()
-        self._transcript_add("user", instructions)
+        self._transcript_add("user", display_prompt)
         self.set_summary("Reading project, preparing context, and generating an execution plan.")
         self.set_task_state(TASK_STATE_PLANNING, "Preparing plan")
         self.log("")
