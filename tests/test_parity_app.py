@@ -363,6 +363,22 @@ class ParityAppTests(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.app.close_command_palette()
 
+    def test_reject_some_files_keeps_the_rest(self):
+        root = Path(self.project.name)
+        snapshot = wrapper.create_run_snapshot(root, (), (), wrapper.APPLY_MODE_REVIEW, run_id="rj")
+        self.app.lifecycle.activate(snapshot)
+        edits = [{"path": "a.py", "content": "a"}, {"path": "b.py", "content": "b"}]
+        proposal = wrapper.create_pending_proposal(snapshot, edits)
+        self.app._set_pending_proposal(proposal)
+        self.app.diff_by_path = wrapper.render_diff_by_path(root, edits)
+        self.app.populate_changed_files(wrapper.build_file_rows(self.app.diff_by_path))
+        self.app.set_task_state(wrapper.TASK_STATE_REVIEW, "Review 2")
+        handled, ok, message = self.app.run_slash_command("/reject b.py")
+        self.assertTrue(ok, message)
+        self.assertEqual([edit.relative_path for edit in self.app.pending_proposal.edits], ["a.py"])
+        self.assertEqual(list(self.app.diff_by_path), ["a.py"])
+        self.assertFalse(self.app.run_slash_command("/reject zzz.py")[1])
+
 
 if __name__ == "__main__":
     unittest.main()

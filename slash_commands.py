@@ -55,7 +55,7 @@ BUILTIN_COMMANDS = (
     SlashCommand("memory", "Show loaded memory files; /memory add <note>", "[add <note>]"),
     SlashCommand("diff", "Show the pending diff or the git working tree diff"),
     SlashCommand("apply", "Apply all pending changes"),
-    SlashCommand("reject", "Discard pending changes"),
+    SlashCommand("reject", "Discard pending changes, or only the listed files", "[paths]"),
     SlashCommand("undo", "Undo the last apply"),
     SlashCommand("rewind", "Undo applies one by one (up to 10 back)", "[count]"),
     SlashCommand("commit", "Commit applied changes with git", "[message]"),

@@ -10961,11 +10961,49 @@ class CodeAgentApp(tk.Tk):
         self.apply_pending()
         return "Applied"
 
-    def _cmd_reject(self, _args):
+    def _cmd_reject(self, args):
         if not self.pending_proposal:
             return False, "Nothing pending."
-        self.reject_pending()
-        return "Rejected pending changes"
+        paths = args.split()
+        if not paths:
+            self.reject_pending()
+            return "Rejected pending changes"
+        return self.reject_paths(paths)
+
+    def reject_selected(self):
+        paths = tuple(str(path) for path in self.edited_files.selection())
+        if not paths:
+            self._toast("Select files to reject first", "warning")
+            return False
+        ok, message = self.reject_paths(paths)
+        self._toast(message, "success" if ok else "danger")
+        return ok
+
+    def reject_paths(self, paths):
+        """Drop some files from the pending proposal; the rest stay in review."""
+        proposal = self.pending_proposal
+        if not isinstance(proposal, PendingProposal) or self.task_state != TASK_STATE_REVIEW:
+            return False, "Nothing pending in review."
+        keys = {str(path).replace("\\", "/").casefold() for path in paths}
+        known = {edit.relative_path.casefold() for edit in proposal.edits}
+        if not keys <= known:
+            return False, "Only pending files can be rejected: " + ", ".join(sorted(keys - known))
+        if keys == known:
+            self.reject_pending()
+            return True, "Rejected every pending file"
+        remaining = PendingProposal(
+            run_id=proposal.run_id,
+            project_root=proposal.project_root,
+            edits=tuple(edit for edit in proposal.edits if edit.relative_path.casefold() not in keys),
+            preconditions=tuple(item for item in proposal.preconditions if item.relative_path.casefold() not in keys),
+        )
+        self.diff_by_path = {path: diff for path, diff in self.diff_by_path.items() if str(path).casefold() not in keys}
+        self._set_pending_proposal(remaining)
+        self.populate_changed_files(build_file_rows(self.diff_by_path))
+        self.session_messages.append({"role": "system", "content": f"User rejected {len(keys)} file(s): {', '.join(sorted(keys))}."})
+        self.set_task_state(TASK_STATE_REVIEW, f"{len(remaining.edits)} files remain in review")
+        self.log(f"> rejected {len(keys)} file(s); {len(remaining.edits)} remain", state=TASK_STATE_REVIEW)
+        return True, f"Rejected {len(keys)} file(s) · {len(remaining.edits)} remain"
 
     def _cmd_undo(self, _args):
         if not getattr(self, "_last_apply_undo", None):
@@ -12255,8 +12293,45 @@ class CodeAgentApp(tk.Tk):
             self._toast(f"Saved: {rule}", "success")
         return self.allow_verification()
 
+    def _build_changes_menu(self):
+        c = PALETTE
+        menu = tk.Menu(self, tearoff=False, bg=c["surface_raised"], fg=c["text"], activebackground=c["border_strong"],
+                       activeforeground=c["text"], borderwidth=0, font=FONTS["small"])
+        menu.add_command(label="Apply selected", command=self.apply_selected)
+        menu.add_command(label="Reject selected", command=self.reject_selected)
+        menu.add_separator()
+        menu.add_command(label="Copy path", command=self._copy_selected_paths)
+        menu.add_command(label="Mention in prompt", command=self._mention_selected_paths)
+        self.changes_menu = menu
+
+        def popup(event):
+            row = self.edited_files.identify_row(event.y)
+            if row and row not in self.edited_files.selection():
+                self.edited_files.selection_set(row)
+            if self.edited_files.selection():
+                menu.tk_popup(event.x_root, event.y_root)
+            return "break"
+
+        mac = os.name != "nt" and os.uname().sysname == "Darwin"
+        for sequence in ("<Button-3>", "<Button-2>" if mac else "<Control-Button-1>"):
+            self.edited_files.bind(sequence, popup, add="+")
+
+    def _copy_selected_paths(self):
+        paths = list(self.edited_files.selection())
+        if paths:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(paths))
+            self._toast(f"Copied {len(paths)} path(s)")
+
+    def _mention_selected_paths(self):
+        for path in self.edited_files.selection():
+            self.instructions.insert(tk.END, f" @{path}")
+        self._sync_prompt_placeholder()
+        self.instructions.focus_set()
+
     def _finish_parity_ui(self):
         self.transcript = []
+        self._build_changes_menu()
         self._style_activity_log()
         try:
             self.instructions.configure(undo=True, maxundo=200, autoseparators=True)
