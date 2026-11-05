@@ -418,6 +418,20 @@ class ExecutorExtensionTests(unittest.TestCase):
 
         self.core = core
 
+    def test_tolerant_json_extraction(self):
+        core = self.core
+        body = {"action": "final", "summary": "ok", "files": []}
+        for text in (
+            "```json\n" + json.dumps(body) + "\n```",
+            "Here you go:\n" + json.dumps(body) + "\nThanks!",
+            'Sure. {"action": "final", "summary": "a } brace in text", "files": []}',
+        ):
+            self.assertEqual(core.parse_executor_response(text)["action"], "final")
+        with self.assertRaises(ValueError):
+            core.parse_executor_response("no json here")
+        plan = core.parse_plan_response('```\n{"summary": "s", "steps": [{"id": "1", "title": "t", "detail": "d"}]}\n```')
+        self.assertEqual(plan.summary, "s")
+
     def test_parser_accepts_hunks_and_delete(self):
         text = json.dumps({"action": "final", "summary": "s", "files": [
             {"path": "a.py", "edits": [{"old": "1", "new": "2"}]},

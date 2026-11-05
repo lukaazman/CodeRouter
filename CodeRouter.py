@@ -15120,6 +15120,61 @@ def call_openrouter_plan(
     return assembled
 
 
+JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _first_json_object(text):
+    """The first balanced {...} block in text, respecting JSON strings."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_string, escaped = 0, False, False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        start = text.find("{", start + 1)
+    return None
+
+
+def load_model_json(text):
+    """json.loads, tolerating code fences or prose around one JSON object.
+
+    Free models often wrap their answer; the schema checks after this stay strict.
+    """
+    try:
+        return json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        pass
+    candidates = []
+    fence = JSON_FENCE_PATTERN.search(text or "")
+    if fence:
+        candidates.append(fence.group(1))
+    block = _first_json_object(text or "")
+    if block:
+        candidates.append(block)
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return json.loads(text)
+
+
 def parse_plan_response(response_text, secrets=None):
     raw_text = str(response_text or "")
     safe_text = redact_sensitive_text(
@@ -15131,7 +15186,7 @@ def parse_plan_response(response_text, secrets=None):
     if not safe_text.strip():
         raise ValueError("Plan output was empty.")
     try:
-        data = json.loads(safe_text)
+        data = load_model_json(safe_text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("Malformed plan JSON.") from exc
     if not isinstance(data, dict) or set(data) != {"summary", "steps"}:
@@ -15317,7 +15372,7 @@ def parse_executor_response(response_text, secrets=None):
     if redact_sensitive_text(raw_text, event_secrets) != raw_text or SECRET_PATTERN.search(raw_text):
         raise ValueError("Executor response contained credential-shaped content and was rejected.")
     try:
-        data = json.loads(raw_text)
+        data = load_model_json(raw_text)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("Malformed executor JSON.") from exc
     if not isinstance(data, dict):
