@@ -2822,7 +2822,7 @@ class CodeAgentApp(tk.Tk):
         self.local_command_detail = tk.Frame(toolbar, bg=PALETTE["canvas"])
         self.local_command_detail.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.local_command_detail.columnconfigure(1, weight=1)
-        ttk.Label(self.local_command_detail, text="COMMAND", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.local_command_detail, text="Command", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         self.local_command_entry = ttk.Entry(
             self.local_command_detail,
             textvariable=self.local_command,
@@ -3062,7 +3062,7 @@ class CodeAgentApp(tk.Tk):
         self.context_clear_button.grid(row=1, column=0, sticky="ew", pady=(0, SPACING["control"]))
         ttk.Label(context_controls, textvariable=self.extra_context_count, style="PanelMuted.TLabel", wraplength=235).grid(row=2, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=6, column=0, sticky="ew", pady=(2, 14))
-        ttk.Label(sidebar, text="APPLY POLICY", style="Section.TLabel").grid(row=7, column=0, sticky="w")
+        ttk.Label(sidebar, text="Apply policy", style="Section.TLabel").grid(row=7, column=0, sticky="w")
         self.review_mode_button = ttk.Radiobutton(sidebar, text="Review", variable=self.apply_mode, value=APPLY_MODE_REVIEW, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
         self.review_mode_button.grid(row=8, column=0, sticky="w", pady=(SPACING["section"], 3))
         self.auto_mode_button = ttk.Radiobutton(sidebar, text="Auto", variable=self.apply_mode, value=APPLY_MODE_AUTO, command=self._on_apply_mode_changed, style="Mode.TRadiobutton")
@@ -3105,7 +3105,7 @@ class CodeAgentApp(tk.Tk):
         )
         self.openrouter_connect_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.openrouter_connect_button.grid_remove()
-        ttk.Label(sidebar, text="ACTIONS", style="Section.TLabel").grid(row=12, column=0, sticky="w")
+        ttk.Label(sidebar, text="Actions", style="Section.TLabel").grid(row=12, column=0, sticky="w")
         self.run_button = self._button(sidebar, "Run chat", self.run_agent, "Primary.TButton", "Send the prompt and continue this session")
         self.run_button.grid(row=13, column=0, sticky="ew", pady=(SPACING["section"], SPACING["control"]))
         self.scan_button = self._button(sidebar, "Scan", self.scan_folder, "Secondary.TButton", "Rescan project files")
@@ -3113,7 +3113,7 @@ class CodeAgentApp(tk.Tk):
         self.new_chat_button = self._button(sidebar, "New chat", self.reset_session, "Secondary.TButton", "Clear conversation memory")
         self.new_chat_button.grid(row=15, column=0, sticky="ew")
         ttk.Separator(sidebar).grid(row=16, column=0, sticky="ew", pady=(14, 14))
-        ttk.Label(sidebar, text="SNAPSHOT", style="Section.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Label(sidebar, text="Snapshot", style="Section.TLabel").grid(row=17, column=0, sticky="w")
         stats = tk.Frame(sidebar, bg=PALETTE["surface_alt"], padx=8, pady=8, highlightthickness=1, highlightbackground=PALETTE["border"])
         stats.grid(row=18, column=0, sticky="ew", pady=(SPACING["section"], 0))
         self.snapshot_stats = stats
@@ -3367,7 +3367,7 @@ class CodeAgentApp(tk.Tk):
         self.task_tools_disclosure_button.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         plan_panel = tk.Frame(right, bg=PALETTE["surface"])
         plan_panel.grid(row=3, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(plan_panel, text="PLAN", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(plan_panel, text="Plan", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.plan_preview = scrolledtext.ScrolledText(
             plan_panel,
             height=5,
@@ -3391,7 +3391,7 @@ class CodeAgentApp(tk.Tk):
         list_panel.columnconfigure(0, weight=1)
         list_panel.rowconfigure(0, weight=1)
         self.edited_files = ttk.Treeview(list_panel, columns=("status", "lines"), show="headings", selectmode="extended")
-        self.edited_files.heading("status", text="FILE")
+        self.edited_files.heading("status", text="File")
         self.edited_files.heading("lines", text="+/-")
         self.edited_files.column("status", width=310, anchor="w")
         self.edited_files.column("lines", width=70, anchor="e")
@@ -3448,7 +3448,7 @@ class CodeAgentApp(tk.Tk):
         inspect_panel = tk.Frame(right, bg=PALETTE["surface"])
         inspect_panel.grid(row=6, column=0, sticky="ew", pady=(0, 10))
         inspect_panel.columnconfigure(0, weight=1)
-        ttk.Label(inspect_panel, text="INSPECT REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(inspect_panel, text="Read request", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.inspect_preview = scrolledtext.ScrolledText(
             inspect_panel,
             height=3,
@@ -3489,7 +3489,7 @@ class CodeAgentApp(tk.Tk):
         verify_panel = tk.Frame(right, bg=PALETTE["surface"])
         verify_panel.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         verify_panel.columnconfigure(0, weight=1)
-        ttk.Label(verify_panel, text="VERIFY REQUEST", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(verify_panel, text="Command request", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         self.verification_request_preview = scrolledtext.ScrolledText(
             verify_panel,
             height=2,
@@ -4309,7 +4309,7 @@ class CodeAgentApp(tk.Tk):
             cursor="hand2",
         )
         self._attach_tooltip(model_button, "Model queue · free models ranked for this prompt")
-        self.workflow_model_value.configure(fg=c["text_muted"], font=FONTS["mono_small"], wraplength=0, cursor="hand2")
+        self.workflow_model_value.configure(fg=c["text_muted"], font=FONTS["small"], wraplength=0, cursor="hand2")
         self.workflow_model_value.grid_configure(padx=(self._px(4), self._px(12)))
         self.workflow_model_value.bind("<ButtonRelease-1>", lambda _event: self._toggle_model_queue_disclosure(), add="+")
         self.workflow_model_detail.configure(fg=c["text_muted"])
@@ -4344,6 +4344,7 @@ class CodeAgentApp(tk.Tk):
         chip.grid_configure(row=0, column=3, sticky="e", padx=(0, self._px(12)))
         chip.bind("<ButtonRelease-1>", lambda _event: self._show_utility_view("settings"), add="+")
         self._attach_tooltip(chip, "Apply policy · open settings")
+        chip.grid_remove()  # The composer status strip shows the approval mode.
 
         status_frame = self.state_marker.master
         status_frame.grid_configure(row=0, column=4, rowspan=1, sticky="e")
@@ -5202,10 +5203,8 @@ class CodeAgentApp(tk.Tk):
                 self.workflow_model_value.grid_remove()
             self.local_command_disclosure_button.configure(compound="image" if compact else "left")
             if compact:
-                self.workflow_policy_chip.grid_remove()
                 self.status_detail_label.pack_forget()
             else:
-                self.workflow_policy_chip.grid()
                 if not self.status_detail_label.winfo_manager():
                     self.status_detail_label.pack(side=tk.LEFT)
             inspector_needed = bool(self.pending_plan or self.inspect_request or self.verification_request or self.edited_files.get_children())
