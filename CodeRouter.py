@@ -6635,6 +6635,8 @@ class CodeAgentApp(tk.Tk):
         self.task_state = state
         if previous_state != state and state in STOP_HOOK_STATES:
             self._run_stop_hooks(state, detail)
+        if previous_state != state and getattr(self, "_parity_ready", False):
+            self._on_state_transition(previous_state, state)
         label = TASK_STATE_LABELS[state]
         visible = f"{label} · {detail}" if detail else label
         self.status.set(visible)
@@ -8914,6 +8916,8 @@ class CodeAgentApp(tk.Tk):
         self.pending_plan_run_id = run_id
         self.approved_plan = None
         self._write_plan_preview(format_execution_plan(plan))
+        if getattr(self, "_parity_ready", False):
+            self._transcript_add("agent", self._plan_checklist(plan, "pending"))
         self.set_summary("Plan ready. Approve it before the edit run starts.")
         self._update_lifecycle_controls()
 
@@ -9403,6 +9407,8 @@ class CodeAgentApp(tk.Tk):
         return True
 
     def run_agent(self):
+        if getattr(self, "_parity_ready", False) and self._run_in_progress() and self._queue_prompt():
+            return
         if self._block_if_run_active("new run"):
             return
         folder = self._validate_folder()
@@ -11115,6 +11121,89 @@ class CodeAgentApp(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # Plan checklist, attention signal, queued prompts --------------------------------
+
+    PLAN_MARKS = {"pending": "○", "active": "◐", "done": "✓"}
+
+    def _plan_checklist(self, plan, status):
+        mark = self.PLAN_MARKS.get(status, "○")
+        lines = [f"Plan · {plan.summary}"]
+        lines += [f"{mark} {step.title} — {step.detail}" for step in plan.steps]
+        if status == "pending":
+            lines.append("Approve the plan to start, or revise it.")
+        return "\n".join(lines)
+
+    def _refresh_plan_checklist(self, status):
+        plan = self.approved_plan or self.pending_plan
+        transcript = getattr(self, "transcript", [])
+        if not plan:
+            return
+        prefix = f"Plan · {plan.summary}"
+        for index in range(len(transcript) - 1, -1, -1):
+            role, body = transcript[index]
+            if role == "agent" and body.startswith(prefix):
+                transcript[index] = (role, self._plan_checklist(plan, status))
+                return
+
+    def _on_state_transition(self, previous, state):
+        if state == TASK_STATE_RUNNING:
+            self._refresh_plan_checklist("active")
+        elif state in {TASK_STATE_REVIEW, TASK_STATE_APPLIED}:
+            self._refresh_plan_checklist("done")
+        if state in {TASK_STATE_PLAN, TASK_STATE_REVIEW, TASK_STATE_APPLIED, TASK_STATE_ERROR} or (
+            self.inspect_request or self.verification_request
+        ):
+            self._signal_attention(state)
+        if state in {TASK_STATE_IDLE, TASK_STATE_APPLIED, TASK_STATE_REJECTED, TASK_STATE_ERROR}:
+            if getattr(self, "queued_prompts", None):
+                self.after(400, self._run_queued_prompt)
+
+    def _signal_attention(self, state):
+        """Ring and mark the title when the window is in the background."""
+        try:
+            if self.focus_displayof() is not None:
+                return
+        except (tk.TclError, KeyError):
+            return
+        if self.config_data.get("notify", True) is False:
+            return
+        try:
+            self.bell()
+            self.title(f"● {APP_TITLE} · {TASK_STATE_LABELS.get(state, '').title()}")
+            if not getattr(self, "_attention_bound", False):
+                self.bind("<FocusIn>", lambda _e: self.title(APP_TITLE), add="+")
+                self._attention_bound = True
+        except tk.TclError:
+            pass
+
+    def _queue_prompt(self):
+        try:
+            text = self.instructions.get("1.0", "end-1c").strip()
+        except tk.TclError:
+            return False
+        if not text or _slash.split_command(text) is not None:
+            return False
+        if not hasattr(self, "queued_prompts"):
+            self.queued_prompts = []
+        if len(self.queued_prompts) >= 5:
+            self._toast("Queue is full (5 prompts)", "warning")
+            return True
+        self.queued_prompts.append(text)
+        self._set_prompt_text("")
+        self._toast(f"Queued · runs after the current task ({len(self.queued_prompts)} waiting)")
+        self._refresh_status_strip()
+        return True
+
+    def _run_queued_prompt(self):
+        if self.lifecycle.closed or self._run_in_progress() or not getattr(self, "queued_prompts", None):
+            return
+        if self.pending_proposal:
+            return  # keep waiting until the review is settled
+        prompt = self.queued_prompts.pop(0)
+        self._set_prompt_text(prompt)
+        self._refresh_status_strip()
+        self.run_agent()
+
     def _extra_instruction_context(self, folder):
         text, labels = _memory.load_memory_files(
             folder, secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
@@ -11246,6 +11335,8 @@ class CodeAgentApp(tk.Tk):
                 extras.append(f"{len(self._memory_labels)} memory")
             if not self.plan_gate_enabled:
                 extras.append("plan auto")
+            if getattr(self, "queued_prompts", None):
+                extras.append(f"{len(self.queued_prompts)} queued")
             self.status_extra_label.configure(text=" · ".join(extras))
             fraction = self.usage_meter.context_fraction()
             self._draw_context_meter(fraction)

@@ -184,6 +184,25 @@ class ParityAppTests(unittest.TestCase):
         self.app._palette_run()
         self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "/allow ")
 
+    def test_plan_checklist_and_queue(self):
+        plan = wrapper.ExecutionPlan("Do it", (wrapper.PlanStep("1", "Read", "the code"),))
+        self.app.pending_plan = plan
+        self.app._transcript_add("agent", self.app._plan_checklist(plan, "pending"))
+        self.app._refresh_plan_checklist("done")
+        self.assertTrue(self.app.transcript[-1][1].splitlines()[1].startswith("✓ Read"))
+        self.app.pending_plan = None
+        self.app.task_state = wrapper.TASK_STATE_RUNNING
+        self.app._set_prompt_text("next thing")
+        with mock.patch.object(self.app, "_start_run_worker") as start:
+            self.app.run_agent()
+            start.assert_not_called()
+            self.assertEqual(self.app.queued_prompts, ["next thing"])
+            self.app.task_state = wrapper.TASK_STATE_IDLE
+            self.app.api_key = "sk-or-test"
+            self.app._run_queued_prompt()
+            start.assert_called_once()
+        self.assertEqual(self.app.queued_prompts, [])
+
 
 if __name__ == "__main__":
     unittest.main()
