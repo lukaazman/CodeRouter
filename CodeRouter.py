@@ -9300,12 +9300,46 @@ class CodeAgentApp(tk.Tk):
         self._refresh_activity_digest()
         return True
 
+    TRANSCRIPT_MAX_ENTRIES = 40
+    TRANSCRIPT_ROLE_LABELS = {"user": "You", "agent": "CodeRouter"}
+
     def set_summary(self, text):
-        self.summary.configure(state=tk.NORMAL)
-        self.summary.delete("1.0", tk.END)
-        self.summary.insert("1.0", self._redact_sensitive(text).strip() or "No summary returned.")
-        self.summary.configure(state=tk.DISABLED)
+        """Render the conversation transcript with the current status last."""
+        current = self._redact_sensitive(text).strip() or "No summary returned."
+        transcript = getattr(self, "transcript", ())
+        widget = self.summary
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        if not transcript:
+            widget.insert("1.0", current)
+        else:
+            for role, body in transcript:
+                widget.insert(tk.END, self.TRANSCRIPT_ROLE_LABELS.get(role, role) + "\n", ("role",))
+                widget.insert(tk.END, body.strip() + "\n\n", ("body_user" if role == "user" else "body_agent",))
+            if current != (transcript[-1][1].strip() if transcript[-1][0] == "agent" else None):
+                widget.insert(tk.END, "▍", ("live_bar",))
+                widget.insert(tk.END, current, ("live",))
+            widget.see(tk.END)
+        widget.configure(state=tk.DISABLED)
         self._sync_empty_state()
+
+    def _transcript_add(self, role, text):
+        if not hasattr(self, "transcript"):
+            self.transcript = []
+        body = self._redact_sensitive(str(text or "")).strip()
+        if not body:
+            return
+        self.transcript.append((role, body[:4000]))
+        del self.transcript[:-self.TRANSCRIPT_MAX_ENTRIES]
+
+    def _style_transcript(self):
+        c = PALETTE
+        sans = FONTS["body"][0]
+        self.summary.tag_configure("role", foreground=c["text_subtle"], font=(sans, 9), spacing1=self._px(6), spacing3=self._px(2))
+        self.summary.tag_configure("body_user", foreground=c["text_muted"], lmargin1=0, lmargin2=0, spacing3=self._px(4))
+        self.summary.tag_configure("body_agent", foreground=c["text"], spacing3=self._px(4))
+        self.summary.tag_configure("live", foreground=c["text"], lmargin2=self._px(14))
+        self.summary.tag_configure("live_bar", foreground=c["accent"])
 
     def reset_session(self):
         self._clear_last_apply_undo()
@@ -9326,6 +9360,7 @@ class CodeAgentApp(tk.Tk):
         self._discard_pending_proposal("new chat")
         self._clear_pending_proposal()
         self._clear_scanned_context_preview()
+        self.transcript = []
         self.set_summary("New chat started. Previous model context cleared.")
         if getattr(self, "_parity_ready", False):
             self.conversation = _sessions.Conversation(_sessions.new_session_id(), self.selected_folder.get().strip())
@@ -9435,6 +9470,7 @@ class CodeAgentApp(tk.Tk):
         self.overseer_review = None
         self._reset_run_timeline(snapshot.run_id)
         self._clear_pending_proposal()
+        self._transcript_add("user", instructions)
         self.set_summary("Reading project, preparing context, and generating an execution plan.")
         self.set_task_state(TASK_STATE_PLANNING, "Preparing plan")
         self.log("")
@@ -10378,6 +10414,7 @@ class CodeAgentApp(tk.Tk):
                     self.session_messages.append({"role": "user", "content": user_content})
                     self.session_messages.append({"role": "assistant", "content": assistant_content})
                     self.last_summary = assistant_content
+                    self._transcript_add("agent", assistant_content)
                     self._record_conversation_turn(user_content, assistant_content)
 
                 elif kind == "proposal":
@@ -10670,10 +10707,10 @@ class CodeAgentApp(tk.Tk):
         self.reset_session()
         self.conversation = conversation
         self.session_messages = [{"role": role, "content": content} for role, content in conversation.model_messages()]
-        transcript = [f"Resumed · {conversation.title or conversation.session_id}", ""]
+        self.transcript = []
         for role, content in conversation.messages[-12:]:
-            transcript.append(("You: " if role == "user" else "Agent: ") + content[:600])
-        self._show_output("\n\n".join(transcript))
+            self._transcript_add("user" if role == "user" else "agent", content[:1200])
+        self._show_output(f"Resumed {conversation.title or conversation.session_id}. Continue where you left off.")
         self._toast("Conversation resumed", "success")
         return f"Resumed {conversation.session_id} · {len(conversation.messages)} messages"
 
@@ -11405,6 +11442,8 @@ class CodeAgentApp(tk.Tk):
             self._toast(f"Could not open config: {short_error(exc)}", "danger")
 
     def _finish_parity_ui(self):
+        self.transcript = []
+        self._style_transcript()
         self._build_status_strip()
         self._build_composer_suggestions()
         self._build_agent_preferences()
