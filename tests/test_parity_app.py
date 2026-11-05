@@ -169,6 +169,21 @@ class ParityAppTests(unittest.TestCase):
                 self.app.update()
         self.assertIn("a.py:1 low", self.app.summary.get("1.0", tk.END))
 
+    def test_command_palette_filters_and_runs(self):
+        self.app.open_command_palette()
+        self.assertTrue(self.app.palette_frame.winfo_manager())
+        self.app.palette_entry.insert(0, "doct")
+        self.app._palette_filter()
+        self.assertEqual(self.app._palette_items[0].name, "doctor")
+        self.app._palette_run()
+        self.assertFalse(self.app.palette_frame.winfo_manager())
+        self.assertIn("Doctor", self.app.summary.get("1.0", tk.END))
+        self.app.open_command_palette()
+        self.app.palette_entry.insert(0, "allow")
+        self.app._palette_filter()
+        self.app._palette_run()
+        self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "/allow ")
+
 
 if __name__ == "__main__":
     unittest.main()

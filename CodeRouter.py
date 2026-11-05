@@ -6547,6 +6547,9 @@ class CodeAgentApp(tk.Tk):
         return True
 
     def _on_escape_shortcut(self, _event):
+        palette = getattr(self, "palette_frame", None)
+        if palette is not None and palette.winfo_manager():
+            return self.close_command_palette()
         if self.pending_plan:
             self.cancel_plan()
         elif self.inspect_request:
@@ -11556,6 +11559,7 @@ class CodeAgentApp(tk.Tk):
         self._build_status_strip()
         self._build_composer_suggestions()
         self._build_agent_preferences()
+        self._build_command_palette()
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
         try:
@@ -11567,6 +11571,109 @@ class CodeAgentApp(tk.Tk):
         USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
         self._refresh_git_status_async()
         self._refresh_status_strip()
+
+    # Command palette (Ctrl+Shift+P) ----------------------------------------------
+
+    def _build_command_palette(self):
+        c = PALETTE
+        shell = tk.Frame(self, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+        self.palette_frame = shell
+        entry = tk.Entry(shell, bg=c["surface_raised"], fg=c["text"], insertbackground=c["text"], relief="flat",
+                         font=(FONTS["body"][0], 12), highlightthickness=0, borderwidth=0)
+        entry.pack(fill=tk.X, padx=self._px(14), pady=(self._px(12), self._px(8)))
+        tk.Frame(shell, bg=c["border"], height=1).pack(fill=tk.X)
+        listbox = tk.Listbox(shell, bg=c["surface_raised"], fg=c["text"], font=FONTS["body"], activestyle="none",
+                             selectbackground=c["border_strong"], selectforeground=c["text"], highlightthickness=0,
+                             borderwidth=0, height=10, exportselection=False)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=self._px(6), pady=self._px(6))
+        hint = tk.Label(shell, text="Enter run · Tab fill composer · Esc close", bg=c["surface_raised"],
+                        fg=c["text_subtle"], font=FONTS["small"], anchor="w")
+        hint.pack(fill=tk.X, padx=self._px(14), pady=(0, self._px(10)))
+        self.palette_entry, self.palette_list = entry, listbox
+        self._palette_items = []
+        entry.bind("<KeyRelease>", self._palette_filter)
+        entry.bind("<Down>", lambda _e: self._palette_move(1))
+        entry.bind("<Up>", lambda _e: self._palette_move(-1))
+        entry.bind("<Return>", lambda _e: self._palette_run())
+        entry.bind("<Tab>", lambda _e: self._palette_run(fill_only=True))
+        entry.bind("<Escape>", lambda _e: self.close_command_palette())
+        listbox.bind("<Double-Button-1>", lambda _e: self._palette_run())
+        self.bind_all("<Control-Shift-P>", self.open_command_palette, add="+")
+        self.bind_all("<Control-P>", self.open_command_palette, add="+")
+        self.bind_all("<F1>", self.open_command_palette, add="+")
+
+    def open_command_palette(self, _event=None):
+        frame = getattr(self, "palette_frame", None)
+        if frame is None or self.lifecycle.closed:
+            return "break"
+        self.palette_entry.delete(0, tk.END)
+        self._palette_filter()
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        window_width = max(self.winfo_width(), self.winfo_reqwidth())
+        width = min(self._px(640), max(self._px(360), window_width - self._px(80)))
+        target = self._px(64)
+        frame.place(relx=0.5, y=target - self._px(10), anchor="n", width=width)
+        frame.lift()
+        c = PALETTE
+
+        def apply(t):
+            frame.place_configure(y=int(target - self._px(10) * (1 - t)))
+            frame.configure(highlightbackground=ui_kit.mix(c["surface_raised"], c["border_strong"], t))
+
+        self.animator.tween("palette", ui_kit.DURATION["panel"], apply, easing=ui_kit.EASE_UI)
+        self.palette_entry.focus_set()
+        return "break"
+
+    def close_command_palette(self):
+        frame = getattr(self, "palette_frame", None)
+        if frame is not None and frame.winfo_manager():
+            frame.place_forget()
+            try:
+                self.instructions.focus_set()
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _palette_filter(self, event=None):
+        if event is not None and event.keysym in {"Up", "Down", "Return", "Tab", "Escape"}:
+            return None
+        query = self.palette_entry.get().lstrip("/")
+        self._palette_items = _slash.palette_matches(query, self.command_registry.all())
+        self.palette_list.delete(0, tk.END)
+        for command in self._palette_items:
+            usage = f" {command.usage}" if command.usage else ""
+            self.palette_list.insert(tk.END, f"  /{command.name}{usage}    {command.description}")
+        if self._palette_items:
+            self.palette_list.selection_set(0)
+        return None
+
+    def _palette_move(self, step):
+        if not self._palette_items:
+            return "break"
+        current = self.palette_list.curselection()
+        index = ((current[0] if current else 0) + step) % len(self._palette_items)
+        self.palette_list.selection_clear(0, tk.END)
+        self.palette_list.selection_set(index)
+        self.palette_list.see(index)
+        return "break"
+
+    def _palette_run(self, fill_only=False):
+        if not self._palette_items:
+            return "break"
+        current = self.palette_list.curselection()
+        command = self._palette_items[current[0] if current else 0]
+        self.close_command_palette()
+        needs_args = bool(command.usage) and command.usage.startswith("<")
+        if fill_only or needs_args or command.kind == "custom":
+            self._set_prompt_text(f"/{command.name} ")
+            self.instructions.mark_set(tk.INSERT, tk.END)
+            self.instructions.focus_set()
+            return "break"
+        self._show_command_result(self.run_slash_command(f"/{command.name}"))
+        return "break"
 
     def _on_clear_shortcut(self, _event=None):
         if not self._run_in_progress():

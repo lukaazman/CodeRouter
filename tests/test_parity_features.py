@@ -78,6 +78,14 @@ class SlashCommandTests(unittest.TestCase):
             self.assertEqual([c.label for c in registry.complete("/front")], ["/frontend:review"])
 
 
+class FuzzyPaletteTests(unittest.TestCase):
+    def test_fuzzy_ranking(self):
+        self.assertIsNone(slash_commands.fuzzy_score("zzq", "compact"))
+        self.assertGreater(slash_commands.fuzzy_score("com", "commit"), slash_commands.fuzzy_score("cmt", "commit"))
+        names = [c.name for c in slash_commands.palette_matches("cmp", slash_commands.BUILTIN_COMMANDS)]
+        self.assertEqual(names[0], "compact")
+
+
 class MemoryAndMentionTests(unittest.TestCase):
     def test_memory_files_and_notes(self):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root:

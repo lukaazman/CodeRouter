@@ -266,3 +266,38 @@ def describe_custom_sources(project_root=None, home=None):
 
 def env_home():
     return Path(os.environ.get("CODEROUTER_HOME") or Path.home())
+
+
+def fuzzy_score(query, text):
+    """Subsequence match score (higher is better); None when it does not match."""
+    query = query.casefold().strip()
+    text_folded = text.casefold()
+    if not query:
+        return 0
+    if text_folded.startswith(query):
+        return 1000 - len(text)
+    if query in text_folded:
+        return 500 - text_folded.index(query)
+    position, score, streak = 0, 0, 0
+    for char in query:
+        found = text_folded.find(char, position)
+        if found < 0:
+            return None
+        streak = streak + 1 if found == position else 0
+        score += 10 + streak * 5 - (found - position)
+        position = found + 1
+    return score
+
+
+def palette_matches(query, commands, limit=12):
+    scored = []
+    for command in commands:
+        score = fuzzy_score(query, command.name)
+        if score is None:
+            description_score = fuzzy_score(query, command.description)
+            if description_score is None or len(query) < 3:
+                continue
+            score = description_score - 400
+        scored.append((score, command))
+    scored.sort(key=lambda item: (-item[0], item[1].name))
+    return [command for _score, command in scored[:limit]]
