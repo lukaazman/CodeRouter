@@ -465,6 +465,16 @@ class ParityAppTests(unittest.TestCase):
         self.assertNotIn("Bash(make*)", self.app.approval_rules.allow)
         self.assertFalse(self.app.run_slash_command("/rules remove Bash(make*)")[1])
 
+    def test_retry_reruns_last_prompt(self):
+        self.assertFalse(self.app.run_slash_command("/retry")[1])
+        self.app._remember_prompt("make it faster")
+        self.app._remember_prompt("/cost")
+        self.app.api_key = "sk-or-test"
+        with mock.patch.object(self.app, "_start_run_worker") as start:
+            self.assertTrue(self.app.run_slash_command("/retry")[1])
+            self.assertTrue(self._pump(lambda: start.called, 3))
+        self.assertEqual(start.call_args[0][0].request_text, "make it faster")
+
 
 if __name__ == "__main__":
     unittest.main()

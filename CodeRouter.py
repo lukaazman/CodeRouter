@@ -11744,6 +11744,18 @@ class CodeAgentApp(tk.Tk):
         problems = sum(1 for *_rest, ok in checks if not ok)
         return (problems == 0, "All checks passed" if not problems else f"{problems} check(s) need attention")
 
+    def _cmd_retry(self, _args):
+        history = [item for item in getattr(self, "prompt_history", []) if _slash.split_command(item) is None]
+        if not history:
+            return False, "No earlier prompt to retry."
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        if self.pending_proposal:
+            self.reject_pending()
+        self._set_prompt_text(history[-1])
+        self.after_idle(self.run_agent)
+        return f"Retrying: {one_line(history[-1])}"
+
     def _cmd_stop(self, _args):
         if not self._run_in_progress():
             return False, "No active run."
