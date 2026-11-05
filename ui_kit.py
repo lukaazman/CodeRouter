@@ -345,6 +345,20 @@ def _coverage(primitive, px, py, half_stroke):
     return 0.0
 
 
+def _bounds(shape, pad):
+    """Axis-aligned box around a scaled primitive, grown by pad."""
+    kind = shape[0]
+    if kind == "line":
+        xs = [x for x, _y in shape[1]]
+        ys = [y for _x, y in shape[1]]
+        return (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+    if kind in {"ring", "dot", "arc"}:
+        _kind, cx, cy, r = shape[:4]
+        return (cx - r - pad, cy - r - pad, cx + r + pad, cy + r + pad)
+    _kind, x0, y0, x1, y1 = shape[:5]
+    return (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+
+
 def render_primitives(master, primitives, size, color, background, stroke=1.7, tones=None, grid=24.0):
     """Rasterise primitives into an opaque PhotoImage blended over background."""
     scale = size / grid
@@ -366,16 +380,19 @@ def render_primitives(master, primitives, size, color, background, stroke=1.7, t
             scaled = ("arc", primitive[1] * scale, primitive[2] * scale, primitive[3] * scale, primitive[4], primitive[5])
         else:
             scaled = ("box",) + tuple(value * scale for value in primitive[1:5])
-        compiled.append((scaled, hex_to_rgb(tone)))
+        compiled.append((scaled, hex_to_rgb(tone), _bounds(scaled, half_stroke + 1.0)))
     image = tk.PhotoImage(master=master, width=size, height=size)
     rows = []
     for y in range(size):
         row = []
         py = y + 0.5
+        row_shapes = [item for item in compiled if item[2][1] <= py <= item[2][3]]
         for x in range(size):
             px = x + 0.5
             pixel = bg
-            for shape, rgb in compiled:
+            for shape, rgb, box in row_shapes:
+                if px < box[0] or px > box[2]:
+                    continue
                 alpha = _coverage(shape, px, py, half_stroke)
                 if alpha <= 0:
                     continue
