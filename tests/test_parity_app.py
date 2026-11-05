@@ -253,6 +253,57 @@ class ParityAppTests(unittest.TestCase):
         self.app._on_history_down()
         self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "draft")
 
+    def _pump(self, condition, seconds=8.0):
+        import time as _time
+
+        deadline = _time.monotonic() + seconds
+        while _time.monotonic() < deadline:
+            self.app.update()
+            if condition():
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_full_auto_end_to_end(self):
+        import json as _json
+
+        root = Path(self.project.name)
+        (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+        plan = _json.dumps({"summary": "Bump x", "steps": [{"id": "1", "title": "Edit", "detail": "set x to 2"}]})
+        inspect = _json.dumps({"action": "inspect", "summary": "read a", "paths": ["a.py"]})
+        final = _json.dumps({"action": "final", "summary": "Set x to 2", "files": [{"path": "a.py", "edits": [{"old": "x = 1", "new": "x = 2"}]}]})
+        replies = iter([plan, inspect, final])
+
+        class Response:
+            def __init__(self, text):
+                payload = {"choices": [{"delta": {"content": text}}]}
+                self.chunks = iter([f"data: {_json.dumps(payload)}\n\ndata: [DONE]\n\n".encode("utf-8")])
+
+            def read(self, _size=-1):
+                return next(self.chunks, b"")
+
+            def close(self):
+                pass
+
+        self.app.api_key = "sk-or-test"
+        self.app.set_approval_mode("full-auto", announce=False)
+        self.app.scan_folder(silent=True)
+        self.app._set_prompt_text("set x to 2")
+        with (
+            mock.patch.object(wrapper, "build_free_model_queue", return_value=(["t/model:free"], "")),
+            mock.patch.object(wrapper, "urlopen", side_effect=lambda *_a, **_k: Response(next(replies))),
+            mock.patch.object(wrapper.messagebox, "askyesno", return_value=True),
+            mock.patch.object(wrapper.messagebox, "showerror"),
+        ):
+            self.app.set_plan_gate(False)
+            self.app.run_agent()
+            done = self._pump(lambda: (root / "a.py").read_text(encoding="utf-8") == "x = 2\n")
+        self.assertTrue(done, f"state={self.app.task_state} summary={self.app.summary.get('1.0', tk.END)[-300:]}")
+        self.assertEqual(self.app.task_state, wrapper.TASK_STATE_APPLIED)
+        self.assertIn("Set x to 2", self.app.summary.get("1.0", tk.END))
+        self.app.set_plan_gate(True)
+        self.app.set_approval_mode("suggest", announce=False)
+
 
 if __name__ == "__main__":
     unittest.main()
