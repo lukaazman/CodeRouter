@@ -1,6 +1,6 @@
 import unittest
 
-import command_suggestions as suggestions
+from coderouter import command_suggestions as suggestions
 
 
 class CommandSuggestionTests(unittest.TestCase):

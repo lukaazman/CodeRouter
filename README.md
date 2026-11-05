@@ -20,19 +20,20 @@ python -m unittest discover -s tests
 
 ## Layout
 
-- `CodeRouter.py` - app window, run orchestration, provider calls
-- `cli.py` - headless `exec` mode
-- `slash_commands.py` - built-in and custom `/commands`
-- `approval.py` - approval modes and allow/deny rules
-- `memory_files.py`, `mentions.py`, `sessions.py` - memory files, `@file` mentions, saved conversations
-- `git_tools.py`, `hooks.py`, `edit_ops.py`, `usage.py` - git, lifecycle hooks, search/replace edits, token meter
-- `extensions.py`, `plugins.py`, `ignore_rules.py` - skills, agents, output styles and plugins from disk; `.gitignore` rules
-- `mcp_client.py`, `sandbox.py`, `web_fetch.py`, `context_budget.py` - MCP over stdio, network-off sandbox, `/fetch`, context budget
-- `model_router.py` - prompt classification and free model ranking
-- `command_suggestions.py` - inline `/command` completions
-- `theme.py`, `ui_kit.py` - design tokens, icons, easing, timelines, motion preference
-- `history.py`, `permissions.py`, `model_health.py` - local history, permission ledger, model health
-- `constants.py`, `run_types.py`, `redaction.py` - shared limits, data types, secret redaction
+- `CodeRouter.py` - app window, run orchestration, provider calls (entry point)
+- `coderouter/` - everything below lives in this package
+- `coderouter/cli.py` - headless `exec` mode
+- `coderouter/slash_commands.py` - built-in and custom `/commands`
+- `coderouter/approval.py` - approval modes and allow/deny rules
+- `coderouter/memory_files.py`, `coderouter/mentions.py`, `coderouter/sessions.py` - memory files, `@file` mentions, saved conversations
+- `coderouter/git_tools.py`, `coderouter/hooks.py`, `coderouter/edit_ops.py`, `coderouter/usage.py` - git, lifecycle hooks, search/replace edits, token meter
+- `coderouter/extensions.py`, `coderouter/plugins.py`, `coderouter/ignore_rules.py` - skills, agents, output styles and plugins from disk; `.gitignore` rules
+- `coderouter/mcp_client.py`, `coderouter/sandbox.py`, `coderouter/web_fetch.py`, `coderouter/context_budget.py` - MCP over stdio, network-off sandbox, `/fetch`, context budget
+- `coderouter/model_router.py` - prompt classification and free model ranking
+- `coderouter/command_suggestions.py` - inline `/command` completions
+- `coderouter/theme.py`, `coderouter/ui_kit.py` - design tokens, icons, easing, timelines, motion preference
+- `coderouter/history.py`, `coderouter/permissions.py`, `coderouter/model_health.py` - local history, permission ledger, model health
+- `coderouter/constants.py`, `coderouter/run_types.py`, `coderouter/redaction.py` - shared limits, data types, secret redaction
 
 ## Features
 

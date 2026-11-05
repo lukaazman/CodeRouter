@@ -9,7 +9,7 @@ read-only search, list and inspect actions.
 import re
 from pathlib import Path
 
-from run_types import SourceFile
+from coderouter.run_types import SourceFile
 
 DEFAULT_BUDGET_TOKENS = 60_000
 TREE_MAX_LINES = 600

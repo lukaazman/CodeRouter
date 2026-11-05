@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from constants import (
+from coderouter.constants import (
     MODEL_HEALTH_CANCELLED,
     MODEL_HEALTH_DISCOVERY_ID,
     MODEL_HEALTH_FAILURE,
@@ -15,7 +15,7 @@ from constants import (
     MODEL_HEALTH_STATUSES,
     MODEL_HEALTH_SUCCESS,
 )
-from redaction import redact_sensitive_text
+from coderouter.redaction import redact_sensitive_text
 
 
 def _health_bound_text(value, limit=MODEL_HEALTH_MAX_REASON_CHARS, secrets=None):

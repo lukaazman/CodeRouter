@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from constants import (
+from coderouter.constants import (
     APP_TITLE,
     HISTORY_BROWSER_MAX_REASONS,
     HISTORY_BROWSER_MAX_STEPS,
@@ -25,8 +25,8 @@ from constants import (
     SESSION_PARENT_MAX_CHARS,
     TASK_STATE_PLANNING,
 )
-from redaction import SECRET_PATTERN, redact_sensitive_text
-from run_types import ExecutionPlan, PlanStep
+from coderouter.redaction import SECRET_PATTERN, redact_sensitive_text
+from coderouter.run_types import ExecutionPlan, PlanStep
 
 
 def _history_timestamp():

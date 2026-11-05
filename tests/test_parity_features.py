@@ -11,18 +11,18 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import approval
-import cli
-import edit_ops
-import git_tools
-import hooks
-import memory_files
-import mentions
-import sessions
-import slash_commands
-import theme
-import ui_kit
-import usage
+from coderouter import approval
+from coderouter import cli
+from coderouter import edit_ops
+from coderouter import git_tools
+from coderouter import hooks
+from coderouter import memory_files
+from coderouter import mentions
+from coderouter import sessions
+from coderouter import slash_commands
+from coderouter import theme
+from coderouter import ui_kit
+from coderouter import usage
 
 
 class ChunkedResponse:
@@ -79,7 +79,7 @@ class SlashCommandTests(unittest.TestCase):
 
 class IgnoreRuleTests(unittest.TestCase):
     def test_gitignore_semantics(self):
-        import ignore_rules
+        from coderouter import ignore_rules
 
         rules = ignore_rules.IgnoreRules(["# c", "*.log", "build/", "/dist", "!keep.log", "docs/**/*.tmp", "a?c.txt"])
         self.assertTrue(rules.ignored("x/y.log"))
@@ -111,7 +111,7 @@ class IgnoreRuleTests(unittest.TestCase):
 
 class ExtensionTests(unittest.TestCase):
     def test_skills_agents_styles(self):
-        import extensions
+        from coderouter import extensions
 
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root:
             skill = Path(root, ".claude", "skills", "pdf-forms")
@@ -137,7 +137,7 @@ class ExtensionTests(unittest.TestCase):
 
 class WebFetchTests(unittest.TestCase):
     def test_html_to_text_and_validation(self):
-        import web_fetch
+        from coderouter import web_fetch
 
         title, text = web_fetch.html_to_text("<html><head><title>Docs</title><style>x{}</style></head><body><h1>API</h1><p>Use <b>get()</b> &amp; set().</p><script>bad()</script><ul><li>one</li></ul></body></html>")
         self.assertEqual(title, "Docs")
@@ -149,7 +149,7 @@ class WebFetchTests(unittest.TestCase):
             web_fetch.validate_url("file:///etc/passwd")
 
     def test_fetch_with_fake_opener(self):
-        import web_fetch
+        from coderouter import web_fetch
 
         class Response:
             headers = {"Content-Type": "text/html; charset=utf-8"}
@@ -172,7 +172,7 @@ class WebFetchTests(unittest.TestCase):
 
 class McpTests(unittest.TestCase):
     def test_client_roundtrip_and_specs(self):
-        import mcp_client
+        from coderouter import mcp_client
 
         server_script = str(Path(__file__).resolve().parent / "fake_mcp_server.py")
         with tempfile.TemporaryDirectory() as root:
@@ -213,8 +213,8 @@ class McpTests(unittest.TestCase):
 
 class ContextBudgetTests(unittest.TestCase):
     def test_fit_context_prefers_relevant_files(self):
-        import context_budget
-        from run_types import SourceFile
+        from coderouter import context_budget
+        from coderouter.run_types import SourceFile
 
         files = [SourceFile(Path(f"f{i}.py"), f"pkg/module{i}.py", "x = 1\n" * 400) for i in range(20)]
         files.append(SourceFile(Path("p.py"), "pkg/parser.py", "def parse_config(): pass\n" * 10))
@@ -230,7 +230,7 @@ class ContextBudgetTests(unittest.TestCase):
 
 class PluginTests(unittest.TestCase):
     def test_discover_and_contents(self):
-        import plugins
+        from coderouter import plugins
 
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root:
             base = Path(home, ".coderouter", "plugins", "review-kit")
@@ -247,7 +247,7 @@ class PluginTests(unittest.TestCase):
             enabled = plugins.enabled_plugins(root, home, disabled=["off-one"])
             registry = slash_commands.CommandRegistry(root, home=home, extra_dirs=plugins.plugin_dirs(enabled, "commands"))
             self.assertIn("plugin:review-kit", registry.resolve("triage").description)
-            import extensions
+            from coderouter import extensions
 
             skills = extensions.load_extensions("skill", root, home, extra_dirs=plugins.plugin_dirs(enabled, "skills"))
             self.assertIn("owasp", skills)
@@ -258,7 +258,7 @@ class PluginTests(unittest.TestCase):
 
 class SandboxTests(unittest.TestCase):
     def test_wrap_and_network_isolation(self):
-        import sandbox
+        from coderouter import sandbox
 
         self.assertEqual(sandbox.wrap(["pytest"], "off"), ["pytest"])
         self.assertEqual(sandbox.normalize_mode("bogus"), "off")

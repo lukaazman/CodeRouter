@@ -5,7 +5,7 @@ import re
 import threading
 from dataclasses import dataclass
 
-from constants import (
+from coderouter.constants import (
     HANDOFF_MAX_COUNT,
     HANDOFF_MAX_TEXT_CHARS,
     LOCAL_COMMAND_MAX_RESULT_CHARS,
@@ -16,8 +16,8 @@ from constants import (
     PERMISSION_LEDGER_MAX_RECORDS,
     PERMISSION_POLICY_OUTCOMES,
 )
-from redaction import SECRET_PATTERN, redact_sensitive_text
-from run_types import RunSnapshot
+from coderouter.redaction import SECRET_PATTERN, redact_sensitive_text
+from coderouter.run_types import RunSnapshot
 
 
 def _permission_safe_field(value, limit=PERMISSION_LEDGER_MAX_FIELD_CHARS):

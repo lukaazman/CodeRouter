@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 import CodeRouter as wrapper
-import ui_kit
+from coderouter import ui_kit
 from tests.ui_test_helpers import build_hidden_app
 
 

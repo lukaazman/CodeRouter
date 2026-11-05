@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from history import user_data_dir
-from redaction import redact_sensitive_text
+from coderouter.history import user_data_dir
+from coderouter.redaction import redact_sensitive_text
 
 SESSION_MAX_MESSAGES = 200
 SESSION_MAX_MESSAGE_CHARS = 8000

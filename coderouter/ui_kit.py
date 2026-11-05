@@ -14,7 +14,7 @@ import time
 try:
     import tkinter as tk
 except ImportError:  # headless use of the pure helpers
-    from headless_tk import tk
+    from coderouter.headless_tk import tk
 
 
 def hex_to_rgb(value):

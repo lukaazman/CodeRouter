@@ -15,13 +15,13 @@ import threading
 import uuid
 from pathlib import Path
 
-import approval as _approval
-import extensions as _ext
-import mcp_client as _mcp
-import plugins as _plugins
-import memory_files as _memory
-import mentions as _mentions
-import slash_commands as _slash
+from coderouter import approval as _approval
+from coderouter import extensions as _ext
+from coderouter import mcp_client as _mcp
+from coderouter import plugins as _plugins
+from coderouter import memory_files as _memory
+from coderouter import mentions as _mentions
+from coderouter import slash_commands as _slash
 
 
 def build_parser():

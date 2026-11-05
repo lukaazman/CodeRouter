@@ -19,7 +19,7 @@ try:
 
     TK_AVAILABLE = True
 except ImportError:  # headless: exec, ask and commands still work
-    from headless_tk import filedialog, messagebox, scrolledtext, tk, tkfont, ttk
+    from coderouter.headless_tk import filedialog, messagebox, scrolledtext, tk, tkfont, ttk
 
     TK_AVAILABLE = False
 import uuid
@@ -33,42 +33,42 @@ from pathlib import Path, PureWindowsPath
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import model_router as _model_router
-import command_suggestions as _command_suggestions
-import ui_kit
-import edit_ops as _edit_ops
-import ignore_rules as _ignore
-import extensions as _ext
-import web_fetch as _web
-import mcp_client as _mcp
-import context_budget as _budget
-import sandbox as _sandbox
-import plugins as _plugins
-import slash_commands as _slash
-import approval as _approval
-import hooks as _hooks
-import usage as _usage
-import git_tools as _git
-import sessions as _sessions
-import memory_files as _memory
-import mentions as _mentions
-import theme as _theme
-from constants import *  # noqa: F403
-from redaction import (
+from coderouter import model_router as _model_router
+from coderouter import command_suggestions as _command_suggestions
+from coderouter import ui_kit
+from coderouter import edit_ops as _edit_ops
+from coderouter import ignore_rules as _ignore
+from coderouter import extensions as _ext
+from coderouter import web_fetch as _web
+from coderouter import mcp_client as _mcp
+from coderouter import context_budget as _budget
+from coderouter import sandbox as _sandbox
+from coderouter import plugins as _plugins
+from coderouter import slash_commands as _slash
+from coderouter import approval as _approval
+from coderouter import hooks as _hooks
+from coderouter import usage as _usage
+from coderouter import git_tools as _git
+from coderouter import sessions as _sessions
+from coderouter import memory_files as _memory
+from coderouter import mentions as _mentions
+from coderouter import theme as _theme
+from coderouter.constants import *  # noqa: F403
+from coderouter.redaction import (
     SECRET_PATTERN,
     redact_sensitive_text,
 )
-from run_types import (
+from coderouter.run_types import (
     SourceFile,
     PlanStep,
     ExecutionPlan,
     RunSnapshot,
 )
-from permissions import (
+from coderouter.permissions import (
     PermissionDecision,
     PermissionDecisionLedger,
 )
-from history import (
+from coderouter.history import (
     _history_timestamp,
     _history_bound_text,
     _history_lineage_id,
@@ -77,7 +77,7 @@ from history import (
     history_record_label,
     format_history_record,
 )
-from model_health import (
+from coderouter.model_health import (
     _health_bound_text,
     ModelHealthTracker,
 )
@@ -2408,7 +2408,7 @@ class CodeAgentApp(tk.Tk):
         self._configure_typography()
         self._ui_scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
         self.animator = ui_kit.Animator(self)
-        from history import user_data_dir
+        from coderouter.history import user_data_dir
 
         self.icons = ui_kit.IconFactory(self, self._ui_scale, cache_path=str(user_data_dir() / "icon-cache.json"))
         self._ui_heartbeat_after_id = None
@@ -16185,11 +16185,11 @@ def main(argv=None):
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in {"exec", "commands", "ask", "open", "-h", "--help"}:
-        import cli
+        from coderouter import cli
 
         raise SystemExit(cli.main(argv, sys.modules[__name__]))
     if argv:
-        import cli
+        from coderouter import cli
 
         raise SystemExit(cli.main(["open", *argv], sys.modules[__name__]))
     if not TK_AVAILABLE:

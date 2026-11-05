@@ -8,7 +8,7 @@ redacted and treated as read-only guidance.
 
 from pathlib import Path
 
-from redaction import redact_sensitive_text
+from coderouter.redaction import redact_sensitive_text
 
 MEMORY_MAX_FILE_BYTES = 32 * 1024
 MEMORY_MAX_TOTAL_BYTES = 64 * 1024

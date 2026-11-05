@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import model_router as _model_router
+from coderouter import model_router as _model_router
 
 
 LOCAL_COMMAND_COMPLETIONS = ("/status", "/model", "/permissions", "/review")

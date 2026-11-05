@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from slash_commands import parse_frontmatter
+from coderouter.slash_commands import parse_frontmatter
 
 EXT_MAX_BYTES = 32 * 1024
 EXT_MAX_ITEMS = 100

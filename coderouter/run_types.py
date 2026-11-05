@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from model_router import MODEL_SELECTION_AUTO
+from coderouter.model_router import MODEL_SELECTION_AUTO
 
 
 @dataclass
