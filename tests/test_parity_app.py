@@ -306,6 +306,9 @@ class ParityAppTests(unittest.TestCase):
 
     def test_starters_follow_project_state(self):
         self.app.selected_folder.set("")
+        self.app.api_key = ""
+        self.assertEqual([item[1] for item in self.app._starter_set()[:2]], ["Connect OpenRouter", "Open a project"])
+        self.app.api_key = "sk-or-test"
         self.assertEqual(self.app._starter_set()[0][1], "Open a project")
         self.app.selected_folder.set(self.project.name)
         self.assertEqual(self.app._starter_set()[0][2], "/init")

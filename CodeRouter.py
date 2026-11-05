@@ -4798,9 +4798,12 @@ class CodeAgentApp(tk.Tk):
     def _starter_set(self):
         """Starters that fit the project's state: an empty screen invites the next step."""
         folder = self.selected_folder.get().strip()
-        if not folder:
-            return (("folder", "Open a project", "@open"),) + self.PROMPT_STARTERS[1:]
         starters = []
+        if not self.api_key:
+            starters.append(("chip", "Connect OpenRouter", "@connect"))
+        if not folder:
+            starters.append(("folder", "Open a project", "@open"))
+            return tuple((starters + list(self.PROMPT_STARTERS[1:]))[:4])
         status = getattr(self, "git_state", None)
         if status is not None and status.dirty:
             starters += [("review", "Review my changes", "/code-review"), ("check", "Commit changes", "/commit")]
@@ -4831,6 +4834,8 @@ class CodeAgentApp(tk.Tk):
         icon, label, action = self._starter_actions[index]
         if action == "@open":
             self.choose_folder()
+        elif action == "@connect":
+            self._start_openrouter_login()
         elif action.startswith("/"):
             self._show_command_result(self.run_slash_command(action))
         else:
