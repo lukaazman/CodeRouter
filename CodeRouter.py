@@ -11382,6 +11382,48 @@ class CodeAgentApp(tk.Tk):
             return self.set_plan_gate(False)
         return True, "Plan gate · " + ("on" if self.plan_gate_enabled else "off") + " · /plan on|off"
 
+    PROFILE_KEYS = ("approval_mode", "style", "reasoning_effort", "temperature", "plan_gate", "model_override",
+                    "model_selection_mode", "agent", "auto_commit", "context_budget_tokens")
+
+    def _cmd_profile(self, args):
+        profiles = self.config_data.get("profiles") or {}
+        name = args.strip()
+        if not name:
+            if not profiles:
+                return True, 'No profiles · add "profiles": {"fast": {"approval_mode": "full-auto", "plan_gate": false}} to the config'
+            active = self.config_data.get("active_profile", "")
+            return True, "Profiles: " + ", ".join(("*" if key == active else "") + key for key in sorted(profiles))
+        profile = profiles.get(name)
+        if not isinstance(profile, dict):
+            return False, f"No profile named {name}"
+        applied = []
+        for key in self.PROFILE_KEYS:
+            if key not in profile:
+                continue
+            value = profile[key]
+            if key == "approval_mode":
+                self.set_approval_mode(value, announce=False)
+            elif key == "style":
+                self.set_output_style(value)
+            elif key == "reasoning_effort":
+                self.set_reasoning_effort(value or "")
+            elif key == "temperature":
+                self.set_temperature(str(value))
+            elif key == "plan_gate":
+                self.set_plan_gate(bool(value))
+            elif key in {"model_override", "model_selection_mode"}:
+                mode = profile.get("model_selection_mode", MODEL_SELECTION_OVERRIDE if profile.get("model_override") else MODEL_SELECTION_AUTO)
+                self._apply_model_selection_command(mode, profile.get("model_override", ""))
+            elif key == "agent":
+                self._cmd_agents(value or "off")
+            else:
+                self.config_data[key] = value
+            applied.append(key)
+        self.config_data["active_profile"] = name
+        self._save_config_quietly()
+        self._refresh_status_strip()
+        return True, f"Profile {name} · " + (", ".join(applied) or "no known keys")
+
     def _cmd_hooks(self, _args):
         self._show_output(_hooks.describe_hooks(self.hooks_config))
         return f"{sum(len(v) for v in self.hooks_config.values())} hook(s)"

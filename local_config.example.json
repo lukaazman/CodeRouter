@@ -16,6 +16,14 @@
     "allow": ["Bash(python -m pytest*)", "Read(src/**)"],
     "deny": ["Read(secrets/**)", "Edit(migrations/**)"]
   },
+  "profiles": {
+    "fast": {"approval_mode": "full-auto", "plan_gate": false, "style": "concise"},
+    "careful": {"approval_mode": "suggest", "plan_gate": true, "reasoning_effort": "high"}
+  },
+  "mcp_servers": {},
+  "context_budget_tokens": 60000,
+  "auto_commit": false,
+  "notify": true,
   "hooks": {
     "UserPromptSubmit": [],
     "PreApply": [],

@@ -60,12 +60,13 @@ python -m unittest discover -s tests
 - Hooks: `UserPromptSubmit`, `PreApply` (non-zero exit blocks), `PostApply`, `Stop`; argv only, no shell
 - Output style, reasoning effort and temperature per user; image attach for vision models
 - Token and context meter (cost is always $0)
+- Profiles: named setting sets in `"profiles"` switched with `/profile <name>`
 - Headless `exec` mode for scripts and CI
 - Local history and redacted task reports
 
 ## Commands
 
-`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
+`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/profile [name]` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
 Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 

@@ -412,6 +412,19 @@ class ParityAppTests(unittest.TestCase):
         finally:
             other.cleanup()
 
+    def test_profiles_apply_settings(self):
+        self.app.config_data["profiles"] = {"yolo": {"approval_mode": "full-auto", "plan_gate": False, "style": "concise", "bogus": 1}}
+        handled, ok, message = self.app.run_slash_command("/profile yolo")
+        self.assertTrue(ok, message)
+        self.assertEqual(self.app.approval_mode_value, "full-auto")
+        self.assertFalse(self.app.plan_gate_enabled)
+        self.assertEqual(wrapper.GENERATION_SETTINGS["style"], "concise")
+        self.assertIn("*yolo", self.app.run_slash_command("/profile")[2])
+        self.assertFalse(self.app.run_slash_command("/profile nope")[1])
+        self.app.set_approval_mode("suggest", announce=False)
+        self.app.set_plan_gate(True)
+        self.app.set_output_style("default")
+
 
 if __name__ == "__main__":
     unittest.main()
