@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Byte-exact assets (the window icon hash is pinned in tests)
+*.svg -text

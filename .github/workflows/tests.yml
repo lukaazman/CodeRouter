@@ -20,7 +20,12 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    env:
+      # Avoid 8.3 short temp paths (RUNNER~1) that differ from resolved paths.
+      TEMP: ${{ github.workspace }}\..\tmp
+      TMP: ${{ github.workspace }}\..\tmp
     steps:
+      - run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\..\tmp"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
