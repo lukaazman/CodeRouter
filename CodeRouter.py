@@ -10143,6 +10143,8 @@ class CodeAgentApp(tk.Tk):
         self._run_apply_hooks("PostApply", folder, [edit.relative_path for edit in proposal.edits])
         self._auto_commit_after_apply(folder, [edit.relative_path for edit in proposal.edits])
         self._transcript_add("event", f"Applied {changed} file(s): " + ", ".join(edit.relative_path for edit in proposal.edits[:8]))
+        if self.config_data.get("test_after_apply"):
+            self.after(200, lambda: self._test_after_apply(folder))
         self._toast(f"Applied {changed} file(s) · /undo to revert" + ("" if self.config_data.get("auto_commit") else " · /commit to commit"), "success")
         self._refresh_git_status_async()
 
@@ -11283,6 +11285,27 @@ class CodeAgentApp(tk.Tk):
             self.scan_folder(silent=True, preserve_task_state=True)
         return ok, text
 
+    def _test_after_apply(self, folder):
+        """Run the project's tests after an apply when the policy already allows it."""
+        if self.lifecycle.closed or self._run_in_progress() or self._verification_is_active():
+            return False
+        command = str(self.config_data.get("test_command") or _git.detect_test_command(folder))
+        if not command:
+            return False
+        self.verification_command.set(command)
+        try:
+            policy = verification_command_policy(parse_verification_command(command))
+        except ValueError:
+            return False
+        decision = _approval.auto_decision(self.approval_mode_value, "verify", self.approval_rules, command,
+                                           command_policy_allowed=policy == "allowed")
+        if decision != "allow" or policy == "blocked":
+            self._toast(f"Tests ready: {command} · allow with /allow {_approval.command_rule_for(command)}")
+            return False
+        self._transcript_add("event", f"Running tests: {command}")
+        with mock_dialog(messagebox, "askyesno", True):
+            return self.run_verification()
+
     def _cmd_auto_commit(self, args):
         value = args.strip().lower()
         if value in {"on", "off"}:
@@ -11494,7 +11517,12 @@ class CodeAgentApp(tk.Tk):
     def _cmd_pr_description(self, args):
         return self._diff_task("pr-description", args, _git.PR_PROMPT, "You write clear pull request descriptions.", "Drafting a PR for")
 
-    def _cmd_test(self, _args):
+    def _cmd_test(self, args):
+        words = args.split()
+        if words[:1] == ["after-apply"] and len(words) == 2 and words[1] in {"on", "off"}:
+            self.config_data["test_after_apply"] = words[1] == "on"
+            self._save_config_quietly()
+            return True, f"Tests after apply · {words[1]}"
         folder = self._validate_folder(show_error=False)
         if not folder:
             return False, "Open a project first."

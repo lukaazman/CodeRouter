@@ -86,7 +86,7 @@ BUILTIN_COMMANDS = (
     SlashCommand("code-review", "Review the git working tree (or a base branch) with a free model", "[base]", aliases=("cr",)),
     SlashCommand("security-review", "Security review of the working tree or a base branch", "[base]"),
     SlashCommand("pr-description", "Draft a pull request title and body from the diff", "[base]", aliases=("pr",)),
-    SlashCommand("test", "Detect and run the project's tests through verification"),
+    SlashCommand("test", "Detect and run the project's tests; /test after-apply on|off", "[after-apply on|off]"),
     SlashCommand("restart", "Restart CodeRouter (applies theme changes)"),
     SlashCommand("mention", "Insert @path for a file into the prompt", "<path>"),
     SlashCommand("copy", "Copy the last agent reply to the clipboard"),

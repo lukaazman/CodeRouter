@@ -433,6 +433,18 @@ class ParityAppTests(unittest.TestCase):
         self.app._show_stream_preview()
         self.assertIn('Planning · Read the "config" file', self.app.summary.get("1.0", tk.END))
 
+    def test_tests_run_after_apply_only_when_allowed(self):
+        Path(self.project.name, "tests").mkdir()
+        with mock.patch.object(self.app, "run_verification", return_value=True) as run:
+            self.assertFalse(self.app._test_after_apply(self.project.name))
+            run.assert_not_called()
+            self.app.run_slash_command("/allow Bash(python -m unittest*)")
+            self.assertTrue(self.app._test_after_apply(self.project.name))
+            run.assert_called_once()
+        self.assertEqual(self.app.verification_command.get(), "python -m unittest discover -s tests")
+        self.assertTrue(self.app.run_slash_command("/test after-apply on")[1])
+        self.assertTrue(self.app.config_data["test_after_apply"])
+
 
 if __name__ == "__main__":
     unittest.main()
