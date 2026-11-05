@@ -11521,6 +11521,7 @@ class CodeAgentApp(tk.Tk):
     def _auto_gates(self):
         if not getattr(self, "_parity_ready", False) or self.lifecycle.closed:
             return
+        self._sync_always_allow_buttons()
         mode = self.approval_mode_value
         plan = self.pending_plan
         if plan is not None and not self.plan_gate_enabled and ("plan", id(plan)) not in self._auto_gate_seen:
@@ -11985,6 +11986,59 @@ class CodeAgentApp(tk.Tk):
         except OSError as exc:
             self._toast(f"Could not open config: {short_error(exc)}", "danger")
 
+    def _build_always_allow_buttons(self):
+        specs = (
+            ("always_allow_inspect_button", self.allow_inspect_button, self.always_allow_inspect,
+             "Allow now and save Read rules for these folders"),
+            ("always_allow_verification_button", self.allow_verification_button, self.always_allow_verification,
+             "Allow now and save a Bash rule for this command"),
+        )
+        for name, allow_button, command, hint in specs:
+            button = ttk.Button(allow_button.master, text="Always allow", command=command, style="Secondary.TButton", takefocus=True)
+            button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(self._px(6), 0))
+            self._attach_tooltip(button, hint)
+            setattr(self, name, button)
+        self._sync_always_allow_buttons()
+
+    def _sync_always_allow_buttons(self):
+        for name, source in (("always_allow_inspect_button", "allow_inspect_button"),
+                             ("always_allow_verification_button", "allow_verification_button")):
+            button, allow = getattr(self, name, None), getattr(self, source, None)
+            if button is None or allow is None:
+                continue
+            try:
+                state = str(allow.cget("state"))
+                if str(button.cget("state")) != state:
+                    button.configure(state=state)
+            except tk.TclError:
+                pass
+
+    def always_allow_inspect(self):
+        request = self.inspect_request
+        if request is None:
+            return False
+        rules = list(dict.fromkeys(
+            f"Read({path.rsplit('/', 1)[0]}/**)" if "/" in path else f"Read({path})" for path in request.paths
+        ))
+        for rule in rules:
+            self.approval_rules.add("allow", rule)
+        self.config_data["permissions"] = self.approval_rules.to_config()
+        self._save_config_quietly()
+        self._toast("Saved: " + ", ".join(rules), "success")
+        return self.allow_inspect()
+
+    def always_allow_verification(self):
+        request = self.verification_request
+        if request is None:
+            return False
+        rule = _approval.command_rule_for(request.command)
+        if rule:
+            self.approval_rules.add("allow", rule)
+            self.config_data["permissions"] = self.approval_rules.to_config()
+            self._save_config_quietly()
+            self._toast(f"Saved: {rule}", "success")
+        return self.allow_verification()
+
     def _finish_parity_ui(self):
         self.transcript = []
         self._style_transcript()
@@ -11992,6 +12046,7 @@ class CodeAgentApp(tk.Tk):
         self._build_composer_suggestions()
         self._build_agent_preferences()
         self._build_command_palette()
+        self._build_always_allow_buttons()
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
         try:

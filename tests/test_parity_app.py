@@ -316,6 +316,21 @@ class ParityAppTests(unittest.TestCase):
         self.app._refresh_starters()
         self.assertEqual(self.app._empty_tile_parts[0][1].cget("text"), "Review my changes")
 
+    def test_always_allow_saves_rules(self):
+        self.app.inspect_request = wrapper.InspectRequest("read", ("src/a.py", "README.md"), "r1")
+        self.app.verification_request = wrapper.VerificationRequest(command="python -m pytest -q")
+        with (
+            mock.patch.object(self.app, "allow_inspect", return_value=True) as allow_inspect,
+            mock.patch.object(self.app, "allow_verification", return_value=True) as allow_verify,
+        ):
+            self.assertTrue(self.app.always_allow_inspect())
+            self.assertTrue(self.app.always_allow_verification())
+        allow_inspect.assert_called_once()
+        allow_verify.assert_called_once()
+        self.assertEqual(self.app.approval_rules.allow, ["Read(src/**)", "Read(README.md)", "Bash(python -m pytest*)"])
+        self.app.inspect_request = None
+        self.app.verification_request = None
+
 
 if __name__ == "__main__":
     unittest.main()

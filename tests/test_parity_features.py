@@ -220,6 +220,9 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(approval.normalize_approval_mode("yolo"), "full-auto")
         self.assertEqual(approval.normalize_approval_mode(None, "auto"), "auto-edit")
         self.assertEqual(approval.command_rule_for("npm run test"), "Bash(npm run*)")
+        self.assertEqual(approval.command_rule_for("python -m pytest -q"), "Bash(python -m pytest*)")
+        self.assertEqual(approval.command_rule_for("pytest"), "Bash(pytest*)")
+        self.assertEqual(approval.command_rule_for("make -j4"), "Bash(make -j4)")
         self.assertEqual(approval.edits_blocked(approval.RuleSet(deny=["Edit(docs/**)"]), ["docs/x.md", "a.py"]), ["docs/x.md"])
         with self.assertRaises(ValueError):
             approval.parse_rule("Write(x)")

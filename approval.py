@@ -135,8 +135,15 @@ def command_rule_for(command_text):
         argv = command_text.split()
     if not argv:
         return ""
-    head = " ".join(argv[:2]) if len(argv) > 1 and not argv[1].startswith("-") else argv[0]
-    return f"Bash({head}*)"
+    if len(argv) > 2 and argv[1] == "-m":
+        head = argv[:3]  # python -m pytest
+    elif len(argv) > 1 and not argv[1].startswith("-"):
+        head = argv[:2]  # npm test, cargo build
+    elif len(argv) == 1:
+        head = argv
+    else:
+        return f"Bash({' '.join(argv)})"  # flags only: allow exactly this command
+    return f"Bash({' '.join(head)}*)"
 
 
 def auto_decision(mode, kind, rules, subject, command_policy_allowed=False):
