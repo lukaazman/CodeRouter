@@ -300,6 +300,12 @@ class GitToolsTests(unittest.TestCase):
             Path(root, "a.txt").write_text("two\n", encoding="utf-8")
             self.assertIn("+two", git_tools.git_diff(root))
             self.assertIn("main ±1", git_tools.git_status(root).label())
+            ok, text = git_tools.git_branch(root, "feature/x")
+            self.assertTrue(ok, text)
+            self.assertEqual(git_tools.git_status(root).branch, "feature/x")
+            self.assertTrue(git_tools.git_branch(root, "main")[0])
+            self.assertFalse(git_tools.git_branch(root, "-bad")[0])
+            self.assertFalse(git_tools.git_branch(root, "a..b")[0])
             self.assertFalse(git_tools.is_git_repo(tempfile.gettempdir() + "/definitely-missing"))
         self.assertEqual(git_tools.suggest_commit_message(["a.py"], ""), "Update a.py")
         with tempfile.TemporaryDirectory() as root:

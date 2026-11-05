@@ -184,6 +184,22 @@ def detect_test_command(root):
     return ""
 
 
+BRANCH_NAME_PATTERN = __import__("re").compile(r"^(?!-)(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,100}(?<![./])$")
+
+
+def git_branch(root, name):
+    """Create and switch to branch name (or switch if it exists). Returns (ok, text)."""
+    name = (name or "").strip()
+    if not BRANCH_NAME_PATTERN.match(name):
+        return False, "Branch names use letters, digits, '.', '_', '-' and '/'."
+    code, _out, _err = run_git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")
+    args = ("switch", name) if code == 0 else ("switch", "-c", name)
+    code, out, err = run_git(root, *args)
+    if code != 0:
+        return False, (err or out).strip()[:300] or "git switch failed"
+    return True, f"On branch {name}"
+
+
 def git_commit(root, message, paths=None):
     """Stage paths (or all tracked + new changes) and commit. Returns (ok, text)."""
     message = (message or "").strip()

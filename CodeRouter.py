@@ -9975,7 +9975,8 @@ class CodeAgentApp(tk.Tk):
         self.set_summary("Changes accepted. You can ask for another change and the chat will continue with this context.")
         self.scan_folder(silent=True, preserve_task_state=True)
         self._run_apply_hooks("PostApply", folder, [edit.relative_path for edit in proposal.edits])
-        self._toast(f"Applied {changed} file(s) · /undo to revert · /commit to commit", "success")
+        self._auto_commit_after_apply(folder, [edit.relative_path for edit in proposal.edits])
+        self._toast(f"Applied {changed} file(s) · /undo to revert" + ("" if self.config_data.get("auto_commit") else " · /commit to commit"), "success")
         self._refresh_git_status_async()
 
     def apply_selected(self):
@@ -10989,6 +10990,35 @@ class CodeAgentApp(tk.Tk):
         self._refresh_git_status()
         self._toast(text if ok else f"Commit failed: {text}", "success" if ok else "danger")
         return ok, text
+
+    def _cmd_branch(self, args):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "Not a git repository."
+        if self._run_in_progress() or self.pending_proposal:
+            return False, "Finish or reject the current task first."
+        ok, text = _git.git_branch(folder, args)
+        self._refresh_git_status()
+        if ok:
+            self.scan_folder(silent=True, preserve_task_state=True)
+        return ok, text
+
+    def _cmd_auto_commit(self, args):
+        value = args.strip().lower()
+        if value in {"on", "off"}:
+            self.config_data["auto_commit"] = value == "on"
+            self._save_config_quietly()
+        state = "on" if self.config_data.get("auto_commit") else "off"
+        return True, f"Auto-commit after apply · {state}"
+
+    def _auto_commit_after_apply(self, folder, paths):
+        if not self.config_data.get("auto_commit") or not _git.is_git_repo(folder):
+            return
+        message = _git.suggest_commit_message(paths, self.last_summary)
+        ok, text = _git.git_commit(folder, message, paths=list(paths))
+        self.log(f"> auto-commit: {self._redact_sensitive(text)}")
+        if not ok:
+            self._toast(f"Auto-commit failed: {text}", "danger")
 
     def _cmd_todos(self, _args):
         plan = self.approved_plan or self.pending_plan

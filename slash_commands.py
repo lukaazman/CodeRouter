@@ -60,6 +60,8 @@ BUILTIN_COMMANDS = (
     SlashCommand("rewind", "Undo applies one by one (up to 10 back)", "[count]"),
     SlashCommand("commit", "Commit applied changes with git", "[message]"),
     SlashCommand("git", "Branch, dirty files and last commit"),
+    SlashCommand("branch", "Create or switch to a git branch", "<name>"),
+    SlashCommand("auto-commit", "Commit automatically after each apply", "[on|off]"),
     SlashCommand("todos", "Show the plan checklist"),
     SlashCommand("cost", "Token estimate, context use and cost", aliases=("usage", "context")),
     SlashCommand("approval", "Approval mode: suggest, auto-edit, full-auto", "[suggest|auto-edit|full-auto]"),
