@@ -29,6 +29,16 @@ from urllib.request import Request, urlopen
 import model_router as _model_router
 import command_suggestions as _command_suggestions
 import ui_kit
+import edit_ops as _edit_ops
+import slash_commands as _slash
+import approval as _approval
+import hooks as _hooks
+import usage as _usage
+import git_tools as _git
+import sessions as _sessions
+import memory_files as _memory
+import mentions as _mentions
+import theme as _theme
 from constants import *  # noqa: F403
 from redaction import (
     SECRET_PATTERN,
@@ -86,25 +96,7 @@ WINDOW_ICON_BACKGROUND = "#080808"
 WINDOW_ICON_FOREGROUND = "#f3f3f3"
 
 
-PALETTE = {
-    "canvas": "#0f0f11",
-    "surface": "#0f0f11",
-    "surface_alt": "#17171a",
-    "surface_raised": "#1f1f23",
-    "terminal": "#131316",
-    "border": "#232327",
-    "border_strong": "#34343a",
-    "text": "#ececf0",
-    "text_muted": "#a0a0aa",
-    "text_subtle": "#71717b",
-    "accent": "#9dbdff",
-    "accent_active": "#bdd2ff",
-    "accent_ink": "#0f1726",
-    "success": "#7fcf9c",
-    "warning": "#e6bd75",
-    "danger": "#ec8b95",
-    "focus": "#9dbdff",
-}
+PALETTE = dict(_theme.DARK)
 
 TASK_STATE_COLORS = {
     TASK_STATE_IDLE: PALETTE["text_muted"],
@@ -131,10 +123,35 @@ FONTS = {
 
 # Preferred faces when installed; Segoe UI / Consolas stay the fallback.
 FONT_PREFERENCES = {
-    "sans": ("Segoe UI Variable Text", "Segoe UI"),
-    "display": ("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI"),
-    "mono": ("Cascadia Mono", "Consolas"),
+    "sans": ("Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "IBM Plex Sans",
+             "Noto Sans", "Cantarell", "Ubuntu", "Inter", "DejaVu Sans", "Segoe UI"),
+    "display": ("Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", "SF Pro Display",
+                "Helvetica Neue", "IBM Plex Sans", "Noto Sans", "Cantarell", "Ubuntu", "Inter Display", "Inter",
+                "DejaVu Sans", "Segoe UI"),
+    "mono": ("Cascadia Mono", "Cascadia Code", "SF Mono", "JetBrains Mono", "Menlo", "IBM Plex Mono",
+             "Noto Sans Mono", "DejaVu Sans Mono", "Consolas"),
 }
+
+DIFF_TONES = _theme.diff_tones_for("dark")
+
+
+def apply_theme_tokens(theme_name):
+    """Swap palette tokens in place so every module-level reference updates."""
+    PALETTE.update(_theme.palette_for(theme_name))
+    DIFF_TONES.update(_theme.diff_tones_for(theme_name))
+    TASK_STATE_COLORS.update({
+        TASK_STATE_IDLE: PALETTE["text_muted"],
+        TASK_STATE_COLLECTING: PALETTE["warning"],
+        TASK_STATE_PLANNING: PALETTE["accent"],
+        TASK_STATE_PLAN: PALETTE["warning"],
+        TASK_STATE_RUNNING: PALETTE["accent"],
+        TASK_STATE_REVIEW: PALETTE["warning"],
+        TASK_STATE_APPLIED: PALETTE["success"],
+        TASK_STATE_REJECTED: PALETTE["danger"],
+        TASK_STATE_ERROR: PALETTE["danger"],
+    })
+    return _theme.resolve_theme(theme_name)
+
 
 SPACING = {
     "page": 18,
@@ -2367,6 +2384,7 @@ class CodeAgentApp(tk.Tk):
     def __init__(self, history_path=None, overseer_adapter=None):
         super().__init__()
         self.withdraw()
+        self.theme_name = apply_theme_tokens(load_local_config().get("theme", "dark"))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.title(APP_TITLE)
         self.geometry("1440x900")
@@ -2502,8 +2520,6 @@ class CodeAgentApp(tk.Tk):
         self._overseer_next_step_run_started = False
         self._overseer_consumed_handoff_run_id = None
         self._overseer_continuation_parent_run_id = None
-        self.pulse_step = 0
-        self.animated_buttons = []
         self._poll_after_id = None
         self._command_palette_destroyed = False
         self._tooltips = []
@@ -2530,8 +2546,11 @@ class CodeAgentApp(tk.Tk):
         self._workbench_scroll_sync_after_id = None
         self._workbench_scroll_syncing = False
 
+        self._parity_queue = queue.Queue()
+        self._init_parity_state()
         self._build_styles()
         self._build_ui()
+        self._finish_parity_ui()
         self._set_local_command_disclosure(False)
         self._refresh_history_browser()
         self.set_task_state(TASK_STATE_IDLE, "Ready")
@@ -2627,13 +2646,13 @@ class CodeAgentApp(tk.Tk):
         sans, display, mono = pick("sans"), pick("display"), pick("mono")
         FONTS.update(
             {
-                "title": (display, 17, "bold"),
+                "title": (display, 17, "normal"),
                 "section": (sans, 9, "bold"),
                 "body": (sans, 10),
                 "body_bold": (sans, 10, "bold"),
                 "mono": (mono, 10),
                 "mono_small": (mono, 9),
-                "display": (display, 20, "bold"),
+                "display": (display, 24, "normal"),
                 "small": (sans, 9),
             }
         )
@@ -3070,7 +3089,7 @@ class CodeAgentApp(tk.Tk):
             textvariable=self.trust_settings_detail_text,
             bg=PALETTE["surface"],
             fg=PALETTE["text_muted"],
-            font=FONTS["mono_small"],
+            font=FONTS["small"],
             justify=tk.LEFT,
             anchor="w",
             wraplength=235,
@@ -3395,8 +3414,8 @@ class CodeAgentApp(tk.Tk):
         diff_panel.rowconfigure(0, weight=1)
         self.diff = scrolledtext.ScrolledText(diff_panel, wrap=tk.NONE, relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=PALETTE["border"], highlightcolor=PALETTE["focus"], font=FONTS["mono_small"], bg=PALETTE["surface_alt"], fg=PALETTE["text"], insertbackground=PALETTE["text"])
         self.diff.grid(row=0, column=0, sticky="nsew")
-        self.diff.tag_configure("add", foreground=PALETTE["success"], background="#1b3325")
-        self.diff.tag_configure("del", foreground=PALETTE["danger"], background="#3a2025")
+        self.diff.tag_configure("add", foreground=DIFF_TONES["add_fg"], background=DIFF_TONES["add_bg"])
+        self.diff.tag_configure("del", foreground=DIFF_TONES["del_fg"], background=DIFF_TONES["del_bg"])
         self.diff.tag_configure("file", foreground=PALETTE["accent"], font=FONTS["body_bold"])
         self.diff.tag_configure("meta", foreground=PALETTE["text_subtle"])
         self.review_diff_pane.add(diff_panel, weight=2)
@@ -3878,7 +3897,7 @@ class CodeAgentApp(tk.Tk):
             text='●',
             bg=PALETTE['canvas'],
             fg=TASK_STATE_COLORS[TASK_STATE_IDLE],
-            font=('Segoe UI', 11),
+            font=(FONTS['body'][0], 11),
         )
         self.rail_state_marker.grid(row=10, column=0, pady=(10, 2))
         self.rail_folder_label = tk.Label(
@@ -3990,7 +4009,7 @@ class CodeAgentApp(tk.Tk):
             if isinstance(widget, ttk.Label):
                 label = widget.cget('text')
                 if label == 'CHAT':
-                    widget.configure(text='Conversation', font=('Segoe UI', 15, 'bold'), foreground=PALETTE['text'])
+                    widget.configure(text='Conversation', font=(FONTS['body'][0], 15, 'bold'), foreground=PALETTE['text'])
                 elif label == 'Prompt':
                     widget.grid_configure(row=3, pady=(18, 0))
                     widget.configure(text='Your task')
@@ -4000,8 +4019,8 @@ class CodeAgentApp(tk.Tk):
         center.rowconfigure(5, weight=0)
         self.summary.grid_configure(row=2, pady=(16, 4))
         self.instructions.grid_configure(row=5, pady=(8, 0))
-        self.instructions.configure(height=5, font=('Segoe UI', 11), highlightbackground=PALETTE['surface_alt'])
-        self.summary.configure(height=9, bg=PALETTE['surface'], highlightthickness=0, font=('Segoe UI', 11), padx=2, pady=8)
+        self.instructions.configure(height=5, font=(FONTS['body'][0], 11), highlightbackground=PALETTE['surface_alt'])
+        self.summary.configure(height=9, bg=PALETTE['surface'], highlightthickness=0, font=(FONTS['body'][0], 11), padx=2, pady=8)
         self.composer_run_button.master.grid_configure(row=9, pady=(12, 0))
         self.composer_run_button.configure(text='Run task  →')
         for widget in self.composer_run_button.master.winfo_children():
@@ -4191,6 +4210,7 @@ class CodeAgentApp(tk.Tk):
             key,
             duration,
             lambda t: widget.configure(**{option: ui_kit.mix(start, target, t)}),
+            easing=ui_kit.EASE_UI,
         )
 
     def _make_clickable(self, widget, command, icon_labels=(), hint=None, border=True):
@@ -4201,7 +4221,8 @@ class CodeAgentApp(tk.Tk):
         def hover(active):
             if border:
                 self._tween_color(("hover", str(widget)), widget, "highlightbackground",
-                                  c["border_strong"] if active else c["border"])
+                                  c["border_strong"] if active else c["border"],
+                                  ui_kit.DURATION["hover_in"] if active else ui_kit.DURATION["hover_out"])
             for label, (name, size, color) in icon_labels:
                 label.configure(image=self._icon(name, size, c["accent"] if active else color, label.cget("bg")))
 
@@ -4402,7 +4423,10 @@ class CodeAgentApp(tk.Tk):
         text_color = TASK_STATE_COLORS.get(state, c["text_muted"])
         text_x = last + self._px(14)
         canvas.create_text(text_x, mid, text=label, anchor="w", fill=text_color, font=FONTS["body_bold"])
-        width = text_x + tkfont.Font(font=FONTS["body_bold"]).measure(label) + self._px(4)
+        measure = getattr(self, "_stepper_font", None)
+        if measure is None:
+            measure = self._stepper_font = tkfont.Font(font=FONTS["body_bold"])
+        width = text_x + measure.measure(label) + self._px(4)
         if int(canvas.cget("width")) != width:
             canvas.configure(width=width)
 
@@ -4419,7 +4443,7 @@ class CodeAgentApp(tk.Tk):
             self._stepper_progress = start + (target - start) * t
             self._draw_stepper()
 
-        self.animator.tween("stepper", 0.32, apply)
+        self.animator.tween("stepper", ui_kit.DURATION["enter"], apply, easing=ui_kit.EASE_UI)
 
     def _pulse_step(self, elapsed):
         if not self._ui_busy or self.lifecycle.closed:
@@ -4427,7 +4451,8 @@ class CodeAgentApp(tk.Tk):
             self._draw_stepper()
             self._paint_state_marker(0.0)
             return False
-        self._stepper_pulse = ui_kit.pulse(elapsed, 1.6)
+        # Quantised so the cached dot images stay bounded.
+        self._stepper_pulse = round(ui_kit.pulse(elapsed, 1.6) * 12) / 12
         self._draw_stepper()
         self._paint_state_marker(self._stepper_pulse)
         return None
@@ -4500,6 +4525,8 @@ class CodeAgentApp(tk.Tk):
             )
             button.bind("<Enter>", lambda _event, n=name: self._rail_hover(n, True), add="+")
             button.bind("<Leave>", lambda _event, n=name: self._rail_hover(n, False), add="+")
+            # Buttons below the flexible row move when the rail resizes.
+            button.bind("<Configure>", lambda _event, n=name: n == self._utility_drawer_view and self._move_rail_indicator(animate=False), add="+")
         self.new_chat_rail_button.configure(text="")
         self._set_button_icon(
             self.new_chat_rail_button, "plus", 20, c["text_muted"], c["canvas"], c["surface_raised"],
@@ -4569,7 +4596,7 @@ class CodeAgentApp(tk.Tk):
             indicator.place(x=0, y=y, width=2, height=height)
             self._rail_indicator_y = y
 
-        self.animator.tween("rail-indicator", 0.2, apply)
+        self.animator.tween("rail-indicator", ui_kit.DURATION["indicator"], apply, easing=ui_kit.EASE_UI)
 
     def _animate_drawer_open(self):
         sidebar = getattr(self, "_legacy_sidebar", None)
@@ -4590,8 +4617,9 @@ class CodeAgentApp(tk.Tk):
         def done():
             sidebar.grid_propagate(True)
             self._queue_workbench_scroll_sync()
+            self._move_rail_indicator()
 
-        self.animator.tween("drawer", 0.2, apply, done=done)
+        self.animator.tween("drawer", ui_kit.DURATION["panel"], apply, easing=ui_kit.EASE_UI, done=done)
 
     # Conversation + composer ---------------------------------------------------
 
@@ -4742,6 +4770,21 @@ class CodeAgentApp(tk.Tk):
         self._layout_empty_tiles(4)
         hero.bind("<Configure>", self._on_empty_state_configure, add="+")
 
+    def _animate_empty_entrance(self):
+        """Fade starter tiles in with a short stagger (colour only, no layout)."""
+        tiles = getattr(self, "_empty_tiles", ())
+        if not tiles or self.animator.reduce:
+            return
+        c = PALETTE
+
+        def paint(tile, t):
+            tile.configure(highlightbackground=ui_kit.mix(c["canvas"], c["border"], t))
+            for child in tile.winfo_children():
+                if isinstance(child, tk.Label) and child.cget("text"):
+                    child.configure(fg=ui_kit.mix(c["canvas"], c["text"], t))
+
+        self.animator.stagger("empty-tiles", tiles, ui_kit.DURATION["enter"], paint, each=0.05)
+
     def _layout_empty_tiles(self, columns):
         if columns == self._empty_tile_columns:
             return
@@ -4792,6 +4835,16 @@ class CodeAgentApp(tk.Tk):
         hero = getattr(self, "empty_state", None)
         if hero is None or self.lifecycle.closed or not hero.winfo_viewable():
             return False
+        # ~30 fps is plenty for a decorative loop; skip frames when unfocused.
+        frame = int(elapsed * 30)
+        if frame == getattr(self, "_router_last_frame", None):
+            return None
+        self._router_last_frame = frame
+        try:
+            if self.focus_displayof() is None and frame % 4:
+                return None
+        except (tk.TclError, KeyError):
+            pass
         c = PALETTE
         canvas = self.router_canvas
         period = 2.8
@@ -4831,6 +4884,7 @@ class CodeAgentApp(tk.Tk):
             empty = text in self.EMPTY_SUMMARY_TEXTS and not self.pending_plan and not self._run_in_progress()
             if empty and not hero.winfo_manager():
                 hero.place(in_=self.summary.frame, relx=0, rely=0, relwidth=1, relheight=1)
+                self._animate_empty_entrance()
             elif not empty and hero.winfo_manager():
                 hero.place_forget()
                 self.animator.stop("router")
@@ -5173,7 +5227,7 @@ class CodeAgentApp(tk.Tk):
         animator = getattr(self, "animator", None)
         if animator is not None:
             animator.close()
-        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id"):
+        for name in ("_ui_heartbeat_after_id", "_rail_indicator_after_id", "_toast_after_id", "_git_refresh_after_id"):
             after_id = getattr(self, name, None)
             setattr(self, name, None)
             if after_id is not None:
@@ -5222,10 +5276,11 @@ class CodeAgentApp(tk.Tk):
             elif view == 'verification':
                 self._set_disclosure('verification', True)
             elif view == 'settings':
-                self._set_trust_settings_disclosure(True)
+                # Expanded only until OpenRouter is connected, so the drawer fits the window.
+                self._set_trust_settings_disclosure(not self.api_key)
         if self._utility_drawer_view:
             allowed = {'workspace': {0, 1, 2, 3, 4, 14, 18},
-                       'settings': {0, 7, 8, 9, 10, 11},
+                       'settings': {0, 11, 12},
                        'history': {0, 21, 22, 23, 24},
                        'verification': {0, 27, 28, 29}}[self._utility_drawer_view]
             for widget, row in self._sidebar_rows.items():
@@ -6455,11 +6510,17 @@ class CodeAgentApp(tk.Tk):
             ok, result = self._apply_model_selection_command(setting_mode, setting_override)
             self.local_command_result.set(self._local_command_safe_text(result))
             return ok
+        parsed = _slash.split_command(raw)
+        if parsed is not None and getattr(self, "_parity_ready", False) and f"/{parsed[0]}" not in LOCAL_COMMANDS:
+            handled, ok, message = self.run_slash_command(raw)
+            if handled:
+                self.local_command_result.set(self._local_command_safe_text(message))
+                return ok
         try:
             command = parse_local_command(raw)
         except ValueError:
             self.local_command_result.set(
-                "Rejected · exact commands: /status, /model, /permissions, /review; settings: /model auto, /model reset, /model <id>:free"
+                "Rejected · exact commands: /status, /model, /permissions, /review; /help lists every command"
             )
             return False
         if command == "/status":
@@ -9047,6 +9108,17 @@ class CodeAgentApp(tk.Tk):
             self.config_data["last_folder"] = folder
             save_local_config(self.config_data)
             self.scan_folder(preserve_task_state=False)
+            self._on_project_changed(folder)
+
+    def _on_project_changed(self, folder):
+        if not getattr(self, "_parity_ready", False):
+            return
+        self.command_registry.reload(folder)
+        self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder)
+        self._refresh_git_status_async()
+        custom = len(self.command_registry.custom)
+        if custom:
+            self._toast(f"{custom} custom command(s) loaded")
 
     def add_context_files(self):
         if self._block_if_run_active("context change"):
@@ -9240,6 +9312,11 @@ class CodeAgentApp(tk.Tk):
         self._clear_pending_proposal()
         self._clear_scanned_context_preview()
         self.set_summary("New chat started. Previous model context cleared.")
+        if getattr(self, "_parity_ready", False):
+            self.conversation = _sessions.Conversation(_sessions.new_session_id(), self.selected_folder.get().strip())
+            self.usage_meter.reset()
+            self.attached_images = []
+            self._refresh_status_strip()
         self.log("> session reset")
         self.set_task_state(TASK_STATE_IDLE, "Ready")
 
@@ -9284,6 +9361,12 @@ class CodeAgentApp(tk.Tk):
         if not instructions:
             messagebox.showerror(APP_TITLE, "Write an instruction first.")
             return
+        if getattr(self, "_parity_ready", False):
+            instructions = self._preprocess_prompt(instructions)
+            if instructions is None:
+                return
+            if not self._run_prompt_hooks(folder, instructions):
+                return
 
         self._discard_pending_proposal("new run")
         self._discard_pending_plan("new run")
@@ -9293,6 +9376,19 @@ class CodeAgentApp(tk.Tk):
             folder,
             secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
         )
+        if getattr(self, "_parity_ready", False):
+            memory_text, memory_labels = self._extra_instruction_context(folder)
+            project_instructions = _memory.combine_instructions(project_instructions, memory_text)
+            if memory_labels:
+                project_instructions_status = (project_instructions_status + "; memory: " + ", ".join(memory_labels)).lstrip("; ")
+            mention_note = self._mention_context(instructions)
+            if mention_note:
+                instructions = f"{instructions}\n\n({mention_note})"
+            GENERATION_SETTINGS["images"] = _encode_images(self.attached_images)
+            if self.attached_images:
+                instructions = f"[image attached] {instructions}"
+                self.attached_images = []
+                self._refresh_status_strip()
         session_id, parent_task_id, parent_session_id = self._lineage_for_new_snapshot()
         snapshot = create_run_snapshot(
             project_root=folder,
@@ -9611,6 +9707,7 @@ class CodeAgentApp(tk.Tk):
                 return
 
             ensure_run_current(is_current)
+            edits = resolve_edit_hunks(snapshot.project_root, edits)
             proposal = create_pending_proposal(snapshot, edits)
             ensure_run_current(is_current)
             diff_by_path = render_diff_by_path(snapshot.project_root, edits)
@@ -9666,6 +9763,12 @@ class CodeAgentApp(tk.Tk):
         if explicit and self._proposal_apply_has_active_resources(proposal.run_id):
             self._report_lifecycle_action("apply blocked while active work is running")
             return
+        blocked_paths = _approval.edits_blocked(self.approval_rules, [edit.relative_path for edit in proposal.edits])
+        if blocked_paths:
+            messagebox.showerror(APP_TITLE, "Blocked by an Edit deny rule:\n" + "\n".join(blocked_paths[:10]))
+            return
+        if not self._run_apply_hooks("PreApply", folder, [edit.relative_path for edit in proposal.edits]):
+            return
         if explicit:
             self._record_permission_decision(
                 "apply",
@@ -9707,6 +9810,9 @@ class CodeAgentApp(tk.Tk):
         self.set_task_state(TASK_STATE_APPLIED, f"Applied {changed} files")
         self.set_summary("Changes accepted. You can ask for another change and the chat will continue with this context.")
         self.scan_folder(silent=True, preserve_task_state=True)
+        self._run_apply_hooks("PostApply", folder, [edit.relative_path for edit in proposal.edits])
+        self._toast(f"Applied {changed} file(s) · /undo to revert · /commit to commit", "success")
+        self._refresh_git_status_async()
 
     def apply_selected(self):
         """Apply only the explicitly selected files from the current proposal."""
@@ -10247,6 +10353,8 @@ class CodeAgentApp(tk.Tk):
                     self.session_messages.append({"role": "user", "content": user_content})
                     self.session_messages.append({"role": "assistant", "content": assistant_content})
                     self.last_summary = assistant_content
+                    self._record_conversation_turn(user_content, assistant_content)
+
                 elif kind == "proposal":
                     self._set_pending_proposal(payload)
                 elif kind == "diffs":
@@ -10257,9 +10365,1023 @@ class CodeAgentApp(tk.Tk):
                     self.apply_pending(explicit=False)
         except queue.Empty:
             pass
+        self._drain_parity_queue()
+        self._auto_gates()
         self._refresh_workflow_rail()
         if not self.lifecycle.closed:
             self._schedule_poll()
+
+    def _drain_parity_queue(self):
+        parity_queue = getattr(self, "_parity_queue", None)
+        if parity_queue is None:
+            return
+        while True:
+            try:
+                kind, payload = parity_queue.get_nowait()
+            except queue.Empty:
+                return
+            if self.lifecycle.closed:
+                return
+            if kind == "compact":
+                self._finish_compact(payload)
+            elif kind == "usage":
+                self._record_usage(payload)
+            elif kind == "git":
+                self.git_state = payload
+                self.git_text.set(payload.label())
+                self._refresh_status_strip()
+
+    # --- Agent parity: commands, memory, approval, sessions, git, usage ------------
+
+    def _init_parity_state(self):
+        cfg = self.config_data
+        folder = self.selected_folder.get().strip() or None
+        self.command_registry = _slash.CommandRegistry(folder)
+        self.approval_rules = _approval.RuleSet.from_config(cfg.get("permissions"))
+        self.approval_mode_value = _approval.normalize_approval_mode(cfg.get("approval_mode"), self.apply_mode.get())
+        self.approval_mode_var = tk.StringVar(master=self, value=self.approval_mode_value)
+        self.hooks_config = _hooks.normalize_hooks(cfg.get("hooks"))
+        self.usage_meter = _usage.UsageMeter()
+        self.usage_text = tk.StringVar(master=self, value=self.usage_meter.short_label())
+        self.git_text = tk.StringVar(master=self, value="")
+        self.git_state = _git.GitStatus()
+        self.session_store = _sessions.SessionStore(cfg.get("sessions_dir") or None)
+        self.conversation = _sessions.Conversation(_sessions.new_session_id(), folder or "")
+        self.plan_gate_enabled = cfg.get("plan_gate", True) is not False
+        self.plan_gate_var = tk.BooleanVar(master=self, value=self.plan_gate_enabled)
+        settings = configure_generation(cfg.get("temperature"), cfg.get("style", "default"), cfg.get("reasoning_effort", ""))
+        self.style_var = tk.StringVar(master=self, value=settings["style"])
+        self.effort_var = tk.StringVar(master=self, value=settings["reasoning_effort"] or "default")
+        self.theme_var = tk.StringVar(master=self, value=_theme.normalize_theme(cfg.get("theme")))
+        self.attached_images = []
+        self.mentioned_paths = []
+        self._auto_gate_seen = set()
+        self._memory_labels = []
+        self._toast_after_id = None
+        self._suggest_items = []
+        self._suggest_kind = None
+        self._parity_ready = False
+
+    # Configuration helpers ------------------------------------------------------
+
+    def _save_config_quietly(self):
+        try:
+            save_local_config(self.config_data)
+            return True
+        except OSError as exc:
+            self._toast(f"Could not save settings: {short_error(exc)}", "danger")
+            return False
+
+    def set_approval_mode(self, mode, announce=True):
+        mode = _approval.normalize_approval_mode(mode)
+        if self._mode_locked_for_active_run():
+            self.approval_mode_var.set(self.approval_mode_value)
+            return False, "Approval mode is locked while a run is active."
+        self.approval_mode_value = mode
+        self.approval_mode_var.set(mode)
+        self.config_data["approval_mode"] = mode
+        self.apply_mode.set(_approval.apply_mode_for(mode))
+        self._on_apply_mode_changed()
+        self._save_config_quietly()
+        self._refresh_status_strip()
+        if announce:
+            self._toast(_approval.APPROVAL_LABELS[mode])
+        return True, f"Approval mode · {_approval.APPROVAL_LABELS[mode]}"
+
+    def set_output_style(self, style):
+        if style not in OUTPUT_STYLES:
+            return False, "Styles: " + ", ".join(OUTPUT_STYLES)
+        configure_generation(style=style)
+        self.style_var.set(style)
+        self.config_data["style"] = style
+        self._save_config_quietly()
+        return True, f"Output style · {style}"
+
+    def set_reasoning_effort(self, effort):
+        effort = "" if effort in {"", "default", "off", "none"} else effort
+        if effort and effort not in REASONING_EFFORTS:
+            return False, "Effort: low, medium, high or default"
+        configure_generation(reasoning_effort=effort)
+        self.effort_var.set(effort or "default")
+        self.config_data["reasoning_effort"] = effort
+        self._save_config_quietly()
+        return True, f"Reasoning effort · {effort or 'model default'}"
+
+    def set_temperature(self, value):
+        if value in {"", "default"}:
+            GENERATION_SETTINGS["temperature"] = None
+            self.config_data.pop("temperature", None)
+            self._save_config_quietly()
+            return True, "Temperature · default (0.1)"
+        try:
+            number = float(value)
+        except ValueError:
+            return False, "Temperature must be a number between 0 and 1."
+        if not 0 <= number <= 1:
+            return False, "Temperature must be a number between 0 and 1."
+        configure_generation(temperature=number)
+        self.config_data["temperature"] = number
+        self._save_config_quietly()
+        return True, f"Temperature · {number:g}"
+
+    def set_plan_gate(self, enabled):
+        self.plan_gate_enabled = bool(enabled)
+        self.plan_gate_var.set(self.plan_gate_enabled)
+        self.config_data["plan_gate"] = self.plan_gate_enabled
+        self._save_config_quietly()
+        return True, "Plan gate · " + ("on (approve each plan)" if enabled else "off (plans auto-approve)")
+
+    def set_theme(self, name):
+        name = _theme.normalize_theme(name)
+        self.theme_var.set(name)
+        self.config_data["theme"] = name
+        self._save_config_quietly()
+        return True, f"Theme · {name} (applies on next start)"
+
+    def set_motion(self, mode):
+        mode = str(mode or "").strip().lower()
+        if mode not in {"full", "reduced", "system"}:
+            return False, "Motion: full, reduced or system"
+        self.reduce_motion.set(ui_kit.reduced_motion(mode))
+        self._on_reduce_motion_changed()
+        self.config_data["motion"] = mode
+        self._save_config_quietly()
+        return True, f"Motion · {mode}"
+
+    # Slash command dispatch -----------------------------------------------------
+
+    def run_slash_command(self, text):
+        """Run a slash command from the composer or command field.
+
+        Returns (handled, ok, message). Custom commands expand into the
+        prompt and start a run.
+        """
+        parsed = _slash.split_command(text)
+        if parsed is None:
+            return False, False, ""
+        name, args = parsed
+        command = self.command_registry.resolve(name)
+        if command is None:
+            return True, False, f"Unknown command /{name} · /help lists commands"
+        if command.kind == "custom":
+            prompt = _slash.expand_custom_command(command, args)
+            self._set_prompt_text(prompt)
+            self.run_agent()
+            return True, True, f"/{name} · expanded custom command"
+        handler = getattr(self, "_cmd_" + command.name.replace("-", "_").replace(":", "_"), None)
+        if handler is None:
+            return True, False, f"/{name} is not available here"
+        try:
+            result = handler(args)
+        except Exception as exc:  # surface, never crash the UI
+            return True, False, f"/{name} failed: {short_error(self._redact_sensitive(str(exc)))}"
+        if isinstance(result, tuple):
+            ok, message = result
+        else:
+            ok, message = True, result or ""
+        return True, ok, message
+
+    def _set_prompt_text(self, text):
+        self.instructions.delete("1.0", tk.END)
+        if text:
+            self.instructions.insert("1.0", text)
+        self._sync_prompt_placeholder()
+
+    def _show_output(self, text):
+        """Show a local command result in the conversation pane."""
+        self.set_summary(text)
+
+    def _cmd_help(self, _args):
+        self._show_output(self.command_registry.help_text())
+        return "Help shown in the conversation"
+
+    def _cmd_status(self, _args):
+        return self._local_command_status()
+
+    def _cmd_model(self, args):
+        if args:
+            try:
+                mode, override = parse_model_selection_command(f"/model {args}")
+            except ValueError as exc:
+                return False, str(exc)
+            return self._apply_model_selection_command(mode, override)
+        return self._local_command_model()
+
+    def _cmd_permissions(self, _args):
+        rules = self.approval_rules
+        lines = [
+            self._local_command_permissions(),
+            "",
+            f"Approval mode: {_approval.APPROVAL_LABELS[self.approval_mode_value]}",
+            "Allow rules: " + (", ".join(rules.allow) or "none"),
+            "Deny rules: " + (", ".join(rules.deny) or "none"),
+        ]
+        self._show_output("\n".join(lines))
+        return "Permissions shown in the conversation"
+
+    def _cmd_review(self, _args):
+        return self._local_command_review()
+
+    def _cmd_clear(self, _args):
+        if self._block_if_run_active("new chat"):
+            return False, "Stop the active run first."
+        self.reset_session()
+        return "New chat started"
+
+    def _cmd_compact(self, args):
+        messages = [(item["role"], item["content"]) for item in self.session_messages]
+        older, recent = _sessions.split_for_compaction(messages)
+        if not older:
+            return False, "Nothing to compact yet."
+        if self._run_in_progress():
+            return False, "Wait for the active run to finish."
+        prompt = _sessions.compact_prompt(older, args)
+        api_key = self.api_key
+
+        def work():
+            try:
+                summary, model = complete_text(api_key, prompt) if api_key else (_sessions.local_compact(older), "local")
+            except Exception:
+                summary, model = _sessions.local_compact(older), "local"
+            self._parity_queue.put(("compact", (summary, model, len(older), recent)))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._toast("Compacting conversation…")
+        return "Compacting older turns"
+
+    def _finish_compact(self, payload):
+        summary, model, dropped, recent = payload
+        summary = self._redact_sensitive(summary)
+        self.session_messages = [{"role": "system", "content": "Summary of earlier conversation: " + summary}]
+        self.session_messages += [{"role": role, "content": content} for role, content in recent]
+        self.conversation.summary = summary
+        self.conversation.messages = list(recent)
+        self._persist_conversation()
+        self._toast(f"Compacted {dropped} turns ({model})", "success")
+        self.log(f"> compacted {dropped} turns with {model}")
+
+    def _cmd_sessions(self, _args):
+        items = self.session_store.list(self.selected_folder.get().strip() or None)
+        if not items:
+            return False, "No saved conversations for this project yet."
+        lines = ["Saved conversations (newest first) · /resume <id>"]
+        for item in items[:20]:
+            lines.append(f"  {item.session_id}  {item.updated_at[:16].replace('T', ' ')}  {item.title or '(untitled)'}  · {len(item.messages)} msgs")
+        self._show_output("\n".join(lines))
+        return f"{len(items)} saved conversation(s)"
+
+    def _cmd_resume(self, args):
+        if self._run_in_progress():
+            return False, "Stop the active run first."
+        folder = self.selected_folder.get().strip() or None
+        try:
+            conversation = self.session_store.load(args.strip()) if args.strip() else self.session_store.latest(folder)
+        except (OSError, ValueError):
+            conversation = None
+        if conversation is None:
+            return False, "No saved conversation found · /sessions lists them"
+        self.reset_session()
+        self.conversation = conversation
+        self.session_messages = [{"role": role, "content": content} for role, content in conversation.model_messages()]
+        transcript = [f"Resumed · {conversation.title or conversation.session_id}", ""]
+        for role, content in conversation.messages[-12:]:
+            transcript.append(("You: " if role == "user" else "Agent: ") + content[:600])
+        self._show_output("\n\n".join(transcript))
+        self._toast("Conversation resumed", "success")
+        return f"Resumed {conversation.session_id} · {len(conversation.messages)} messages"
+
+    def _persist_conversation(self):
+        try:
+            self.conversation.project_root = self.selected_folder.get().strip()
+            self.session_store.save(self.conversation)
+        except (OSError, ValueError):
+            pass
+
+    def _record_conversation_turn(self, user_content, assistant_content):
+        self.conversation.add("user", user_content)
+        self.conversation.add("assistant", assistant_content)
+        self._persist_conversation()
+
+    def _cmd_history(self, _args):
+        self._show_utility_view("history")
+        return "History opened"
+
+    def _cmd_init(self, _args):
+        self._set_prompt_text(_memory.INIT_PROMPT)
+        self.run_agent()
+        return "Drafting AGENTS.md"
+
+    def _cmd_memory(self, args):
+        if args.startswith("add "):
+            return self._add_memory_note(args[4:])
+        folder = self.selected_folder.get().strip() or None
+        _text, labels = _memory.load_memory_files(folder)
+        instructions, status = ("", "")
+        if folder:
+            instructions, status = load_project_instructions(folder)
+        lines = ["Memory and instruction files"]
+        lines.append("  AGENTS.md hierarchy: " + (status.replace("> project instructions: ", "") or "none"))
+        lines += [f"  {label}" for label in labels] or ["  no CLAUDE.md / user memory files found"]
+        lines += ["", "Add a note: start a prompt with #, or /memory add <note>"]
+        self._show_output("\n".join(lines))
+        return f"{len(labels) + (1 if instructions else 0)} memory source(s)"
+
+    def _add_memory_note(self, note):
+        folder = self._validate_folder(show_error=False)
+        if not folder:
+            return False, "Open a project first."
+        try:
+            path = _memory.append_memory_note(folder, note)
+        except (OSError, ValueError) as exc:
+            return False, f"Could not save note: {short_error(exc)}"
+        self._toast(f"Saved to {path.name}", "success")
+        return True, f"Memory note saved to {path.name}"
+
+    def _cmd_diff(self, args):
+        if self.diff_by_path and not args.strip() == "git":
+            self._show_output("\n".join(self.diff_by_path.values())[:60000])
+            return f"{len(self.diff_by_path)} pending file diff(s)"
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "No pending changes and no git repository."
+        diff = _git.git_diff(folder)
+        self._show_output(diff or "Working tree is clean.")
+        return "git diff shown"
+
+    def _cmd_apply(self, _args):
+        if not self.pending_proposal:
+            return False, "Nothing pending."
+        self.apply_pending()
+        return "Applied"
+
+    def _cmd_reject(self, _args):
+        if not self.pending_proposal:
+            return False, "Nothing pending."
+        self.reject_pending()
+        return "Rejected pending changes"
+
+    def _cmd_undo(self, _args):
+        if not getattr(self, "_last_apply_undo", None):
+            return False, "Nothing to undo."
+        self.undo_last_apply()
+        return "Undo requested"
+
+    def _cmd_git(self, _args):
+        status = self._refresh_git_status()
+        if not status.is_repo:
+            return False, "Not a git repository."
+        lines = [f"Branch {status.branch or 'detached'} · ahead {status.ahead} · behind {status.behind}",
+                 f"Last commit: {status.last_commit or 'none'}", ""]
+        lines += [f"  {code:>2} {path}" for code, path in status.changed[:60]] or ["  clean"]
+        self._show_output("\n".join(lines))
+        return status.label()
+
+    def _cmd_commit(self, args):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "Not a git repository."
+        status = self._refresh_git_status()
+        if not status.dirty:
+            return False, "Nothing to commit."
+        message = args.strip() or _git.suggest_commit_message([path for _code, path in status.changed], self.last_summary)
+        if not messagebox.askyesno(APP_TITLE, f"Commit {len(status.changed)} change(s)?\n\n{message}", parent=self):
+            return False, "Commit cancelled."
+        ok, text = _git.git_commit(folder, message)
+        self._refresh_git_status()
+        self._toast(text if ok else f"Commit failed: {text}", "success" if ok else "danger")
+        return ok, text
+
+    def _cmd_todos(self, _args):
+        plan = self.approved_plan or self.pending_plan
+        if not plan:
+            return False, "No plan yet."
+        done = self.task_state in {TASK_STATE_APPLIED}
+        lines = [f"Plan · {plan.summary}", ""]
+        for step in plan.steps:
+            mark = "✓" if done else ("•" if self.task_state in {TASK_STATE_RUNNING, TASK_STATE_REVIEW} else "○")
+            lines.append(f"  {mark} {step.id}. {step.title} — {step.detail}")
+        self._show_output("\n".join(lines))
+        return f"{len(plan.steps)} step(s)"
+
+    def _cmd_cost(self, _args):
+        self._show_output(self.usage_meter.report())
+        return self.usage_meter.short_label()
+
+    def _cmd_approval(self, args):
+        if not args:
+            return True, f"Approval mode · {_approval.APPROVAL_LABELS[self.approval_mode_value]} · options: " + ", ".join(_approval.APPROVAL_MODES)
+        return self.set_approval_mode(args)
+
+    def _rule_command(self, kind, args):
+        try:
+            rule = self.approval_rules.add(kind, args)
+        except ValueError as exc:
+            return False, str(exc)
+        self.config_data["permissions"] = self.approval_rules.to_config()
+        self._save_config_quietly()
+        return True, f"{kind.title()} rule saved · {rule}"
+
+    def _cmd_allow(self, args):
+        return self._rule_command("allow", args)
+
+    def _cmd_deny(self, args):
+        return self._rule_command("deny", args)
+
+    def _cmd_style(self, args):
+        if not args:
+            return True, f"Output style · {GENERATION_SETTINGS['style']} · options: " + ", ".join(OUTPUT_STYLES)
+        return self.set_output_style(args.strip())
+
+    def _cmd_effort(self, args):
+        if not args:
+            return True, f"Reasoning effort · {GENERATION_SETTINGS['reasoning_effort'] or 'default'}"
+        return self.set_reasoning_effort(args.strip().lower())
+
+    def _cmd_temperature(self, args):
+        if not args:
+            value = GENERATION_SETTINGS["temperature"]
+            return True, f"Temperature · {'default (0.1)' if value is None else value}"
+        return self.set_temperature(args.strip())
+
+    def _cmd_theme(self, args):
+        if not args:
+            return True, f"Theme · {self.theme_var.get()} · options: dark, light, system"
+        return self.set_theme(args.strip())
+
+    def _cmd_motion(self, args):
+        if not args:
+            return True, "Motion · " + ("reduced" if self.animator.reduce else "full")
+        return self.set_motion(args)
+
+    def _cmd_plan(self, args):
+        value = args.strip().lower()
+        if value in {"on", "true", "1"}:
+            return self.set_plan_gate(True)
+        if value in {"off", "false", "0"}:
+            return self.set_plan_gate(False)
+        return True, "Plan gate · " + ("on" if self.plan_gate_enabled else "off") + " · /plan on|off"
+
+    def _cmd_hooks(self, _args):
+        self._show_output(_hooks.describe_hooks(self.hooks_config))
+        return f"{sum(len(v) for v in self.hooks_config.values())} hook(s)"
+
+    def _cmd_config(self, _args):
+        self._show_utility_view("settings")
+        return "Settings opened"
+
+    def _cmd_commands(self, _args):
+        folder = self.selected_folder.get().strip() or None
+        self.command_registry.reload(folder)
+        lines = ["Custom command folders"] + [f"  {line}" for line in _slash.describe_custom_sources(folder)]
+        lines += ["", "Loaded"] + [f"  /{c.name} - {c.description}" for c in self.command_registry.custom.values()] or ["  none"]
+        self._show_output("\n".join(lines))
+        return f"{len(self.command_registry.custom)} custom command(s)"
+
+    def _cmd_export(self, _args):
+        self.export_report()
+        return "Export started"
+
+    def _cmd_verify(self, args):
+        if args:
+            self.verification_command.set(args)
+        self._show_utility_view("verification")
+        return "Verification opened"
+
+    def _cmd_add(self, _args):
+        self.add_context_files()
+        return "Choose context files"
+
+    def _cmd_image(self, _args):
+        return self.attach_image()
+
+    def _cmd_stop(self, _args):
+        if not self._run_in_progress():
+            return False, "No active run."
+        self.cancel_active_run()
+        return "Stopping"
+
+    def _cmd_exit(self, _args):
+        self.after_idle(self.on_close)
+        return "Closing"
+
+    # Composer pre-processing ------------------------------------------------------
+
+    def _preprocess_prompt(self, text):
+        """Handle /commands and #notes typed into the composer.
+
+        Returns None when the prompt was fully handled locally, else the
+        prompt that should be sent to the model.
+        """
+        if _slash.split_command(text) is not None:
+            handled, ok, message = self.run_slash_command(text)
+            if handled:
+                if message:
+                    self._toast(message, "success" if ok else "danger")
+                self._clear_prompt_after_command(text)
+                return None
+        note = _memory.parse_memory_note(text)
+        if note is not None:
+            ok, message = self._add_memory_note(note)
+            if ok:
+                self._set_prompt_text("")
+            else:
+                self._toast(message, "danger")
+            return None
+        return text
+
+    def _clear_prompt_after_command(self, original):
+        try:
+            if self.instructions.get("1.0", "end-1c").strip() == original.strip():
+                self._set_prompt_text("")
+        except tk.TclError:
+            pass
+
+    def _run_prompt_hooks(self, folder, prompt):
+        if not self.hooks_config.get("UserPromptSubmit"):
+            return True
+        results = _hooks.run_hooks(self.hooks_config, "UserPromptSubmit", folder, {"prompt": prompt},
+                                   env=build_verification_environment())
+        for argv, code, output in results:
+            self.log(f"> hook UserPromptSubmit {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
+        if _hooks.blocked("UserPromptSubmit", results):
+            self._toast("Prompt blocked by a UserPromptSubmit hook", "danger")
+            return False
+        return True
+
+    def _run_apply_hooks(self, event, folder, paths):
+        if not self.hooks_config.get(event):
+            return True
+        results = _hooks.run_hooks(self.hooks_config, event, folder, {"paths": list(paths)},
+                                   env=build_verification_environment())
+        for argv, code, output in results:
+            self.log(f"> hook {event} {' '.join(argv)} → {code} {one_line(self._redact_sensitive(output))}")
+        if _hooks.blocked(event, results):
+            self._toast(f"{event} hook blocked the action", "danger")
+            return False
+        if event == "PostApply" and any(code for _a, code, _o in results):
+            self._toast("A PostApply hook reported a failure", "warning")
+        return True
+
+    def _extra_instruction_context(self, folder):
+        text, labels = _memory.load_memory_files(
+            folder, secrets=[self.api_key, os.environ.get("OPENROUTER_API_KEY", "")],
+            include_user=self.config_data.get("user_memory", True) is not False,
+        )
+        self._memory_labels = labels
+        return text, labels
+
+    def _mention_context(self, prompt):
+        mentions = _mentions.extract_mentions(prompt)
+        self.mentioned_paths = mentions
+        if not mentions:
+            return ""
+        return "Files the user mentioned (prioritise them): " + ", ".join(mentions)
+
+    # Images -------------------------------------------------------------------------
+
+    def attach_image(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Attach image",
+            filetypes=(("Images", "*.png *.jpg *.jpeg *.gif *.webp"), ("All files", "*.*")),
+        )
+        if not path:
+            return False, "No image chosen."
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return False, short_error(exc)
+        if size > IMAGE_MAX_BYTES:
+            return False, f"Image is larger than {IMAGE_MAX_BYTES // (1024 * 1024)} MB."
+        self.attached_images = (self.attached_images + [path])[-IMAGE_MAX_COUNT:]
+        self._toast(f"Image attached · {Path(path).name}", "success")
+        self._refresh_status_strip()
+        return True, f"{len(self.attached_images)} image(s) attached for the next run"
+
+    # Auto gates (approval modes) ---------------------------------------------------
+
+    def _auto_gates(self):
+        if not getattr(self, "_parity_ready", False) or self.lifecycle.closed:
+            return
+        mode = self.approval_mode_value
+        plan = self.pending_plan
+        if plan is not None and not self.plan_gate_enabled and ("plan", id(plan)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("plan", id(plan)))
+            self.log("> plan auto-approved (plan gate off)")
+            self.after_idle(self.approve_plan)
+            return
+        request = self.inspect_request
+        if request is not None and ("inspect", id(request)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("inspect", id(request)))
+            decision = _approval.auto_decision(mode, "inspect", self.approval_rules, request.paths)
+            if decision == "allow":
+                self.log("> inspect auto-allowed by approval mode/rules")
+                self.after_idle(self.allow_inspect)
+            elif decision == "deny":
+                self.log("> inspect auto-denied by a deny rule")
+                self.after_idle(self.deny_inspect)
+            return
+        request = self.verification_request
+        if request is not None and ("verify", id(request)) not in self._auto_gate_seen:
+            self._auto_gate_seen.add(("verify", id(request)))
+            try:
+                policy = verification_command_policy(parse_verification_command(request.command))
+            except ValueError:
+                policy = "blocked"
+            decision = _approval.auto_decision(mode, "verify", self.approval_rules, request.command,
+                                               command_policy_allowed=policy == "allowed")
+            if decision == "allow" and policy != "blocked":
+                self.log("> verification auto-allowed by approval mode/rules")
+                self.after_idle(self.allow_verification)
+            elif decision == "deny":
+                self.log("> verification auto-denied by a deny rule")
+                self.after_idle(self.deny_verification)
+            return
+        proposal = self.pending_proposal
+        if (proposal is not None and mode == _approval.APPROVAL_FULL_AUTO
+                and self.task_state == TASK_STATE_REVIEW and ("apply", id(proposal)) not in self._auto_gate_seen):
+            self._auto_gate_seen.add(("apply", id(proposal)))
+            self.after_idle(lambda: self.pending_proposal is proposal and self.apply_pending(explicit=False))
+
+    # Git + status strip ---------------------------------------------------------
+
+    def _refresh_git_status(self):
+        folder = self.selected_folder.get().strip()
+        status = _git.git_status(folder) if folder else _git.GitStatus()
+        self.git_state = status
+        self.git_text.set(status.label())
+        self._refresh_status_strip()
+        return status
+
+    def _refresh_git_status_async(self):
+        """Deferred to idle time so folder changes and applies stay responsive."""
+        if self.lifecycle.closed or getattr(self, "_git_refresh_after_id", None) is not None:
+            return
+
+        def run():
+            self._git_refresh_after_id = None
+            if not self.lifecycle.closed:
+                self._refresh_git_status()
+
+        try:
+            self._git_refresh_after_id = self.after(120, run)
+        except tk.TclError:
+            self._git_refresh_after_id = None
+
+    def _record_usage(self, payload):
+        if not isinstance(payload, dict):
+            return
+        self.usage_meter.record(
+            payload.get("model", ""), payload.get("prompt_tokens", 0), payload.get("completion_tokens", 0),
+            payload.get("context_window") or None,
+        )
+        self.usage_text.set(self.usage_meter.short_label())
+        self._refresh_status_strip()
+
+    def _refresh_status_strip(self):
+        strip = getattr(self, "status_strip", None)
+        if strip is None:
+            return
+        try:
+            mode = {"suggest": "Suggest", "auto-edit": "Auto-edit", "full-auto": "Full auto"}[self.approval_mode_value]
+            self.status_approval_label.configure(text=mode)
+            self.status_git_label.configure(text=self.git_state.label() or "no git")
+            self.status_usage_label.configure(text=self.usage_meter.short_label())
+            extras = []
+            if self.attached_images:
+                extras.append(f"{len(self.attached_images)} image")
+            if self._memory_labels:
+                extras.append(f"{len(self._memory_labels)} memory")
+            if not self.plan_gate_enabled:
+                extras.append("plan auto")
+            self.status_extra_label.configure(text=" · ".join(extras))
+            fraction = self.usage_meter.context_fraction()
+            self._draw_context_meter(fraction)
+        except tk.TclError:
+            pass
+
+    def _draw_context_meter(self, fraction):
+        canvas = getattr(self, "status_meter", None)
+        if canvas is None:
+            return
+        c = PALETTE
+        width = int(canvas.cget("width"))
+        canvas.coords(self._status_meter_fill, 0, 0, max(0, int(width * fraction)), 4)
+        tone = c["success"] if fraction < 0.6 else (c["warning"] if fraction < 0.85 else c["danger"])
+        canvas.itemconfigure(self._status_meter_fill, fill=tone)
+
+    def _build_status_strip(self):
+        c = PALETTE
+        strip = tk.Frame(self._center_panel, bg=c["canvas"])
+        strip.grid(row=12, column=0, sticky="ew", pady=(self._px(6), 0))
+        self.status_strip = strip
+
+        def chip(text, command=None, hint=None, fg=None):
+            label = tk.Label(strip, text=text, bg=c["canvas"], fg=fg or c["text_subtle"], font=FONTS["small"], padx=self._px(6))
+            label.pack(side=tk.LEFT)
+            if command:
+                label.configure(cursor="hand2")
+                label.bind("<ButtonRelease-1>", lambda _e: command(), add="+")
+                label.bind("<Enter>", lambda _e: label.configure(fg=c["text"]), add="+")
+                label.bind("<Leave>", lambda _e: label.configure(fg=fg or c["text_subtle"]), add="+")
+            if hint:
+                self._attach_tooltip(label, hint)
+            return label
+
+        self.status_approval_label = chip("Suggest", self._cycle_approval_mode, "Approval mode · click to cycle (Shift+Tab)")
+        tk.Frame(strip, bg=c["border"], width=1, height=self._px(12)).pack(side=tk.LEFT, padx=self._px(2))
+        self.status_git_label = chip("no git", lambda: self._show_command_result(self.run_slash_command("/git")), "Git branch and changes · click for details")
+        tk.Frame(strip, bg=c["border"], width=1, height=self._px(12)).pack(side=tk.LEFT, padx=self._px(2))
+        self.status_extra_label = chip("")
+        self.status_usage_label = chip("0 tokens · $0", lambda: self._show_command_result(self.run_slash_command("/cost")), "Session tokens, context use and cost")
+        self.status_usage_label.pack_configure(side=tk.RIGHT)
+        meter = tk.Canvas(strip, width=self._px(44), height=4, bg=c["surface_raised"], highlightthickness=0, borderwidth=0)
+        meter.pack(side=tk.RIGHT, padx=(self._px(6), 0))
+        self.status_meter = meter
+        self._status_meter_fill = meter.create_rectangle(0, 0, 0, 4, fill=c["success"], width=0)
+        self._attach_tooltip(meter, "Context window used by the last prompt")
+        self._refresh_status_strip()
+
+    def _cycle_approval_mode(self, _event=None):
+        modes = _approval.APPROVAL_MODES
+        current = modes.index(self.approval_mode_value)
+        self.set_approval_mode(modes[(current + 1) % len(modes)])
+        return "break"
+
+    def _show_command_result(self, result):
+        _handled, ok, message = result
+        if message:
+            self._toast(message, "success" if ok else "danger")
+
+    # Toasts ----------------------------------------------------------------------
+
+    def _toast(self, text, tone="info"):
+        if self.lifecycle.closed or not getattr(self, "_parity_ready", False):
+            return
+        c = PALETTE
+        accent = {"success": c["success"], "danger": c["danger"], "warning": c["warning"]}.get(tone, c["accent"])
+        toast = getattr(self, "_toast_frame", None)
+        try:
+            if toast is None:
+                toast = tk.Frame(self, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+                self._toast_bar = tk.Frame(toast, bg=accent, width=3)
+                self._toast_bar.pack(side=tk.LEFT, fill=tk.Y)
+                self._toast_label = tk.Label(toast, text="", bg=c["surface_raised"], fg=c["text"], font=FONTS["small"],
+                                             padx=self._px(12), pady=self._px(8), wraplength=self._px(360), justify=tk.LEFT)
+                self._toast_label.pack(side=tk.LEFT)
+                self._toast_frame = toast
+            self._toast_bar.configure(bg=accent)
+            self._toast_label.configure(text=self._redact_sensitive(str(text))[:300], fg=c["text_subtle"])
+            target_y = -self._px(20)
+            start_y = target_y + self._px(14)
+            toast.place(relx=1.0, rely=1.0, x=-self._px(20), y=start_y, anchor="se")
+            toast.lift()
+
+            def apply(t):
+                toast.place_configure(y=int(start_y + (target_y - start_y) * t))
+                self._toast_label.configure(fg=ui_kit.mix(c["text_subtle"], c["text"], t))
+
+            self.animator.tween("toast", 0.24, apply, easing=ui_kit.ease_out_expo)
+            if self._toast_after_id is not None:
+                self.after_cancel(self._toast_after_id)
+            self._toast_after_id = self.after(3200, self._hide_toast)
+        except tk.TclError:
+            pass
+
+    def _hide_toast(self):
+        self._toast_after_id = None
+        toast = getattr(self, "_toast_frame", None)
+        if toast is None or self.lifecycle.closed:
+            return
+        c = PALETTE
+
+        def apply(t):
+            self._toast_label.configure(fg=ui_kit.mix(c["text"], c["surface_raised"], t))
+
+        self.animator.tween("toast", 0.2, apply, easing=ui_kit.ease_in_out, done=lambda: toast.place_forget())
+
+    # Composer suggestions: /commands and @files -----------------------------------
+
+    def _build_composer_suggestions(self):
+        c = PALETTE
+        popup = tk.Frame(self._center_panel, bg=c["surface_raised"], highlightthickness=1, highlightbackground=c["border_strong"])
+        self.suggest_popup = popup
+        self.suggest_list = tk.Listbox(
+            popup, bg=c["surface_raised"], fg=c["text"], font=FONTS["small"], activestyle="none",
+            selectbackground=c["border_strong"], selectforeground=c["text"], highlightthickness=0,
+            borderwidth=0, height=6, exportselection=False,
+        )
+        self.suggest_list.pack(fill=tk.BOTH, expand=True, padx=self._px(4), pady=self._px(4))
+        self.suggest_list.bind("<ButtonRelease-1>", lambda _e: self._accept_suggestion(), add="+")
+        self.instructions.bind("<KeyRelease>", self._on_composer_key, add="+")
+        for key in ("<Tab>", "<Down>", "<Up>", "<Escape>"):
+            self.instructions.bind(key, self._on_composer_nav, add="+")
+        self.instructions.bind("<Return>", self._on_composer_return, add="+")
+
+    def _known_project_paths(self):
+        return list(getattr(self, "_scanned_context_paths", ()) or ())
+
+    def _on_composer_key(self, event=None):
+        if event is not None and event.keysym in {"Up", "Down", "Tab", "Escape", "Return"}:
+            return None
+        try:
+            before = self.instructions.get("1.0", tk.INSERT)
+        except tk.TclError:
+            return None
+        items, kind = [], None
+        stripped = before.lstrip()
+        if stripped.startswith("/") and "\n" not in stripped and " " not in stripped:
+            items = [(f"/{cmd.name}", cmd.description) for cmd in self.command_registry.complete(stripped)]
+            kind = "command"
+        else:
+            prefix = _mentions.current_mention_prefix(before)
+            if prefix is not None:
+                items = [(f"@{path}", "") for path in _mentions.complete_mention(prefix, self._known_project_paths())]
+                kind = "mention"
+        self._show_suggestions(items, kind)
+        return None
+
+    def _show_suggestions(self, items, kind):
+        popup = getattr(self, "suggest_popup", None)
+        if popup is None:
+            return
+        self._suggest_items, self._suggest_kind = items, kind
+        if not items:
+            popup.place_forget()
+            return
+        listbox = self.suggest_list
+        listbox.delete(0, tk.END)
+        width = 0
+        for label, description in items:
+            text = f"{label}   {description}" if description else label
+            width = max(width, len(text))
+            listbox.insert(tk.END, text)
+        listbox.selection_clear(0, tk.END)
+        listbox.selection_set(0)
+        listbox.configure(height=min(8, len(items)), width=min(90, max(24, width)))
+        try:
+            card = self.composer_card
+            popup.place(in_=card, x=0, y=-self._px(6), anchor="sw")
+            popup.lift()
+        except tk.TclError:
+            pass
+
+    def _suggestions_visible(self):
+        popup = getattr(self, "suggest_popup", None)
+        return bool(popup is not None and popup.winfo_manager() and self._suggest_items)
+
+    def _on_composer_nav(self, event):
+        if not self._suggestions_visible():
+            return None
+        listbox = self.suggest_list
+        current = listbox.curselection()
+        index = current[0] if current else 0
+        if event.keysym == "Escape":
+            self._show_suggestions([], None)
+            return "break"
+        if event.keysym == "Tab":
+            self._accept_suggestion()
+            return "break"
+        index = (index + (1 if event.keysym == "Down" else -1)) % len(self._suggest_items)
+        listbox.selection_clear(0, tk.END)
+        listbox.selection_set(index)
+        listbox.see(index)
+        return "break"
+
+    def _on_composer_return(self, event):
+        if self._suggestions_visible() and not (event.state & 0x4):
+            self._accept_suggestion()
+            return "break"
+        return None
+
+    def _accept_suggestion(self):
+        if not self._suggest_items:
+            return
+        current = self.suggest_list.curselection()
+        label = self._suggest_items[current[0] if current else 0][0]
+        try:
+            before = self.instructions.get("1.0", tk.INSERT)
+            if self._suggest_kind == "command":
+                start = f"1.0+{len(before) - len(before.lstrip())}c"
+                self.instructions.delete(start, tk.INSERT)
+                self.instructions.insert(start, label + " ")
+            else:
+                prefix = _mentions.current_mention_prefix(before) or ""
+                self.instructions.delete(f"{tk.INSERT}-{len(prefix) + 1}c", tk.INSERT)
+                self.instructions.insert(tk.INSERT, label + " ")
+        except tk.TclError:
+            pass
+        self._show_suggestions([], None)
+        self._sync_prompt_placeholder()
+
+    # Settings drawer: agent preferences --------------------------------------------
+
+    def _build_agent_preferences(self):
+        c = PALETTE
+        sidebar = self._legacy_sidebar
+        frame = tk.Frame(sidebar, bg=c["canvas"])
+        frame.grid(row=12, column=0, sticky="ew", pady=(0, 0))
+        frame.columnconfigure(0, weight=1)
+        self._sidebar_rows[frame] = 12
+        self.agent_preferences_frame = frame
+        row = 0
+
+        def heading(text):
+            nonlocal row
+            ttk.Label(frame, text=text, style="Section.TLabel").grid(row=row, column=0, sticky="w", pady=(self._px(10), self._px(4)))
+            row += 1
+
+        def segmented(variable, options, command):
+            nonlocal row
+            group = tk.Frame(frame, bg=c["surface_alt"], padx=2, pady=2)
+            group.grid(row=row, column=0, sticky="ew")
+            row += 1
+            buttons = []
+            for index, (value, label) in enumerate(options):
+                group.columnconfigure(index, weight=1, uniform="seg")
+                button = tk.Label(group, text=label, bg=c["surface_alt"], fg=c["text_muted"], font=FONTS["small"],
+                                  padx=self._px(6), pady=self._px(5), cursor="hand2", takefocus=1)
+                button.grid(row=0, column=index, sticky="ew")
+                button.bind("<ButtonRelease-1>", lambda _e, v=value: command(v), add="+")
+                button.bind("<Return>", lambda _e, v=value: command(v), add="+")
+                button.bind("<space>", lambda _e, v=value: command(v), add="+")
+                buttons.append((value, button))
+
+            def sync(*_args):
+                current = variable.get()
+                for value, button in buttons:
+                    selected = value == current
+                    target_bg = c["surface_raised"] if selected else c["surface_alt"]
+                    self._tween_color(("seg", str(button)), button, "bg", target_bg, 0.14)
+                    button.configure(fg=c["text"] if selected else c["text_muted"])
+
+            variable.trace_add("write", sync)
+            sync()
+            return buttons
+
+        heading("Approval")
+        segmented(self.approval_mode_var, (("suggest", "Suggest"), ("auto-edit", "Auto-edit"), ("full-auto", "Full auto")),
+                  lambda v: self.set_approval_mode(v))
+        self.approval_note_label = tk.Label(frame, text="", bg=c["canvas"], fg=c["text_subtle"], font=FONTS["small"],
+                                            wraplength=self._px(250), justify=tk.LEFT, anchor="w")
+        self.approval_note_label.grid(row=row, column=0, sticky="ew", pady=(self._px(6), 0))
+        row += 1
+        self.approval_mode_var.trace_add("write", lambda *_a: self.approval_note_label.configure(
+            text=_approval.APPROVAL_LABELS.get(self.approval_mode_var.get(), "")))
+        self.approval_note_label.configure(text=_approval.APPROVAL_LABELS[self.approval_mode_value])
+
+        heading("Output style")
+        segmented(self.style_var, (("concise", "Concise"), ("default", "Default"), ("explanatory", "Explain")),
+                  lambda v: self.set_output_style(v))
+        heading("Reasoning effort")
+        segmented(self.effort_var, (("default", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High")),
+                  lambda v: self.set_reasoning_effort(v))
+        heading("Theme")
+        segmented(self.theme_var, (("dark", "Dark"), ("light", "Light"), ("system", "System")),
+                  lambda v: self.set_theme(v) and self._toast("Theme applies on next start"))
+
+        toggle = ttk.Checkbutton(frame, text="Approve each plan (plan gate)", variable=self.plan_gate_var,
+                                 command=lambda: self.set_plan_gate(self.plan_gate_var.get()), style="Mode.TCheckbutton", takefocus=True)
+        toggle.grid(row=row, column=0, sticky="w", pady=(self._px(14), 0))
+        row += 1
+        self.plan_gate_button = toggle
+
+        open_config = ttk.Button(frame, text="Open config file", command=self._open_config_file, style="Secondary.TButton", takefocus=True)
+        open_config.grid(row=row, column=0, sticky="w", pady=(self._px(10), 0))
+        self._attach_tooltip(open_config, "Rules, hooks, temperature and more · /allow /deny /hooks /temperature")
+        self._sidebar_rows[frame] = 12
+
+    def _open_config_file(self):
+        if not CONFIG_PATH.exists():
+            self._save_config_quietly()
+        try:
+            if os.name == "nt":
+                os.startfile(str(CONFIG_PATH))  # noqa: S606 - local file the user owns
+            else:
+                webbrowser.open(CONFIG_PATH.as_uri())
+        except OSError as exc:
+            self._toast(f"Could not open config: {short_error(exc)}", "danger")
+
+    def _finish_parity_ui(self):
+        self._build_status_strip()
+        self._build_composer_suggestions()
+        self._build_agent_preferences()
+        self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
+        self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
+        self._parity_ready = True
+        global USAGE_SINK
+        USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
+        self._refresh_git_status_async()
+        self._refresh_status_strip()
+
+    def _on_clear_shortcut(self, _event=None):
+        if not self._run_in_progress():
+            self.reset_session()
+        return "break"
+
+    def _on_shift_tab(self, event=None):
+        if event is not None and event.widget is self.instructions:
+            return self._cycle_approval_mode()
+        return None
 
     def _validate_folder(self, show_error=True):
         folder_text = self.selected_folder.get().strip()
@@ -11739,6 +12861,128 @@ def assemble_openrouter_stream(response, is_current=None, emit_chunk=None, chunk
     return "".join(assembled)
 
 
+OUTPUT_STYLES = {
+    "default": "",
+    "concise": " Keep every summary and plan step terse: short sentences, no filler.",
+    "explanatory": (
+        " In summaries, briefly explain why each change is made and the trade-offs, "
+        "so the user learns the codebase."
+    ),
+}
+REASONING_EFFORTS = ("low", "medium", "high")
+# Set by the app (or CLI) before a run; read by provider calls.
+GENERATION_SETTINGS = {"temperature": None, "style": "default", "reasoning_effort": "", "images": ()}
+
+
+def configure_generation(temperature=None, style=None, reasoning_effort=None):
+    if temperature is not None:
+        try:
+            value = float(temperature)
+        except (TypeError, ValueError):
+            value = None
+        GENERATION_SETTINGS["temperature"] = None if value is None else max(0.0, min(1.0, value))
+    if style is not None:
+        GENERATION_SETTINGS["style"] = style if style in OUTPUT_STYLES else "default"
+    if reasoning_effort is not None:
+        GENERATION_SETTINGS["reasoning_effort"] = reasoning_effort if reasoning_effort in REASONING_EFFORTS else ""
+    return dict(GENERATION_SETTINGS)
+
+
+def generation_style_suffix():
+    return OUTPUT_STYLES.get(GENERATION_SETTINGS.get("style") or "default", "")
+
+
+def apply_generation_settings(payload):
+    temperature = GENERATION_SETTINGS.get("temperature")
+    if temperature is not None:
+        payload["temperature"] = temperature
+    effort = GENERATION_SETTINGS.get("reasoning_effort")
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+    images = GENERATION_SETTINGS.get("images") or ()
+    messages = payload.get("messages") or []
+    if images and messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
+        messages[-1] = {
+            "role": "user",
+            "content": [{"type": "text", "text": messages[-1]["content"]}]
+            + [{"type": "image_url", "image_url": {"url": url}} for url in images],
+        }
+    return payload
+
+
+IMAGE_MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _encode_images(paths):
+    urls = []
+    for path in list(paths or ())[:IMAGE_MAX_COUNT]:
+        mime = IMAGE_MIME_TYPES.get(Path(path).suffix.casefold())
+        if not mime:
+            continue
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        if len(data) <= IMAGE_MAX_BYTES:
+            urls.append(f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}")
+    return tuple(urls)
+
+
+# Optional callable(dict) receiving token estimates for each provider call.
+USAGE_SINK = None
+
+
+def _emit_usage(log_queue, run_id, event_is_current, api_key, model, prompt_text, completion_text):
+    sink = USAGE_SINK
+    if sink is None:
+        return
+    try:
+        sink({
+            "model": str(model),
+            "prompt_tokens": (len(prompt_text or "") + 3) // 4,
+            "completion_tokens": (len(str(completion_text or "")) + 3) // 4,
+            "context_window": getattr(model, "context_length", None) or 0,
+        })
+    except Exception:
+        pass
+
+
+def complete_text(api_key, prompt, model_queue=None, system="You are a concise assistant.", timeout=None):
+    """One plain-text completion from the first free model that answers."""
+    queue_models = list(model_queue or MODEL_FALLBACKS)
+    last_error = None
+    for model in queue_models[:4]:
+        payload = apply_generation_settings({
+            "model": str(model),
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "stream": True,
+        })
+        request = Request(
+            OPENROUTER_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://local.coderouter",
+                "X-Title": APP_TITLE,
+            },
+            method="POST",
+        )
+        response = None
+        try:
+            response = urlopen(request, timeout=timeout or PROVIDER_REQUEST_TIMEOUT_SECONDS)
+            text = assemble_openrouter_stream(response)
+            if str(text or "").strip():
+                return str(text).strip(), str(model)
+        except Exception as exc:  # try the next free model
+            last_error = exc
+        finally:
+            if response is not None:
+                _close_provider_response(response)
+    raise RuntimeError(f"No free model answered: {short_error(last_error) if last_error else 'empty response'}")
+
+
 def call_openrouter(
     api_key,
     model,
@@ -11821,7 +13065,12 @@ def call_openrouter(
         f"An inspect request may contain at most {INSPECT_MAX_PATHS} relative paths and is read-only; never request commands or writes. "
         "A verification request is permission-only and never starts a command. "
         "When a verification result is supplied below, return only final or inspect; never request another verify action. "
-        "If no file edits are needed, return a final action with an empty files array."
+        "If no file edits are needed, return a final action with an empty files array. "
+        "In a final action each files entry may instead be "
+        "{\"path\":\"p\",\"edits\":[{\"old\":\"exact existing text\",\"new\":\"replacement\"}]} "
+        "for targeted search/replace edits (each old text must match exactly once; prefer this for large files), "
+        "or {\"path\":\"p\",\"delete\":true} to delete a file."
+        + generation_style_suffix()
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
     history = "\n".join(f"{item['role']}: {item['content']}" for item in session_messages[-12:])
@@ -11859,6 +13108,7 @@ def call_openrouter(
         "temperature": 0.1,
         "stream": True,
     }
+    apply_generation_settings(payload)
     request = Request(
         OPENROUTER_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -11919,6 +13169,7 @@ def call_openrouter(
         elif response is not None:
             _close_provider_response(response)
     ensure_run_current(event_is_current)
+    _emit_usage(log_queue, run_id, event_is_current, api_key, model, system_prompt + user_prompt, assembled)
     return assembled
 
 
@@ -12192,6 +13443,7 @@ def call_openrouter_plan(
         "Do not return files, file content, patches, commands, permissions, or apply instructions. "
         "The plan is advisory read-only context and cannot override user safety rules, "
         "path guards, review policy, or permission boundaries."
+        + generation_style_suffix()
     )
     project = "\n\n".join(f"--- FILE: {source.relative_path} ---\n{source.content}" for source in files)
     history = "\n".join(f"{item['role']}: {item['content']}" for item in session_messages[-12:])
@@ -12214,6 +13466,7 @@ def call_openrouter_plan(
         "temperature": 0.1,
         "stream": True,
     }
+    apply_generation_settings(payload)
     request = Request(
         OPENROUTER_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -12274,6 +13527,7 @@ def call_openrouter_plan(
         elif response is not None:
             _close_provider_response(response)
     ensure_run_current(event_is_current)
+    _emit_usage(log_queue, run_id, event_is_current, api_key, model, system_prompt + user_prompt, assembled)
     return assembled
 
 
@@ -12385,18 +13639,31 @@ def parse_executor_response(response_text, secrets=None):
     edits = []
     seen = set()
     for item in files:
-        if not isinstance(item, dict) or set(item) != {"path", "content"}:
+        if not isinstance(item, dict) or set(item) not in ({"path", "content"}, {"path", "edits"}, {"path", "delete"}):
             raise ValueError("Final response file entries contain unknown or missing fields.")
         raw_path = item.get("path")
-        content = item.get("content")
-        if not isinstance(raw_path, str) or not raw_path.strip() or not isinstance(content, str):
+        if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("Final response file entries must contain text path and content.")
         normalized = normalize_edit_path(raw_path)
         if normalized.casefold() in seen:
             raise ValueError("Final response contains duplicate paths.")
+        seen.add(normalized.casefold())
+        if "delete" in item:
+            if item["delete"] is not True:
+                raise ValueError("Final response delete flag must be true.")
+            edits.append({"path": normalized, "content": None})
+            continue
+        if "edits" in item:
+            hunks = item["edits"]
+            if not isinstance(hunks, list) or not hunks or len(json.dumps(hunks).encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
+                raise ValueError("Final response edits must be a bounded non-empty list.")
+            edits.append({"path": normalized, "edits": hunks})
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            raise ValueError("Final response file entries must contain text path and content.")
         if len(content.encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
             raise ValueError("Final response file content is too large.")
-        seen.add(normalized.casefold())
         edits.append({"path": normalized, "content": content})
     return {"action": "final", "summary": summary.strip(), "files": edits}
 
@@ -12431,6 +13698,29 @@ def parse_model_response(response_text):
     return {"summary": data.get("summary", "").strip(), "files": edits}
 
 
+def resolve_edit_hunks(root, edits):
+    """Turn {"path","edits"} search/replace entries into full-content edits."""
+    root = Path(root).resolve()
+    resolved = []
+    for edit in edits:
+        if "edits" not in edit:
+            resolved.append(edit)
+            continue
+        _normalized, target = resolve_edit_target(root, edit["path"])
+        original = ""
+        if target.is_file():
+            raw = target.read_bytes()
+            try:
+                original = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{edit['path']}: search/replace edits need a UTF-8 file.") from exc
+        content = _edit_ops.apply_hunks(original, edit["edits"], edit["path"])
+        if len(content.encode("utf-8")) > MODEL_RESPONSE_MAX_CONTENT_BYTES:
+            raise ValueError("Final response file content is too large.")
+        resolved.append({"path": edit["path"], "content": content})
+    return resolved
+
+
 def render_diff_by_path(root, edits):
     root = Path(root).resolve()
     result = {}
@@ -12444,15 +13734,17 @@ def render_diff_by_path(root, edits):
         else:
             old_content = ""
         old_lines = old_content.splitlines(keepends=True)
-        new_lines = edit["content"].splitlines(keepends=True)
+        new_content = edit.get("content")
+        new_lines = [] if new_content is None else new_content.splitlines(keepends=True)
         diff = difflib.unified_diff(
             old_lines,
             new_lines,
             fromfile=f"a/{edit['path']}",
-            tofile=f"b/{edit['path']}",
+            tofile="/dev/null" if new_content is None else f"b/{edit['path']}",
             lineterm="",
         )
-        lines = [f"--- FILE {edit['path']} ---\n"]
+        marker = " (deleted)" if new_content is None else ""
+        lines = [f"--- FILE {edit['path']}{marker} ---\n"]
         for line in diff:
             lines.append(line if line.endswith("\n") else line + "\n")
         result[edit["path"]] = "".join(lines)
@@ -12499,7 +13791,7 @@ def build_undo_transaction(proposal):
             raise ValueError(f"Undo original content is invalid: {normalized}")
         if _sha256_bytes(original) != precondition.original_sha256:
             raise ValueError(f"Undo original precondition is invalid: {normalized}")
-        new_bytes = edit.content.encode("utf-8")
+        new_bytes = None if edit.content is None else edit.content.encode("utf-8")
         if original == new_bytes:
             continue
         total_bytes += len(original or b"") + len(new_bytes)
@@ -12687,7 +13979,9 @@ def create_pending_proposal(snapshot, edits):
         normalized, target = resolve_edit_target(project_root, relative_path)
         if normalized in seen_paths:
             raise ValueError(f"Duplicate proposal path: {normalized}")
-        if not isinstance(content, str):
+        if content is None and not target.is_file():
+            raise ValueError(f"Cannot delete a missing file: {normalized}")
+        if content is not None and not isinstance(content, str):
             raise ValueError(f"Proposal content must be text: {normalized}")
         seen_paths.add(normalized)
         original_bytes = target.read_bytes() if target.exists() else None
@@ -12763,7 +14057,7 @@ def apply_proposal_transactionally(proposal, current_root, current_task_state, c
         current_bytes = target.read_bytes() if target.exists() else None
         if _sha256_bytes(current_bytes) != precondition.original_sha256 or current_bytes != precondition.original_bytes:
             raise ValueError(f"File changed since proposal was created: {edit.relative_path}")
-        new_bytes = edit.content.encode("utf-8")
+        new_bytes = None if edit.content is None else edit.content.encode("utf-8")
         if current_bytes != new_bytes:
             operations.append((target, current_bytes, new_bytes))
 
@@ -12773,6 +14067,10 @@ def apply_proposal_transactionally(proposal, current_root, current_task_state, c
     try:
         for target, original_bytes, new_bytes in operations:
             ensure_run_current(is_current)
+            if new_bytes is None:
+                target.unlink()
+                applied.append((target, original_bytes))
+                continue
             missing_directories = []
             parent = target.parent
             cursor = parent

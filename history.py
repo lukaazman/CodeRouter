@@ -33,11 +33,23 @@ def _history_timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def user_data_dir():
+    """Per-user data directory, never inside the repository."""
+    override = os.environ.get("CODEROUTER_DATA_DIR")
+    if override:
+        return Path(override)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / APP_TITLE
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / APP_TITLE
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / APP_TITLE
+
+
 def default_history_path():
     """Return the user-local history path, never a path inside the repository."""
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / APP_TITLE / "history.json"
+    return user_data_dir() / "history.json"
 
 
 HISTORY_PATH = default_history_path()
