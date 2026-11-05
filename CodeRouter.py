@@ -4772,19 +4772,66 @@ class CodeAgentApp(tk.Tk):
         tiles.pack(pady=(self._px(22), 0))
         self.empty_tiles_frame = tiles
         self._empty_tiles = []
-        for icon, label, prefix in self.PROMPT_STARTERS:
+        self._empty_tile_parts = []
+        self._starter_actions = list(self.PROMPT_STARTERS)
+        self._starter_signature = None
+        for index, (icon, label, _prefix) in enumerate(self.PROMPT_STARTERS):
             tile = tk.Frame(tiles, bg=c["canvas"], padx=self._px(14), pady=self._px(12))
             icon_label = tk.Label(tile, image=self._icon(icon, 18, c["text_muted"]), bg=c["canvas"])
             icon_label.pack(anchor="w")
-            tk.Label(tile, text=label, bg=c["canvas"], fg=c["text"], font=FONTS["body"]).pack(anchor="w", pady=(self._px(10), 0))
+            text_label = tk.Label(tile, text=label, bg=c["canvas"], fg=c["text"], font=FONTS["body"])
+            text_label.pack(anchor="w", pady=(self._px(10), 0))
+            icon_spec = [icon, 18, c["text_muted"]]
             self._make_clickable(
-                tile, lambda value=prefix: self._prefill_prompt(value),
-                icon_labels=((icon_label, (icon, 18, c["text_muted"])),),
+                tile, lambda i=index: self._run_starter(i),
+                icon_labels=((icon_label, icon_spec),),
             )
             self._empty_tiles.append(tile)
+            self._empty_tile_parts.append((icon_label, text_label, icon_spec))
         self._empty_tile_columns = None
         self._layout_empty_tiles(4)
         hero.bind("<Configure>", self._on_empty_state_configure, add="+")
+
+    def _starter_set(self):
+        """Starters that fit the project's state: an empty screen invites the next step."""
+        folder = self.selected_folder.get().strip()
+        if not folder:
+            return (("folder", "Open a project", "@open"),) + self.PROMPT_STARTERS[1:]
+        starters = []
+        status = getattr(self, "git_state", None)
+        if status is not None and status.dirty:
+            starters += [("review", "Review my changes", "/code-review"), ("check", "Commit changes", "/commit")]
+        if not (Path(folder) / PROJECT_INSTRUCTIONS_FILENAME).exists():
+            starters.append(("doc", "Write AGENTS.md", "/init"))
+        for starter in self.PROMPT_STARTERS:
+            if len(starters) >= 4:
+                break
+            starters.append(starter)
+        return tuple(starters[:4])
+
+    def _refresh_starters(self):
+        parts = getattr(self, "_empty_tile_parts", None)
+        if not parts:
+            return
+        starters = self._starter_set()
+        if starters == self._starter_signature:
+            return
+        self._starter_signature = starters
+        self._starter_actions = list(starters)
+        c = PALETTE
+        for (icon_label, text_label, spec), (icon, label, _action) in zip(parts, starters):
+            spec[0] = icon
+            icon_label.configure(image=self._icon(icon, 18, c["text_muted"], icon_label.cget("bg")))
+            text_label.configure(text=label)
+
+    def _run_starter(self, index):
+        icon, label, action = self._starter_actions[index]
+        if action == "@open":
+            self.choose_folder()
+        elif action.startswith("/"):
+            self._show_command_result(self.run_slash_command(action))
+        else:
+            self._prefill_prompt(action)
 
     def _animate_empty_entrance(self):
         """Fade starter tiles in with a short stagger (colour only, no layout)."""
@@ -4907,6 +4954,8 @@ class CodeAgentApp(tk.Tk):
         try:
             text = self.summary.get("1.0", "end-1c").strip()
             empty = text in self.EMPTY_SUMMARY_TEXTS and not self.pending_plan and not self._run_in_progress()
+            if empty:
+                self._refresh_starters()
             if empty and not hero.winfo_manager():
                 hero.place(in_=self.summary.frame, relx=0, rely=0, relwidth=1, relheight=1)
                 self._animate_empty_entrance()

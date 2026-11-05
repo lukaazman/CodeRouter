@@ -304,6 +304,18 @@ class ParityAppTests(unittest.TestCase):
         self.app.set_plan_gate(True)
         self.app.set_approval_mode("suggest", announce=False)
 
+    def test_starters_follow_project_state(self):
+        self.app.selected_folder.set("")
+        self.assertEqual(self.app._starter_set()[0][1], "Open a project")
+        self.app.selected_folder.set(self.project.name)
+        self.assertEqual(self.app._starter_set()[0][2], "/init")
+        Path(self.project.name, "AGENTS.md").write_text("x", encoding="utf-8")
+        self.app.git_state = wrapper._git.GitStatus(True, "main", 0, 0, ((" M", "a.py"),))
+        labels = [item[1] for item in self.app._starter_set()]
+        self.assertEqual(labels[:2], ["Review my changes", "Commit changes"])
+        self.app._refresh_starters()
+        self.assertEqual(self.app._empty_tile_parts[0][1].cget("text"), "Review my changes")
+
 
 if __name__ == "__main__":
     unittest.main()
