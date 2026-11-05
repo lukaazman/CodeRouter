@@ -244,7 +244,7 @@ class CommandRegistry:
         lines += [
             "",
             "Shortcuts",
-            "  Ctrl+Enter run · Ctrl+K commands · Ctrl+L clear · Ctrl+Z undo apply (outside text)",
+            "  Ctrl+Enter run · Ctrl+K commands · Ctrl+L new chat · Shift+Tab approval mode",
             "  Esc cancel/close · @path mention a file · #note save to memory · /name custom command",
         ]
         return "\n".join(lines)

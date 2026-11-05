@@ -4114,6 +4114,8 @@ class CodeAgentApp(tk.Tk):
         self._overhaul_drawer()
         self._overhaul_text_surfaces()
         self.bind("<Configure>", self._on_window_configure, add="+")
+        # The first Configure can arrive before the window is mapped.
+        self.bind("<Map>", lambda event: event.widget is self and self.after_idle(self._apply_breakpoints), add="+")
         self._overhaul_ready = True
         self._sync_chrome()
         self._sync_empty_state()
@@ -4666,8 +4668,9 @@ class CodeAgentApp(tk.Tk):
         self.prompt_placeholder.bind("<Button-1>", lambda _event: self.instructions.focus_set())
         for sequence in ("<KeyRelease>", "<<Modified>>", "<FocusIn>", "<FocusOut>"):
             self.instructions.bind(sequence, lambda _event: self._sync_prompt_placeholder(), add="+")
-        self.instructions.bind("<FocusIn>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border_strong"]), add="+")
-        self.instructions.bind("<FocusOut>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border"]), add="+")
+        focus_ring = ui_kit.mix(c["border_strong"], c["accent"], 0.55)
+        self.instructions.bind("<FocusIn>", lambda _event: self._tween_color("card", card, "highlightbackground", focus_ring, ui_kit.DURATION["hover_in"]), add="+")
+        self.instructions.bind("<FocusOut>", lambda _event: self._tween_color("card", card, "highlightbackground", c["border"], ui_kit.DURATION["hover_out"]), add="+")
 
         composer_actions.configure(bg=c["surface_alt"], padx=self._px(8), pady=self._px(8))
         for column in range(8):
@@ -4738,7 +4741,8 @@ class CodeAgentApp(tk.Tk):
         self.router_canvas = tk.Canvas(inner, width=self._px(340), height=self._px(116), bg=c["canvas"], highlightthickness=0)
         self.router_canvas.pack()
         self._draw_router_graphic()
-        tk.Label(inner, text="What should we build?", bg=c["canvas"], fg=c["text"], font=FONTS["display"]).pack(pady=(self._px(20), self._px(6)))
+        self.empty_heading = tk.Label(inner, text="What should we build?", bg=c["canvas"], fg=c["text"], font=FONTS["display"])
+        self.empty_heading.pack(pady=(self._px(20), self._px(6)))
 
         project = tk.Frame(inner, bg=c["canvas"], padx=self._px(8), pady=self._px(3))
         project.pack()
@@ -4799,6 +4803,15 @@ class CodeAgentApp(tk.Tk):
 
     def _on_empty_state_configure(self, event):
         self._layout_empty_tiles(4 if event.width >= self._px(620) else 2)
+        # Short windows drop the decorative graphic instead of clipping it.
+        compact = event.height < self._px(470 if self._empty_tile_columns == 2 else 380)
+        try:
+            if compact and self.router_canvas.winfo_manager():
+                self.router_canvas.pack_forget()
+            elif not compact and not self.router_canvas.winfo_manager():
+                self.router_canvas.pack(before=self.empty_heading)
+        except tk.TclError:
+            pass
 
     def _router_paths(self):
         s = self._px
@@ -11388,6 +11401,10 @@ class CodeAgentApp(tk.Tk):
         self._build_agent_preferences()
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
+        try:
+            self.bind_all("<ISO_Left_Tab>", self._on_shift_tab, add="+")  # X11 reports Shift+Tab this way
+        except tk.TclError:
+            pass
         self._parity_ready = True
         global USAGE_SINK
         USAGE_SINK = lambda payload: self._parity_queue.put(("usage", payload))
@@ -12913,14 +12930,14 @@ def generation_style_suffix():
     return OUTPUT_STYLES.get(GENERATION_SETTINGS.get("style") or "default", "")
 
 
-def apply_generation_settings(payload):
+def apply_generation_settings(payload, attach_images=True):
     temperature = GENERATION_SETTINGS.get("temperature")
     if temperature is not None:
         payload["temperature"] = temperature
     effort = GENERATION_SETTINGS.get("reasoning_effort")
     if effort:
         payload["reasoning"] = {"effort": effort}
-    images = GENERATION_SETTINGS.get("images") or ()
+    images = (GENERATION_SETTINGS.get("images") or ()) if attach_images else ()
     messages = payload.get("messages") or []
     if images and messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
         messages[-1] = {
@@ -12979,7 +12996,7 @@ def complete_text(api_key, prompt, model_queue=None, system="You are a concise a
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "temperature": 0.2,
             "stream": True,
-        })
+        }, attach_images=False)
         request = Request(
             OPENROUTER_URL,
             data=json.dumps(payload).encode("utf-8"),
