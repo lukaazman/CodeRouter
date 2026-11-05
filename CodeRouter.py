@@ -10446,6 +10446,8 @@ class CodeAgentApp(tk.Tk):
                 return
             if kind == "compact":
                 self._finish_compact(payload)
+            elif kind == "review":
+                self._finish_review(payload)
             elif kind == "usage":
                 self._record_usage(payload)
             elif kind == "log":
@@ -10917,6 +10919,113 @@ class CodeAgentApp(tk.Tk):
 
     def _cmd_image(self, _args):
         return self.attach_image()
+
+    def _cmd_code_review(self, args):
+        folder = self._validate_folder(show_error=False)
+        if not folder or not _git.is_git_repo(folder):
+            return False, "Code review needs a git repository."
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        diff = _git.git_review_diff(folder, args.strip())
+        if not diff.strip() or diff.startswith("("):
+            return False, diff.strip() or "No changes to review."
+        prompt = _git.REVIEW_PROMPT + self._redact_sensitive(diff)
+        api_key = self.api_key
+        target = args.strip() or "working tree"
+        self._transcript_add("user", f"/code-review {target}")
+        self.set_summary(f"Reviewing {target} with a free model…")
+
+        def work():
+            try:
+                text, model = complete_text(api_key, prompt, system="You are a precise code reviewer.")
+            except Exception as exc:
+                text, model = f"Review failed: {short_error(exc)}", ""
+            self._parity_queue.put(("review", (text, model)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return f"Reviewing {target}"
+
+    def _finish_review(self, payload):
+        text, model = payload
+        body = self._redact_sensitive(text)
+        self._transcript_add("agent", body + (f"\n\n(reviewed by {model})" if model else ""))
+        self.set_summary("Review done. Ask for fixes in the composer.")
+
+    def _cmd_mention(self, args):
+        path = args.strip().lstrip("@")
+        if not path:
+            return False, "Usage: /mention <path>"
+        self.instructions.insert(tk.INSERT, f"@{path} ")
+        self._sync_prompt_placeholder()
+        self.instructions.focus_set()
+        return f"Mentioned @{path}"
+
+    def _last_agent_reply(self):
+        for role, body in reversed(getattr(self, "transcript", [])):
+            if role == "agent":
+                return body
+        return self.last_summary
+
+    def _cmd_copy(self, _args):
+        reply = self._last_agent_reply()
+        if not reply:
+            return False, "Nothing to copy yet."
+        self.clipboard_clear()
+        self.clipboard_append(reply)
+        return "Copied the last reply"
+
+    def _conversation_markdown(self):
+        title = self.conversation.title or "CodeRouter conversation"
+        lines = [f"# {title}", ""]
+        for role, body in getattr(self, "transcript", []):
+            lines += [f"## {self.TRANSCRIPT_ROLE_LABELS.get(role, role)}", "", body, ""]
+        return "\n".join(lines)
+
+    def _cmd_save(self, args):
+        if not getattr(self, "transcript", None):
+            return False, "Nothing to save yet."
+        target = args.strip()
+        if not target:
+            target = filedialog.asksaveasfilename(parent=self, defaultextension=".md",
+                                                  filetypes=(("Markdown", "*.md"), ("All files", "*.*")))
+        if not target:
+            return False, "Save cancelled."
+        path = Path(target)
+        if not path.is_absolute():
+            folder = self._validate_folder(show_error=False)
+            path = (Path(folder) if folder else Path.cwd()) / path
+        path.write_text(self._conversation_markdown(), encoding="utf-8")
+        return f"Saved {path.name}"
+
+    def _cmd_rename(self, args):
+        title = " ".join(args.split())[:80]
+        if not title:
+            return False, "Usage: /rename <title>"
+        self.conversation.title = title
+        self._persist_conversation()
+        return f"Conversation renamed to {title}"
+
+    def _cmd_doctor(self, _args):
+        import platform
+        import sys as _sys
+
+        folder = self.selected_folder.get().strip()
+        checks = [
+            ("Python", platform.python_version(), _sys.version_info >= (3, 10)),
+            ("Tk", str(tk.TkVersion), tk.TkVersion >= 8.6),
+            ("git", "found" if _git.git_available() else "missing", _git.git_available()),
+            ("OpenRouter key", "set" if self.api_key else "missing", bool(self.api_key)),
+            ("Project", folder or "none", bool(folder) and Path(folder).is_dir()),
+            ("Config", str(CONFIG_PATH), True),
+            ("Data folder", str(self.session_store.directory.parent), True),
+            ("Custom commands", str(len(self.command_registry.custom)), True),
+            ("Hooks", str(sum(len(v) for v in self.hooks_config.values())), True),
+            ("Theme", self.theme_name, True),
+        ]
+        lines = ["Doctor"] + [f"  {'ok ' if ok else 'fix'}  {name}: {value}" for name, value, ok in checks]
+        self._show_output("\n".join(lines))
+        problems = sum(1 for *_rest, ok in checks if not ok)
+        return (problems == 0, "All checks passed" if not problems else f"{problems} check(s) need attention")
 
     def _cmd_stop(self, _args):
         if not self._run_in_progress():

@@ -114,6 +114,40 @@ def git_diff(root, staged=False, max_chars=GIT_DIFF_MAX_CHARS):
     return out
 
 
+def git_review_diff(root, base="", max_chars=GIT_DIFF_MAX_CHARS):
+    """Diff to review: against base (merge-base) or the working tree incl. untracked files."""
+    if base:
+        code, merge_base, err = run_git(root, "merge-base", "HEAD", base)
+        if code != 0:
+            return f"(cannot find merge base with {base}: {err.strip()[:200]})"
+        code, out, err = run_git(root, "diff", "--no-color", "--no-ext-diff", merge_base.strip())
+    else:
+        code, out, err = run_git(root, "diff", "--no-color", "--no-ext-diff", "HEAD")
+        if code != 0:
+            code, out, err = run_git(root, "diff", "--no-color", "--no-ext-diff")
+        _c, untracked, _e = run_git(root, "ls-files", "--others", "--exclude-standard")
+        for path in untracked.splitlines()[:40]:
+            target = Path(root) / path
+            try:
+                if target.stat().st_size <= 64 * 1024:
+                    body = target.read_text(encoding="utf-8")
+                    out += f"\n--- /dev/null\n+++ b/{path}\n" + "".join("+" + line + "\n" for line in body.splitlines())
+            except (OSError, UnicodeDecodeError):
+                continue
+    if code != 0:
+        return f"(git diff failed: {err.strip()[:200]})"
+    if len(out) > max_chars:
+        out = out[:max_chars] + f"\n… diff truncated at {max_chars} characters"
+    return out
+
+
+REVIEW_PROMPT = (
+    "Review this diff like a senior engineer. List only real problems: bugs, security issues, data loss, "
+    "missing error handling, broken tests, confusing names. For each: file:line, severity (high/medium/low), "
+    "one-sentence problem, one-sentence fix. If it looks good, say so in one line. No praise, no filler.\n\n"
+)
+
+
 def git_commit(root, message, paths=None):
     """Stage paths (or all tracked + new changes) and commit. Returns (ok, text)."""
     message = (message or "").strip()

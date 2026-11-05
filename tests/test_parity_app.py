@@ -137,6 +137,38 @@ class ParityAppTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual(self.app.session_messages[0]["content"], "Add tests")
 
+    def test_copy_save_rename_doctor_mention(self):
+        self.app._transcript_add("user", "Add tests")
+        self.app._transcript_add("agent", "Added tests")
+        self.assertTrue(self.app.run_slash_command("/copy")[1])
+        self.assertEqual(self.app.clipboard_get(), "Added tests")
+        self.assertTrue(self.app.run_slash_command("/save chat.md")[1])
+        self.assertIn("## CodeRouter", Path(self.project.name, "chat.md").read_text(encoding="utf-8"))
+        self.assertTrue(self.app.run_slash_command("/rename Parser work")[1])
+        self.assertEqual(self.app.conversation.title, "Parser work")
+        self.app.run_slash_command("/doctor")
+        self.assertIn("Doctor", self.app.summary.get("1.0", tk.END))
+        self.app._set_prompt_text("")
+        self.app.run_slash_command("/mention src/a.py")
+        self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "@src/a.py ")
+
+    def test_code_review_runs_in_background(self):
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", self.project.name], check=True)
+        Path(self.project.name, "a.py").write_text("x = 1\n", encoding="utf-8")
+        self.app.api_key = "sk-or-test"
+        with mock.patch.object(wrapper, "complete_text", return_value=("a.py:1 low: fine", "m:free")):
+            handled, ok, message = self.app.run_slash_command("/code-review")
+            self.assertTrue(ok, message)
+            for _ in range(50):
+                self.app._drain_parity_queue()
+                if "a.py:1 low" in self.app.summary.get("1.0", tk.END):
+                    break
+                self.app.after(20)
+                self.app.update()
+        self.assertIn("a.py:1 low", self.app.summary.get("1.0", tk.END))
+
 
 if __name__ == "__main__":
     unittest.main()

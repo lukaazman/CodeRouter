@@ -77,6 +77,12 @@ BUILTIN_COMMANDS = (
     SlashCommand("verify", "Open verification", "[command]"),
     SlashCommand("add", "Add read-only context files"),
     SlashCommand("image", "Attach an image for vision models"),
+    SlashCommand("code-review", "Review the git working tree (or a base branch) with a free model", "[base]", aliases=("cr",)),
+    SlashCommand("mention", "Insert @path for a file into the prompt", "<path>"),
+    SlashCommand("copy", "Copy the last agent reply to the clipboard"),
+    SlashCommand("save", "Save this conversation as Markdown", "[file]"),
+    SlashCommand("rename", "Rename this conversation", "<title>"),
+    SlashCommand("doctor", "Check Python, Tk, git, key and config"),
     SlashCommand("stop", "Stop the active run"),
     SlashCommand("exit", "Close CodeRouter", aliases=("quit",)),
 )
