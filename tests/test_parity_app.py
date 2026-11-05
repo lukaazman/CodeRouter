@@ -222,6 +222,37 @@ class ParityAppTests(unittest.TestCase):
         self.assertFalse(self.app.run_slash_command("/skill nope")[1])
         self.app.run_slash_command("/agent off")
 
+    def test_rewind_restores_multiple_applies(self):
+        root = Path(self.project.name)
+        target = root / "a.txt"
+        target.write_text("v1", encoding="utf-8")
+        for index, content in enumerate(("v2", "v3")):
+            snapshot = wrapper.create_run_snapshot(root, (), (), wrapper.APPLY_MODE_REVIEW, run_id=f"r{index}")
+            proposal = wrapper.create_pending_proposal(snapshot, [{"path": "a.txt", "content": content}])
+            undo = wrapper.build_undo_transaction(proposal)
+            wrapper.apply_proposal_transactionally(proposal, root, wrapper.TASK_STATE_REVIEW, f"r{index}")
+            self.app._push_apply_undo(undo)
+        self.assertEqual(len(self.app.apply_undo_stack), 1)
+        with mock.patch.object(wrapper.messagebox, "askyesno", return_value=True):
+            handled, ok, message = self.app.run_slash_command("/rewind 2")
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "v1")
+        self.assertIsNone(self.app._last_apply_undo)
+
+    def test_prompt_history_recall(self):
+        self.app._remember_prompt("first")
+        self.app._remember_prompt("second")
+        self.app._set_prompt_text("draft")
+        self.app.instructions.mark_set(tk.INSERT, "1.0")
+        self.assertEqual(self.app._on_history_up(), "break")
+        self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "second")
+        self.app._on_history_up()
+        self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "first")
+        self.app.instructions.mark_set(tk.INSERT, tk.END)
+        self.app._on_history_down()
+        self.app._on_history_down()
+        self.assertEqual(self.app.instructions.get("1.0", "end-1c"), "draft")
+
 
 if __name__ == "__main__":
     unittest.main()

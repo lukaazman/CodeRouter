@@ -6766,8 +6766,21 @@ class CodeAgentApp(tk.Tk):
             return False
         return True
 
+    UNDO_STACK_MAX = 10
+
+    def _push_apply_undo(self, transaction):
+        """Keep earlier applies restorable (newest first) for /rewind."""
+        previous = self._last_apply_undo
+        if previous is not None and transaction is not None:
+            stack = getattr(self, "apply_undo_stack", [])
+            stack.append(previous)
+            self.apply_undo_stack = stack[-self.UNDO_STACK_MAX:]
+        if transaction is not None:
+            self._last_apply_undo = transaction
+
     def _clear_last_apply_undo(self):
         self._last_apply_undo = None
+        self.apply_undo_stack = []
         if hasattr(self, "undo_last_apply_button"):
             self.undo_last_apply_button.configure(state=tk.DISABLED)
 
@@ -9424,6 +9437,7 @@ class CodeAgentApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "Write an instruction first.")
             return
         if getattr(self, "_parity_ready", False):
+            self._remember_prompt(instructions)
             instructions = self._preprocess_prompt(instructions)
             if instructions is None:
                 return
@@ -9871,7 +9885,7 @@ class CodeAgentApp(tk.Tk):
             self._history_clear_current()
             messagebox.showerror(APP_TITLE, str(exc))
             return
-        self._last_apply_undo = undo_transaction if changed else None
+        self._push_apply_undo(undo_transaction if changed else None)
         self._history_update(
             state=TASK_STATE_APPLIED,
             detail=f"Applied {changed} files",
@@ -9953,7 +9967,7 @@ class CodeAgentApp(tk.Tk):
             self.log(f"! selected apply failed safely: {safe_error}", state=TASK_STATE_REVIEW)
             return False
 
-        self._last_apply_undo = undo_transaction if changed else None
+        self._push_apply_undo(undo_transaction if changed else None)
         selected_keys = {str(path).casefold() for path in selected_paths}
         remaining_edits = tuple(
             edit for edit in proposal.edits if edit.relative_path.casefold() not in selected_keys
@@ -10069,7 +10083,11 @@ class CodeAgentApp(tk.Tk):
             self.set_summary("Undo failed safely; no silent partial restore was accepted.")
             self.log(f"! undo failed safely: {safe_error}", state=TASK_STATE_ERROR)
             return False
+        earlier = list(getattr(self, "apply_undo_stack", []))
         self._clear_last_apply_undo()
+        if earlier:
+            self._last_apply_undo = earlier.pop()
+            self.apply_undo_stack = earlier
         self.session_messages.append({"role": "system", "content": "User undid the last applied changes."})
         self.log(f"> undid last Apply ({restored} files)")
         pending = self.pending_proposal
@@ -10093,6 +10111,8 @@ class CodeAgentApp(tk.Tk):
             self._update_lifecycle_controls()
         else:
             self.set_task_state(TASK_STATE_IDLE, f"Last Apply undone ({restored} files)")
+        if self._last_apply_undo is not None and hasattr(self, "undo_last_apply_button"):
+            self.undo_last_apply_button.configure(state=tk.NORMAL)
         self.set_summary("Last Apply was undone. No worker, command, proposal, or auto-apply action was started.")
         return True
 
@@ -10847,6 +10867,21 @@ class CodeAgentApp(tk.Tk):
             return False, "Nothing to undo."
         self.undo_last_apply()
         return "Undo requested"
+
+    def _cmd_rewind(self, args):
+        try:
+            count = max(1, min(self.UNDO_STACK_MAX + 1, int(args.strip() or "1")))
+        except ValueError:
+            return False, "Usage: /rewind [count]"
+        undone = 0
+        for _ in range(count):
+            if not self._last_apply_undo or not self.undo_last_apply():
+                break
+            undone += 1
+        if not undone:
+            return False, "Nothing to rewind."
+        depth = len(getattr(self, "apply_undo_stack", [])) + (1 if self._last_apply_undo else 0)
+        return f"Rewound {undone} apply(s) · {depth} more available"
 
     def _cmd_git(self, _args):
         status = self._refresh_git_status()
@@ -11604,6 +11639,57 @@ class CodeAgentApp(tk.Tk):
         for key in ("<Tab>", "<Down>", "<Up>", "<Escape>"):
             self.instructions.bind(key, self._on_composer_nav, add="+")
         self.instructions.bind("<Return>", self._on_composer_return, add="+")
+        self.instructions.bind("<Up>", self._on_history_up, add="+")
+        self.instructions.bind("<Down>", self._on_history_down, add="+")
+        self._prompt_history_index = None
+
+    PROMPT_HISTORY_MAX = 50
+
+    def _remember_prompt(self, text):
+        history = getattr(self, "prompt_history", [])
+        if text and (not history or history[-1] != text):
+            history.append(text)
+        self.prompt_history = history[-self.PROMPT_HISTORY_MAX:]
+        self._prompt_history_index = None
+
+    def _on_history_up(self, _event=None):
+        if self._suggestions_visible():
+            return None
+        try:
+            if self.instructions.compare(tk.INSERT, ">=", "2.0"):
+                return None  # moving inside a multi-line prompt
+        except tk.TclError:
+            return None
+        history = getattr(self, "prompt_history", [])
+        if not history:
+            return None
+        if self._prompt_history_index is None:
+            self._prompt_draft = self.instructions.get("1.0", "end-1c")
+            self._prompt_history_index = len(history)
+        if self._prompt_history_index == 0:
+            return "break"
+        self._prompt_history_index -= 1
+        self._set_prompt_text(history[self._prompt_history_index])
+        self.instructions.mark_set(tk.INSERT, "1.end")
+        return "break"
+
+    def _on_history_down(self, _event=None):
+        if self._suggestions_visible() or self._prompt_history_index is None:
+            return None
+        try:
+            if self.instructions.compare("insert lineend", "<", "end-1c"):
+                return None
+        except tk.TclError:
+            return None
+        history = getattr(self, "prompt_history", [])
+        self._prompt_history_index += 1
+        if self._prompt_history_index >= len(history):
+            self._prompt_history_index = None
+            self._set_prompt_text(getattr(self, "_prompt_draft", ""))
+        else:
+            self._set_prompt_text(history[self._prompt_history_index])
+        self.instructions.mark_set(tk.INSERT, tk.END)
+        return "break"
 
     def _known_project_paths(self):
         return list(getattr(self, "_scanned_context_paths", ()) or ())
