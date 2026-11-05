@@ -10628,6 +10628,8 @@ class CodeAgentApp(tk.Tk):
                 self._finish_compact(payload)
             elif kind == "review":
                 self._finish_review(payload)
+            elif kind == "answer":
+                self._finish_answer(payload)
             elif kind == "models":
                 self._show_output(payload)
             elif kind == "fetched":
@@ -10816,6 +10818,69 @@ class CodeAgentApp(tk.Tk):
     def _show_output(self, text):
         """Show a local command result in the conversation pane."""
         self.set_summary(text)
+
+    ASK_CONTEXT_MAX_CHARS = 120_000
+
+    def _cmd_ask(self, args):
+        question = args.strip()
+        if not question:
+            return False, "Usage: /ask <question> (or start a prompt with ?)"
+        if not self.api_key:
+            return False, "Connect OpenRouter first."
+        folder = self._validate_folder(show_error=False)
+        api_key = self.api_key
+        history = [(item["role"], item["content"]) for item in self.session_messages[-8:]]
+        instructions = ""
+        if folder:
+            instructions, _status = load_project_instructions(folder, secrets=[api_key])
+            memory_text, _labels = self._extra_instruction_context(folder)
+            instructions = _memory.combine_instructions(instructions, memory_text)
+        mentions = _mentions.extract_mentions(question)
+        self._transcript_add("user", question)
+        self.set_summary("Thinking about your question…")
+        self._busy_started = time.monotonic()
+
+        def work():
+            try:
+                parts = []
+                if folder:
+                    max_files, max_file_kb = choose_context_limits(folder)
+                    files = collect_files(folder, max_files=max_files, max_file_kb=max_file_kb)
+                    resolved, _missing = _mentions.resolve_mentions(mentions, [f.relative_path for f in files])
+                    used = 0
+                    for source in _mentions.prioritise_files(files, resolved):
+                        block = f"--- FILE: {source.relative_path} ---\n{source.content}"
+                        if used + len(block) > self.ASK_CONTEXT_MAX_CHARS:
+                            continue
+                        parts.append(block)
+                        used += len(block)
+                prompt = (
+                    ("Project instructions (read-only):\n" + instructions + "\n\n" if instructions else "")
+                    + ("Conversation so far:\n" + "\n".join(f"{r}: {c}" for r, c in history) + "\n\n" if history else "")
+                    + ("Project files:\n" + "\n\n".join(parts) + "\n\n" if parts else "")
+                    + "Question: " + question
+                )
+                prompt = redact_sensitive_text(prompt, [api_key])
+                answer, model = complete_text(
+                    api_key, prompt,
+                    system="You answer questions about a codebase. Be precise, cite file paths, keep it short. Never invent files."
+                    + generation_style_suffix(),
+                )
+            except Exception as exc:
+                answer, model = f"Could not answer: {short_error(exc)}", ""
+            self._parity_queue.put(("answer", (question, answer, model)))
+
+        threading.Thread(target=work, daemon=True).start()
+        return "Asking a free model"
+
+    def _finish_answer(self, payload):
+        question, answer, model = payload
+        answer = self._redact_sensitive(answer)
+        self._transcript_add("agent", answer + (f"\n\n({model})" if model else ""))
+        self.session_messages.append({"role": "user", "content": question})
+        self.session_messages.append({"role": "assistant", "content": answer[:4000]})
+        self._record_conversation_turn(question, answer)
+        self.set_summary("Ask a follow-up, or describe a change to make.")
 
     def _cmd_help(self, _args):
         self._show_output(self.command_registry.help_text())
@@ -11364,6 +11429,13 @@ class CodeAgentApp(tk.Tk):
                     self._toast(message, "success" if ok else "danger")
                 self._clear_prompt_after_command(text)
                 return None
+        if text.startswith("?") and len(text) > 1:
+            handled, ok, message = self.run_slash_command("/ask " + text[1:].strip())
+            if ok:
+                self._set_prompt_text("")
+            elif message:
+                self._toast(message, "danger")
+            return None
         note = _memory.parse_memory_note(text)
         if note is not None:
             ok, message = self._add_memory_note(note)

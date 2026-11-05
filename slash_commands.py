@@ -42,6 +42,7 @@ class SlashCommand:
 
 BUILTIN_COMMANDS = (
     SlashCommand("help", "List every command and shortcut"),
+    SlashCommand("ask", "Answer a question about the project without editing files", "<question>"),
     SlashCommand("status", "Current task state and recent transitions"),
     SlashCommand("model", "Model routing; /model auto, /model reset, /model <id>:free", "[auto|reset|<id>:free]"),
     SlashCommand("permissions", "Approval mode, gates and allow/deny rules"),

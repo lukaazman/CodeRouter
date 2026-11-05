@@ -51,6 +51,7 @@ python -m unittest discover -s tests
 - Agents: `.claude/agents/<name>.md` (or `.coderouter/agents`) act as personas; `/agent <name>`, `/agent off`
 - Output style files: `.claude/output-styles/<name>.md`; `/output-style <name>`
 - Conversation transcript with plans shown as checklists; prompts typed during a run are queued
+- Ask mode: start a prompt with `?` (or `/ask`) for an answer about the project with no plan and no edits
 - Fuzzy command palette (`Ctrl+Shift+P`, `Ctrl+P` or `F1`); `Up`/`Down` recall earlier prompts
 - `/code-review [base]` reviews the working tree (untracked files included) or a branch with a free model
 - Saved conversations: `/resume`, `/sessions`, `/compact` summarises older turns, `/rename`, `/save` to Markdown, `/copy` the last reply
@@ -64,7 +65,7 @@ python -m unittest discover -s tests
 
 ## Commands
 
-`/help` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
+`/help` `/ask <question>` `/doctor` `/status` `/model [auto|reset|<id>:free]` `/permissions` `/review` `/clear` `/compact [focus]` `/resume [id]` `/sessions` `/history` `/init` `/memory [add <note>]` `/diff [git]` `/apply` `/reject` `/undo` `/commit [message]` `/git` `/todos` `/cost` `/approval [mode]` `/allow <rule>` `/deny <rule>` `/style [name]` `/effort [level]` `/temperature [value]` `/theme [name]` `/motion [mode]` `/plan [on|off]` `/hooks` `/config` `/commands` `/export` `/verify [command]` `/add` `/image` `/mention <path>` `/code-review [base]` `/rewind [n]` `/skills` `/agents` `/output-style` `/models` `/mcp` `/fetch <url>` `/test` `/security-review` `/pr-description` `/restart` `/copy` `/save [file]` `/rename <title>` `/stop` `/exit`
 
 Type them in the composer or the `Ctrl+K` command field. Shortcuts: `Ctrl+Enter` run, `Ctrl+K` command field, `Ctrl+Shift+P` / `F1` palette, `Ctrl+L` new chat, `Shift+Tab` approval mode, `Up`/`Down` prompt history, `Esc` cancel or close.
 

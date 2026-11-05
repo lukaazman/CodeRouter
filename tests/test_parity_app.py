@@ -382,6 +382,20 @@ class ParityAppTests(unittest.TestCase):
         self.assertEqual(list(self.app.diff_by_path), ["a.py"])
         self.assertFalse(self.app.run_slash_command("/reject zzz.py")[1])
 
+    def test_ask_mode_answers_without_a_run(self):
+        Path(self.project.name, "app.py").write_text("def main(): pass\n", encoding="utf-8")
+        self.app.api_key = "sk-or-test"
+        self.app._set_prompt_text("? where is main defined")
+        with (
+            mock.patch.object(wrapper, "complete_text", return_value=("In app.py.", "m:free")) as complete,
+            mock.patch.object(self.app, "_start_run_worker") as start,
+        ):
+            self.app.run_agent()
+            self.assertTrue(self._pump(lambda: "In app.py." in self.app.summary.get("1.0", tk.END)))
+        start.assert_not_called()
+        self.assertIn("def main()", complete.call_args[0][1])
+        self.assertEqual(self.app.session_messages[-1]["content"], "In app.py.")
+
 
 if __name__ == "__main__":
     unittest.main()
