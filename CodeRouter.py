@@ -12246,6 +12246,16 @@ class CodeAgentApp(tk.Tk):
             self.plan_preview.configure(font=FONTS["small"], height=6)
         except tk.TclError:
             pass
+        label = getattr(self, "review_selection_meta_label", None)
+        if label is not None:
+            try:
+                label.configure(font=FONTS["small"])
+            except tk.TclError:
+                try:
+                    ttk.Style(self).configure("ReviewMeta.TLabel", font=FONTS["small"], foreground=PALETTE["text_subtle"], background=PALETTE["canvas"])
+                    label.configure(style="ReviewMeta.TLabel")
+                except tk.TclError:
+                    pass
         self.bind_all("<Control-l>", self._on_clear_shortcut, add="+")
         self.bind_all("<Shift-Tab>", self._on_shift_tab, add="+")
         try:

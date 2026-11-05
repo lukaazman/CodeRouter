@@ -1,6 +1,7 @@
 """Design tokens: palettes, diff tones and theme resolution.
 
-Warm neutral grounds (never pure black or white), one accent used for the
+Cool graphite (dark) and warm paper (light) grounds, never pure black or
+white, one accent used for the
 primary action, focus and state, hairlines at low contrast. Body text is at
 least 7:1 against its ground, muted text at least 4.5:1.
 """
@@ -11,16 +12,16 @@ import subprocess
 THEMES = ("dark", "light", "system")
 
 DARK = {
-    "canvas": "#111110",
-    "surface": "#111110",
-    "surface_alt": "#191917",
-    "surface_raised": "#22221f",
-    "terminal": "#151513",
-    "border": "#262624",
-    "border_strong": "#383733",
-    "text": "#edece8",
-    "text_muted": "#a9a79f",
-    "text_subtle": "#86847c",
+    "canvas": "#14161a",
+    "surface": "#14161a",
+    "surface_alt": "#1b1e23",
+    "surface_raised": "#24282e",
+    "terminal": "#171a1e",
+    "border": "#272b31",
+    "border_strong": "#383d45",
+    "text": "#e8ebf0",
+    "text_muted": "#a3a9b3",
+    "text_subtle": "#818792",
     "accent": "#93b6ff",
     "accent_active": "#b5ccff",
     "accent_ink": "#0d1527",
@@ -51,7 +52,7 @@ LIGHT = {
 }
 
 DIFF_TONES = {
-    "dark": {"add_bg": "#16301f", "add_fg": "#a6e3b8", "del_bg": "#381d22", "del_fg": "#f4b0b7", "hunk_fg": "#93b6ff"},
+    "dark": {"add_bg": "#16301f", "add_fg": "#a6e3b8", "del_bg": "#3a1e24", "del_fg": "#f4b0b7", "hunk_fg": "#93b6ff"},
     "light": {"add_bg": "#e2f3e7", "add_fg": "#1f6b3f", "del_bg": "#fbe3e5", "del_fg": "#9d2535", "hunk_fg": "#2d5bcc"},
 }
 
