@@ -9074,12 +9074,21 @@ class CodeAgentApp(tk.Tk):
     def revise_plan(self):
         if not self.pending_plan:
             return
+        plan = self.pending_plan
+        snapshot = self.lifecycle.active_snapshot
+        request = getattr(snapshot, "request_text", "") or ""
         self._invalidate_handoff("plan revised")
         self._discard_pending_plan("revise")
         self._invalidate_run()
         self._history_clear_current()
         self.approved_plan = None
-        self.set_summary("Plan discarded. Revise the prompt, then request a new plan.")
+        if getattr(self, "_parity_ready", False) and request:
+            steps = "; ".join(step.title for step in plan.steps)
+            self.session_messages.append({"role": "system", "content": f"The user rejected this plan: {plan.summary} ({steps})."})
+            if not self.instructions.get("1.0", "end-1c").strip():
+                self._set_prompt_text(f"{request}\n\nChange the plan: ")
+                self.instructions.mark_set(tk.INSERT, tk.END)
+        self.set_summary("Plan discarded. Say what to change, then request a new plan.")
         self.set_task_state(TASK_STATE_IDLE, "Plan revision requested")
         self.instructions.focus_set()
 
